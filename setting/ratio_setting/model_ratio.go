@@ -324,7 +324,6 @@ var defaultAudioCompletionRatio = map[string]float64{
 var modelPriceMap = types.NewRWMap[string, float64]()
 var modelRatioMap = types.NewRWMap[string, float64]()
 var completionRatioMap = types.NewRWMap[string, float64]()
-var offPeakModelRatioMap = types.NewRWMap[string, float64]()
 
 var defaultCompletionRatio = map[string]float64{
 	"gpt-4-gizmo-*":  2,
@@ -386,22 +385,6 @@ func UpdateModelRatioByJSONString(jsonStr string) error {
 	return types.LoadFromJsonStringWithCallback(modelRatioMap, jsonStr, InvalidateExposedDataCache)
 }
 
-// OffPeakModelRatio holds the idle-period (空闲时段) ModelRatio per model. A
-// model with an entry here is billed at this ratio only while the configured
-// peak window is inactive (see SetPeakTimeWindow / IsOffPeakTime). Models
-// without an entry keep their base ModelRatio at all hours.
-func OffPeakModelRatio2JSONString() string {
-	return offPeakModelRatioMap.MarshalJSONString()
-}
-
-func UpdateOffPeakModelRatioByJSONString(jsonStr string) error {
-	return types.LoadFromJsonStringWithCallback(offPeakModelRatioMap, jsonStr, InvalidateExposedDataCache)
-}
-
-func GetOffPeakModelRatioCopy() map[string]float64 {
-	return offPeakModelRatioMap.ReadAll()
-}
-
 // 处理带有思考预算的模型名称，方便统一定价
 func handleThinkingBudgetModel(name, prefix, wildcard string) string {
 	if strings.HasPrefix(name, prefix) && strings.Contains(name, "-thinking-") {
@@ -422,11 +405,6 @@ func GetModelRatio(name string) (float64, bool, string) {
 			//return 0, true, name
 		}
 		return 37.5, operation_setting.SelfUseModeEnabled, name
-	}
-	if IsOffPeakTime() {
-		if offRatio, ok := offPeakModelRatioMap.Get(name); ok {
-			return offRatio, true, name
-		}
 	}
 	return ratio, true, name
 }
