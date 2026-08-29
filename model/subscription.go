@@ -276,6 +276,14 @@ type UserSubscription struct {
 	// Whether wallet fallback is allowed after this subscription's quota is exhausted (snapshot from plan)
 	AllowWalletOverflow bool `json:"allow_wallet_overflow"`
 
+	// DailyQuotaLimit caps the user's per-24h consumption of this subscription
+	// in raw quota units (tokens). 0 = no cap (default). When set and the
+	// daily sum of SubscriptionPreConsumeRecord.PreConsumed + this pre-consume
+	// would exceed the limit, PreConsumeUserSubscription returns an error so
+	// billing falls back to the user's wallet (when AllowWalletOverflow=true)
+	// or rejects the request.
+	DailyQuotaLimit int64 `json:"daily_quota_limit" gorm:"type:bigint;not null;default:0"`
+
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
@@ -1344,6 +1352,21 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			if sub.AmountTotal > 0 {
 				remain := sub.AmountTotal - usedBefore
 				if remain < amount {
+					continue
+				}
+			}
+			// 风控: 套餐可设每日 quota 上限,超过则跳过此套餐(回退钱包/拒绝)
+			if sub.DailyQuotaLimit > 0 {
+				dayStart := now - (now % 86400)
+				var dailyUsed int64
+				if err := tx.Model(&SubscriptionPreConsumeRecord{}).
+					Where("user_subscription_id = ? AND status = ? AND created_at >= ?", sub.Id, "consumed", dayStart).
+					Select("COALESCE(SUM(pre_consumed),0)").
+					Scan(&dailyUsed).Error; err != nil {
+					return fmt.Errorf("查询每日用量失败: %w", err)
+				}
+				if dailyUsed+amount > sub.DailyQuotaLimit {
+					common.SysLog(fmt.Sprintf("user %d sub %d daily quota exceeded: used=%d limit=%d", userId, sub.Id, dailyUsed, sub.DailyQuotaLimit))
 					continue
 				}
 			}

@@ -24,6 +24,10 @@ type Redemption struct {
 	UsedUserId   int            `json:"used_user_id"`
 	DeletedAt    gorm.DeletedAt `gorm:"index"`
 	ExpiredTime  int64          `json:"expired_time" gorm:"bigint"` // 过期时间，0 表示不过期
+	// TargetPlanId, when > 0, makes this redemption create a UserSubscription
+	// bound to the given plan on redeem, instead of adding Quota to the wallet.
+	// 0 = legacy wallet-top-up behavior (default).
+	TargetPlanId int `json:"target_plan_id" gorm:"default:0"`
 }
 
 func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
@@ -174,6 +178,19 @@ func Redeem(key string, userId int) (quota int, err error) {
 		}
 		if result.RowsAffected == 0 {
 			return errors.New("该兑换码已被使用")
+		}
+		// Plan-bound redemption: create a UserSubscription atomically inside
+		// the same transaction that flips the code to USED, so a partial
+		// failure cannot leave the user with neither quota nor a sub.
+		if redemption.TargetPlanId > 0 {
+			plan, planErr := GetSubscriptionPlanById(redemption.TargetPlanId)
+			if planErr != nil {
+				return fmt.Errorf("兑换码绑定的套餐 #%d 不存在或不可用: %w", redemption.TargetPlanId, planErr)
+			}
+			if _, subErr := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "redemption:"+redemption.Name); subErr != nil {
+				return fmt.Errorf("通过兑换码发放套餐失败: %w", subErr)
+			}
+			return nil
 		}
 		return tx.Model(&User{}).Where("id = ?", userId).Update("quota", gorm.Expr("quota + ?", redemption.Quota)).Error
 	})
