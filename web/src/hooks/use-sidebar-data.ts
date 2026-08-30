@@ -28,6 +28,7 @@ import {
   ListTodo,
   MessageSquare,
   PlugZap,
+  Package,
   Radio,
   ServerCog,
   Settings,
@@ -115,6 +116,16 @@ export function useSidebarData(): SidebarData {
             title: t('Wallet'),
             url: '/wallet',
             icon: Wallet,
+          },
+          {
+            title: t('Plans'),
+            url: '/plans',
+            icon: CreditCard,
+          },
+          {
+            title: t('Traffic Packs'),
+            url: '/traffic-packs',
+            icon: Package,
           },
           {
             title: t('Profile'),

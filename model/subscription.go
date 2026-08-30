@@ -190,8 +190,32 @@ type SubscriptionPlan struct {
 	// Empty = every model. Snapshotted onto UserSubscription at creation.
 	ModelScope string `json:"model_scope" gorm:"type:varchar(255);default:''"`
 
+	// Category distinguishes long-running subscriptions ("subscription", i.e.
+	// 套餐) from one-shot traffic packs ("package", i.e. 流量包). UI uses
+	// this to render different tabs and behavior. Defaults to "package" so
+	// legacy one-shot plans (e.g. DeepSeek V4 Pro 限时流量包) stay classified
+	// correctly even before admin sets it explicitly.
+	Category string `json:"category" gorm:"type:varchar(16);default:'package';index"`
+
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
+}
+
+// Subscription plan categories. 套餐 vs 流量包.
+const (
+	SubscriptionCategorySubscription = "subscription" // 套餐：长期订阅
+	SubscriptionCategoryPackage      = "package"      // 流量包：一次性配额
+)
+
+// NormalizeSubscriptionCategory coerces empty/invalid values to the package
+// default so admin-side bugs don't break UI rendering.
+func NormalizeSubscriptionCategory(c string) string {
+	switch c {
+	case SubscriptionCategorySubscription:
+		return SubscriptionCategorySubscription
+	default:
+		return SubscriptionCategoryPackage
+	}
 }
 
 func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
