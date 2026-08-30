@@ -185,6 +185,11 @@ type SubscriptionPlan struct {
 	QuotaResetPeriod        string `json:"quota_reset_period" gorm:"type:varchar(16);default:'never'"`
 	QuotaResetCustomSeconds int64  `json:"quota_reset_custom_seconds" gorm:"type:bigint;default:0"`
 
+	// ModelScope restricts which models may consume this plan (comma-separated
+	// exact model names or prefixes, e.g. "deepseek-v4-flash,deepseek-v4-pro").
+	// Empty = every model. Snapshotted onto UserSubscription at creation.
+	ModelScope string `json:"model_scope" gorm:"type:varchar(255);default:''"`
+
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
@@ -275,6 +280,11 @@ type UserSubscription struct {
 
 	// Whether wallet fallback is allowed after this subscription's quota is exhausted (snapshot from plan)
 	AllowWalletOverflow bool `json:"allow_wallet_overflow"`
+
+	// ModelScope snapshot from the plan: when non-empty, only requests whose
+	// model matches an entry may consume this subscription; every other model
+	// skips it and falls back to the wallet.
+	ModelScope string `json:"model_scope" gorm:"type:varchar(255);default:''"`
 
 	// DailyQuotaLimit caps the user's per-24h consumption of this subscription
 	// in raw quota units (tokens). 0 = no cap (default). When set and the
@@ -556,6 +566,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		PrevUserGroup:       prevGroup,
 		DowngradeGroup:      strings.TrimSpace(plan.DowngradeGroup),
 		AllowWalletOverflow: allowWalletOverflow,
+		ModelScope:          strings.TrimSpace(plan.ModelScope),
 		CreatedAt:           common.GetTimestamp(),
 		UpdatedAt:           common.GetTimestamp(),
 	}
@@ -860,6 +871,28 @@ func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 
 // HasActiveUserSubscription returns whether the user has any active subscription.
 // This is a lightweight existence check to avoid heavy pre-consume transactions.
+// modelScopeMatches reports whether modelName is covered by a comma-separated
+// model scope. Entries match exactly or as prefixes (e.g. "deepseek-v4" covers
+// "deepseek-v4-pro-202606"). An empty scope matches every model.
+func modelScopeMatches(scope string, modelName string) bool {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return true
+	}
+	for _, entry := range strings.Split(scope, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if modelName == entry || strings.HasPrefix(modelName, entry) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasActiveUserSubscription reports whether the user holds any active
+// subscription regardless of model scope.
 func HasActiveUserSubscription(userId int) (bool, error) {
 	if userId <= 0 {
 		return false, errors.New("invalid userId")
@@ -872,6 +905,28 @@ func HasActiveUserSubscription(userId int) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// HasActiveUserSubscriptionForModel reports whether the user holds an active
+// subscription whose model scope covers modelName. Subscriptions with an
+// empty scope cover every model.
+func HasActiveUserSubscriptionForModel(userId int, modelName string) (bool, error) {
+	if userId <= 0 {
+		return false, errors.New("invalid userId")
+	}
+	now := common.GetTimestamp()
+	var subs []UserSubscription
+	if err := DB.Model(&UserSubscription{}).
+		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+		Find(&subs).Error; err != nil {
+		return false, err
+	}
+	for _, sub := range subs {
+		if modelScopeMatches(sub.ModelScope, modelName) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // UserActiveSubscriptionsAllowWalletOverflow returns whether wallet balance may be used
@@ -1341,6 +1396,10 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		}
 		for _, candidate := range subs {
 			sub := candidate
+			// 模型作用域: 套餐可限定适用模型,不匹配则跳过此套餐(回退钱包/拒绝)
+			if !modelScopeMatches(sub.ModelScope, modelName) {
+				continue
+			}
 			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
 			if err != nil {
 				return err
