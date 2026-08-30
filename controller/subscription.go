@@ -67,10 +67,39 @@ func GetSubscriptionSelf(c *gin.Context) {
 		activeSubscriptions = []model.SubscriptionSummary{}
 	}
 
+	// Attach plan metadata so user-facing pages can render package value
+	// (price-based CNY display) without hitting admin endpoints.
+	enrich := func(summaries []model.SubscriptionSummary) []gin.H {
+		items := make([]gin.H, 0, len(summaries))
+		planCache := map[int]*model.SubscriptionPlan{}
+		for _, summary := range summaries {
+			item := gin.H{"subscription": summary.Subscription}
+			if summary.Subscription != nil {
+				planId := summary.Subscription.PlanId
+				plan := planCache[planId]
+				if plan == nil {
+					if loaded, planErr := model.GetSubscriptionPlanById(planId); planErr == nil && loaded != nil {
+						plan = loaded
+						planCache[planId] = plan
+					}
+				}
+				if plan != nil {
+					item["plan_title"] = plan.Title
+					item["plan_subtitle"] = plan.Subtitle
+					item["plan_price_amount"] = plan.PriceAmount
+					item["plan_currency"] = plan.Currency
+					item["plan_category"] = model.NormalizeSubscriptionCategory(plan.Category)
+				}
+			}
+			items = append(items, item)
+		}
+		return items
+	}
+
 	common.ApiSuccess(c, gin.H{
 		"billing_preference": pref,
-		"subscriptions":      activeSubscriptions, // all active subscriptions
-		"all_subscriptions":  allSubscriptions,    // all subscriptions including expired
+		"subscriptions":      enrich(activeSubscriptions), // all active subscriptions
+		"all_subscriptions":  enrich(allSubscriptions),    // all subscriptions including expired
 	})
 }
 
@@ -205,6 +234,7 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
 		return
 	}
+	req.Plan.Category = model.NormalizeSubscriptionCategory(req.Plan.Category)
 	err := model.DB.Create(&req.Plan).Error
 	if err != nil {
 		common.ApiError(c, err)
@@ -280,6 +310,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
 		return
 	}
+	req.Plan.Category = model.NormalizeSubscriptionCategory(req.Plan.Category)
 
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// update plan (allow zero values updates with map)
@@ -303,6 +334,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"model_scope":                req.Plan.ModelScope,
 			"quota_reset_period":         req.Plan.QuotaResetPeriod,
 			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,
+			"category":                   model.NormalizeSubscriptionCategory(req.Plan.Category),
 			"updated_at":                 common.GetTimestamp(),
 		}
 		if req.Plan.AllowBalancePay != nil {

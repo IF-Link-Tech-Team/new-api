@@ -477,6 +477,54 @@ export function SubscriptionsMutateDrawer({
 
                 <FormField
                   control={form.control}
+                  name='category'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Category')}</FormLabel>
+                      <Select
+                        items={[
+                          {
+                            value: 'package',
+                            label: t('Traffic Pack'),
+                          },
+                          {
+                            value: 'subscription',
+                            label: t('Subscription'),
+                          },
+                        ]}
+                        onValueChange={(v) => field.onChange(v)}
+                        value={field.value || 'package'}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue
+                              placeholder={t('Traffic Pack')}
+                            />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            <SelectItem value='package'>
+                              {t('Traffic Pack')}
+                            </SelectItem>
+                            <SelectItem value='subscription'>
+                              {t('Subscription')}
+                            </SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>
+                        {t(
+                          'Traffic packs are one-shot quota packages; subscriptions are long-running plans. Controls which user page renders them.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
                   name='max_purchase_per_user'
                   render={({ field }) => (
                     <FormItem>
