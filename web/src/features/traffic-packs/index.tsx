@@ -56,6 +56,14 @@ function daysLeft(unix: number): number {
   return Math.max(0, Math.ceil((unix - Date.now() / 1000) / 86400))
 }
 
+// 网关鉴权要求完整 Key 带 sk- 前缀，而 /api/token/{id}/key 返回的是库内裸 Key。
+// 已带前缀则原样返回，避免 sk-sk- 重复。
+function normalizeKey(key: string): string {
+  const trimmed = (key || '').trim()
+  if (!trimmed) return ''
+  return trimmed.startsWith('sk-') ? trimmed : `sk-${trimmed}`
+}
+
 export function TrafficPacks({
   category = 'package',
   title = '流量包',
@@ -112,7 +120,7 @@ export function TrafficPacks({
   const revealPackKey = useCallback(async () => {
     if (!packKeyToken) return ''
     const res = await api.post(`/api/token/${packKeyToken.id}/key`)
-    return res.data?.data?.key ?? ''
+    return normalizeKey(res.data?.data?.key ?? '')
   }, [packKeyToken])
 
   const handleGenerateKey = useCallback(
