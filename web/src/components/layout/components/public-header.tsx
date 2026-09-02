@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -38,6 +38,9 @@ import type { TopNavLink } from '../types'
 import { HeaderLogo } from './header-logo'
 
 const AUTH_PROMPT_SECONDS = 5
+
+/** TopNavLink extended with an in-page anchor flag for landing hash links */
+type PublicNavLink = TopNavLink & { anchor?: boolean }
 
 type AuthPromptTarget = {
   title: string
@@ -96,7 +99,36 @@ export function PublicHeader(props: PublicHeaderProps) {
   const user = auth.user
   const isAuthenticated = !!user
   const displaySiteName = customSiteName || systemName
-  const links = dynamicLinks.length > 0 ? dynamicLinks : navLinks
+  const baseLinks = dynamicLinks.length > 0 ? dynamicLinks : navLinks
+  const links = useMemo<PublicNavLink[]>(() => {
+    const filtered = baseLinks
+      .filter((link) => {
+        // Never surface upstream New API docs links in the public header
+        if (/newapi\.pro/i.test(link.href)) return false
+        // Guests do not see gated modules (pricing/rankings) or the console link
+        if (!isAuthenticated) {
+          if (link.requiresAuth) return false
+          if (link.href === '/dashboard') return false
+        }
+        return true
+      })
+      .map((link) =>
+        link.href === '/about' ? { ...link, title: 'About Cilai' } : link
+      )
+    const anchorLinks: PublicNavLink[] = [
+      { title: 'Scenario Plans', href: '/#scenario', anchor: true },
+      { title: 'How to Use', href: '/#usage', anchor: true },
+    ]
+    const homeIndex = filtered.findIndex((link) => link.href === '/')
+    if (homeIndex >= 0) {
+      return [
+        ...filtered.slice(0, homeIndex + 1),
+        ...anchorLinks,
+        ...filtered.slice(homeIndex + 1),
+      ]
+    }
+    return [...anchorLinks, ...filtered]
+  }, [baseLinks, isAuthenticated])
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20)
@@ -237,6 +269,21 @@ export function PublicHeader(props: PublicHeaderProps) {
                     </a>
                   )
                 }
+                if (link.anchor) {
+                  return (
+                    <a
+                      key={i}
+                      href={link.href}
+                      onClick={(event) => handleNavLinkClick(event, link)}
+                      className={cn(
+                        'text-muted-foreground hover:text-foreground rounded-lg px-3 py-1.5 text-sm font-medium transition-colors duration-200',
+                        isActive ? 'text-foreground' : undefined
+                      )}
+                    >
+                      {t(link.title)}
+                    </a>
+                  )
+                }
                 return (
                   <Link
                     key={i}
@@ -285,13 +332,23 @@ export function PublicHeader(props: PublicHeaderProps) {
                   ) : isAuthenticated ? (
                     <ProfileDropdown />
                   ) : (
-                    <Button
-                      size='sm'
-                      className='h-8 rounded-lg px-3.5 text-xs font-medium'
-                      render={<Link to='/sign-in' />}
-                    >
-                      {t('Sign in')}
-                    </Button>
+                    <>
+                      <Button
+                        variant='ghost'
+                        size='sm'
+                        className='h-8 rounded-lg px-3.5 text-xs font-medium'
+                        render={<Link to='/sign-in' />}
+                      >
+                        {t('Sign in')}
+                      </Button>
+                      <Button
+                        size='sm'
+                        className='h-8 rounded-lg px-3.5 text-xs font-medium'
+                        render={<Link to='/sign-up' />}
+                      >
+                        {t('Sign up')}
+                      </Button>
+                    </>
                   )}
                 </>
               )}
@@ -370,6 +427,19 @@ export function PublicHeader(props: PublicHeaderProps) {
                     rel='noopener noreferrer'
                     aria-disabled={link.disabled}
                     tabIndex={link.disabled ? -1 : undefined}
+                    onClick={(event) => handleNavLinkClick(event, link, true)}
+                    className={linkClassName}
+                    style={transitionStyle}
+                  >
+                    {t(link.title)}
+                  </a>
+                )
+              }
+              if (link.anchor) {
+                return (
+                  <a
+                    key={i}
+                    href={link.href}
                     onClick={(event) => handleNavLinkClick(event, link, true)}
                     className={linkClassName}
                     style={transitionStyle}
