@@ -348,19 +348,42 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		return nil, types.NewError(fmt.Errorf("relayInfo is nil"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
 
-	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
+	trySubscription := func() (*BillingSession, *types.NewAPIError) {
+		subConsume := int64(preConsumedQuota)
+		if subConsume <= 0 {
+			subConsume = 1
+		}
+		// 强绑定: 如果 token.UserSubscriptionId > 0, 则强制只扣这一份订阅,
+		// 失败直接报错(不会回退钱包/不会选其他订阅)。
+		boundSubId := 0
+		if relayInfo.TokenUserSubscriptionId > 0 {
+			boundSubId = relayInfo.TokenUserSubscriptionId
+		}
+		session := &BillingSession{
+			relayInfo: relayInfo,
+			funding: &SubscriptionFunding{
+				requestId:           relayInfo.RequestId,
+				userId:              relayInfo.UserId,
+				modelName:           relayInfo.OriginModelName,
+				amount:              subConsume,
+				boundSubscriptionId: boundSubId,
+			},
+		}
+		// 必须传 subConsume 而非 preConsumedQuota，保证 SubscriptionFunding.amount、
+		// preConsume 参数和 FinalPreConsumedQuota 三者一致，避免订阅多扣费。
+		if apiErr := session.preConsume(c, int(subConsume)); apiErr != nil {
+			return nil, apiErr
+		}
+		return session, nil
+	}
 
-	// 钱包路径需要先检查用户额度
 	tryWallet := func() (*BillingSession, *types.NewAPIError) {
+		if preConsumedQuota < 0 {
+			return nil, types.NewError(fmt.Errorf("invalid preConsumedQuota"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+		}
 		userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
 		if err != nil {
 			return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
-		}
-		if userQuota <= 0 {
-			return nil, types.NewErrorWithStatusCode(
-				fmt.Errorf("用户额度不足, 剩余额度: %s", logger.FormatQuota(userQuota)),
-				types.ErrorCodeInsufficientUserQuota, http.StatusForbidden,
-				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		if userQuota-preConsumedQuota < 0 {
 			return nil, types.NewErrorWithStatusCode(
@@ -380,27 +403,16 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		return session, nil
 	}
 
-	trySubscription := func() (*BillingSession, *types.NewAPIError) {
-		subConsume := int64(preConsumedQuota)
-		if subConsume <= 0 {
-			subConsume = 1
-		}
-		session := &BillingSession{
-			relayInfo: relayInfo,
-			funding: &SubscriptionFunding{
-				requestId: relayInfo.RequestId,
-				userId:    relayInfo.UserId,
-				modelName: relayInfo.OriginModelName,
-				amount:    subConsume,
-			},
-		}
-		// 必须传 subConsume 而非 preConsumedQuota，保证 SubscriptionFunding.amount、
-		// preConsume 参数和 FinalPreConsumedQuota 三者一致，避免订阅多扣费。
-		if apiErr := session.preConsume(c, int(subConsume)); apiErr != nil {
-			return nil, apiErr
-		}
-		return session, nil
+	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
+
+	// 强绑定: token.UserSubscriptionId > 0 时, 完全忽略 BillingPreference 与 wallet fallback,
+	// 强制只走绑定的订阅, 失败直接报错(套餐到期/耗尽/不匹配都返回 403)。
+	if relayInfo.TokenUserSubscriptionId > 0 {
+		return trySubscription()
 	}
+
+	// 钱包路径需要先检查用户额度
+	// tryWallet / trySubscription 已在函数顶部定义。
 
 	switch pref {
 	case "subscription_only":

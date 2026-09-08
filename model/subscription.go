@@ -600,6 +600,51 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	return sub, nil
 }
 
+// CreateBoundTokenForSubscription 在已落库的 UserSubscription 上, 给用户生成一个
+// 强绑定的 API token: 该 token 仅能扣此订阅, 不能串其他订阅、不能回退钱包;
+// model_limits 取自订阅的 model_scope(空表示全部);key 自动生成;token 过期
+// 时间与订阅 end_time 一致(订阅到期后 token 自动失效)。
+//
+// 调用方必须保证 subscriptionId 是已 commit 的、status=active 的、属于 userId 的订阅。
+func CreateBoundTokenForSubscription(userId int, subscriptionId int) (*Token, string, error) {
+	if userId <= 0 || subscriptionId <= 0 {
+		return nil, "", errors.New("invalid args")
+	}
+	var sub UserSubscription
+	if err := DB.Where("id = ? AND user_id = ? AND status = ?", subscriptionId, userId, "active").
+		First(&sub).Error; err != nil {
+		return nil, "", fmt.Errorf("subscription #%d not found / not active: %w", subscriptionId, err)
+	}
+	key, err := common.GenerateKey()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate key: %w", err)
+	}
+	now := common.GetTimestamp()
+	token := &Token{
+		UserId:             userId,
+		Key:                key,
+		Status:             1,
+		Name:               fmt.Sprintf("套餐 #%d 专属 Key", subscriptionId),
+		CreatedTime:        now,
+		AccessedTime:       now,
+		ExpiredTime:        sub.EndTime,
+		RemainQuota:        0,
+		UnlimitedQuota:     true,
+		ModelLimitsEnabled: sub.ModelScope != "",
+		ModelLimits:        sub.ModelScope,
+		AllowIps:           func() *string { s := ""; return &s }(),
+		UsedQuota:          0,
+		Group:              "",
+		CrossGroupRetry:    false,
+		AutoGroups:         "",
+		UserSubscriptionId: subscriptionId,
+	}
+	if err := DB.Create(token).Error; err != nil {
+		return nil, "", err
+	}
+	return token, key, nil
+}
+
 func refreshSubscriptionUserGroupCache(userId int, operation string) {
 	if err := RefreshUserGroupCache(userId); err != nil {
 		common.SysError(fmt.Sprintf("failed to refresh user group cache after %s for user %d: %v", operation, userId, err))
@@ -622,6 +667,7 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	var logMoney float64
 	var logPaymentMethod string
 	var upgradeGroup string
+	var completedPlanId int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order SubscriptionOrder
 		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
@@ -631,11 +677,14 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			return ErrPaymentMethodMismatch
 		}
 		if order.Status == common.TopUpStatusSuccess {
+			// 幂等: 重复回调直接返回成功,但仍需要为该订单已发放的 subscription 生成绑定 Key。
+			completedPlanId = order.PlanId
 			return nil
 		}
 		if order.Status != common.TopUpStatusPending {
 			return ErrSubscriptionOrderStatusInvalid
 		}
+		completedPlanId = order.PlanId
 		plan, err := GetSubscriptionPlanById(order.PlanId)
 		if err != nil {
 			return err
@@ -679,6 +728,15 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	if logUserId > 0 {
 		msg := fmt.Sprintf("订阅购买成功，套餐: %s，支付金额: %.2f，支付方式: %s", logPlanTitle, logMoney, logPaymentMethod)
 		RecordLog(logUserId, LogTypeTopup, msg)
+		// 事务提交后, 为用户生成一份绑定到该套餐的专属 Key。
+		// 失败仅记日志,不影响订单已完成的事实。
+		var sub UserSubscription
+		if lookupErr := DB.Where("user_id = ? AND plan_id = ?", logUserId, completedPlanId).
+			Order("id desc").First(&sub).Error; lookupErr == nil && sub.Id > 0 {
+			if _, _, keyErr := CreateBoundTokenForSubscription(logUserId, sub.Id); keyErr != nil {
+				common.SysError(fmt.Sprintf("order PAID succeeded but failed to create bound token for user %d subscription %d: %v", logUserId, sub.Id, keyErr))
+			}
+		}
 	}
 	return nil
 }
@@ -1372,7 +1430,12 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 }
 
 // PreConsumeUserSubscription pre-consumes from any active subscription total quota.
-func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64) (*SubscriptionPreConsumeResult, error) {
+//
+// boundSubscriptionId == 0: 兼容模式,按 userId 找所有匹配 modelName 的 active 订阅,
+//   按 end_time asc + amount 充足 选择一个扣费(原有逻辑)。
+// boundSubscriptionId > 0: 强绑定模式,只从该 ID 的订阅扣费(用于 token 强绑定场景),
+//   即使其他订阅也匹配也不会被选用,失败直接报错(不会回退钱包)。
+func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64, boundSubscriptionId int) (*SubscriptionPreConsumeResult, error) {
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -1381,6 +1444,9 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 	}
 	if amount <= 0 {
 		return nil, errors.New("amount must be > 0")
+	}
+	if boundSubscriptionId < 0 {
+		return nil, errors.New("invalid boundSubscriptionId")
 	}
 	now := GetDBTimestamp()
 
@@ -1409,6 +1475,69 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		}
 
 		var subs []UserSubscription
+		// 强绑定模式: 只锁定 boundSubscriptionId 指定的那一份订阅,失败直接报错。
+		if boundSubscriptionId > 0 {
+			var bound UserSubscription
+			if err := lockForUpdate(tx).
+				Where("id = ? AND user_id = ? AND status = ? AND end_time > ?",
+					boundSubscriptionId, userId, "active", now).
+				First(&bound).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return fmt.Errorf("bound subscription #%d not found / not active / expired", boundSubscriptionId)
+				}
+				return err
+			}
+			if !modelScopeMatches(bound.ModelScope, modelName) {
+				return fmt.Errorf("bound subscription #%d does not support model %q (model_scope=%q)",
+					boundSubscriptionId, modelName, bound.ModelScope)
+			}
+			plan, err := getSubscriptionPlanByIdTx(tx, bound.PlanId)
+			if err != nil {
+				return err
+			}
+			if err := maybeResetUserSubscriptionWithPlanTx(tx, &bound, plan, now); err != nil {
+				return err
+			}
+			usedBefore := bound.AmountUsed
+			if bound.AmountTotal > 0 && bound.AmountTotal-usedBefore < amount {
+				return fmt.Errorf("bound subscription #%d quota insufficient: need=%d, remain=%d",
+					boundSubscriptionId, amount, bound.AmountTotal-usedBefore)
+			}
+			record := &SubscriptionPreConsumeRecord{
+				RequestId:          requestId,
+				UserId:             userId,
+				UserSubscriptionId: bound.Id,
+				PreConsumed:        amount,
+				Status:             "consumed",
+			}
+			if err := tx.Create(record).Error; err != nil {
+				var dup SubscriptionPreConsumeRecord
+				if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
+					if dup.Status == "refunded" {
+						return errors.New("subscription pre-consume already refunded")
+					}
+					returnValue.UserSubscriptionId = bound.Id
+					returnValue.PreConsumed = dup.PreConsumed
+					returnValue.AmountTotal = bound.AmountTotal
+					returnValue.AmountUsedBefore = bound.AmountUsed
+					returnValue.AmountUsedAfter = bound.AmountUsed
+					return nil
+				}
+				return err
+			}
+			bound.AmountUsed += amount
+			if err := tx.Save(&bound).Error; err != nil {
+				return err
+			}
+			returnValue.UserSubscriptionId = bound.Id
+			returnValue.PreConsumed = amount
+			returnValue.AmountTotal = bound.AmountTotal
+			returnValue.AmountUsedBefore = usedBefore
+			returnValue.AmountUsedAfter = bound.AmountUsed
+			return nil
+		}
+
+		// 兼容模式: 按 end_time asc 选第一个 model 匹配 + 余额足够的
 		if err := lockForUpdate(tx).
 			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
 			Order("end_time asc, id asc").

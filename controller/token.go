@@ -328,6 +328,7 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		UserSubscriptionId: token.UserSubscriptionId,
 	}
 	err = cleanToken.Insert()
 	if err != nil {

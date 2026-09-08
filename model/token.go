@@ -29,6 +29,11 @@ type Token struct {
 	Group              string         `json:"group" gorm:"default:''"`
 	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
 	AutoGroups         string         `json:"-" gorm:"type:text"`
+	// UserSubscriptionId 把 token 强绑定到一份具体的 UserSubscription。
+	// > 0 时,调用只会从该订阅扣费,失败不回退钱包、不能串其他订阅;
+	// 套餐到期/耗尽后,token 调用被拒绝。
+	// == 0 时,沿用旧的 BillingPreference 选择路径(兼容)。
+	UserSubscriptionId int  `json:"user_subscription_id" gorm:"default:0;index"`
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
@@ -317,7 +322,8 @@ func (token *Token) Insert() error {
 // Update Make sure your token's fields is completed, because this will update non-zero values
 func (token *Token) Update() (err error) {
 	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
+		"user_subscription_id").Updates(token).Error
 	if shouldUpdateRedis(true, err) {
 		if cacheErr := cacheSetToken(*token); cacheErr != nil {
 			common.SysLog("failed to update token cache: " + cacheErr.Error())
