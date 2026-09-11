@@ -30,6 +30,7 @@ const (
 	PaymentMethodCreem        = "creem"
 	PaymentMethodWaffo        = "waffo"
 	PaymentMethodWaffoPancake = "waffo_pancake"
+	PaymentMethodAlipay       = "alipay"
 	PaymentMethodBalance      = "balance"
 )
 
@@ -39,6 +40,7 @@ const (
 	PaymentProviderCreem        = "creem"
 	PaymentProviderWaffo        = "waffo"
 	PaymentProviderWaffoPancake = "waffo_pancake"
+	PaymentProviderAlipay       = "alipay"
 	PaymentProviderBalance      = "balance"
 )
 
