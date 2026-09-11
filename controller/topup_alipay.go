@@ -24,7 +24,9 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/thanhpk/randstr"
 )
 
@@ -61,7 +63,24 @@ func RequestAlipayPay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "参数错误"})
 		return
 	}
-	if req.Amount < setting.AlipayMinTopUp {
+	user, err := model.GetUserById(id, false)
+	if err != nil || user == nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "用户不存在"})
+		return
+	}
+
+	// 口径必须与 RequestEpay 一致:
+	//   前端传来的是「展示金额」(默认展示类型 USD),不是应付人民币。
+	//   应付人民币 = 展示金额 × operation_setting.Price × 分组倍率 × 折扣。
+	//   例:用户输入 10 → 应付 10 × 7.3 = ¥73.00。
+	// 直接把 req.Amount 当人民币收会导致只收 ¥10 却发放 $10 额度($1≈¥7.3),每单亏损。
+	group, err := model.GetUserGroup(id, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取用户分组失败"})
+		return
+	}
+	payMoney := getPayMoney(int64(req.Amount), group)
+	if payMoney < setting.AlipayMinTopUp {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
 			"message": fmt.Sprintf("最低充值金额 %.2f 元", setting.AlipayMinTopUp),
@@ -69,21 +88,19 @@ func RequestAlipayPay(c *gin.Context) {
 		return
 	}
 
-	user, err := model.GetUserById(id, false)
-	if err != nil || user == nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "用户不存在"})
-		return
-	}
-
 	tradeNo := "TU-ALI-" + randstr.String(8) + "-" + strconv.FormatInt(time.Now().Unix(), 10)
 
-	// amount 元 -> quota (1元 = 500000 quota)
-	quota := int64(req.Amount * 500000)
+	// Amount 存「展示金额」、Money 存「实付人民币」,与 epay 的存储口径一致。
+	// 入账额度 = Amount × QuotaPerUnit(见 AlipayNotify),因此这里不能把 quota 塞进 Amount。
+	displayAmount := req.Amount
+	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
+		displayAmount = req.Amount / common.QuotaPerUnit
+	}
 
 	topUp := &model.TopUp{
 		UserId:          id,
-		Amount:          quota, // 注意:此处 Amount 存的是 quota(非元),因 ¥0.01 无法用 int64 元表示
-		Money:           float64(req.Amount),
+		Amount:          int64(displayAmount),
+		Money:           payMoney,
 		TradeNo:         tradeNo,
 		PaymentMethod:   model.PaymentMethodAlipay,
 		PaymentProvider: model.PaymentProviderAlipay,
@@ -100,11 +117,12 @@ func RequestAlipayPay(c *gin.Context) {
 	notifyURL := callBack + "/api/topup/alipay/notify"
 	returnURL := callBack + "/api/topup/alipay/return?trade_no=" + tradeNo
 
-	// biz_content: 支付宝"电脑网站支付"业务参数
+	// biz_content: 支付宝"电脑网站支付"业务参数。
+	// total_amount 必须是「实付人民币」(payMoney),而不是展示金额。
 	biz := map[string]string{
 		"out_trade_no": tradeNo,
 		"product_code": "FAST_INSTANT_TRADE_PAY",
-		"total_amount":  fmt.Sprintf("%.2f", float64(req.Amount)),
+		"total_amount":  fmt.Sprintf("%.2f", payMoney),
 		"subject":       fmt.Sprintf("IF.Link 钱包充值 - %s", user.Username),
 	}
 	bizJSON, _ := json.Marshal(biz)
@@ -120,10 +138,11 @@ func RequestAlipayPay(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": gin.H{
-			"pay_url":   payURL,
-			"trade_no":  tradeNo,
-			"amount":    req.Amount,
-			"is_mobile": false, // MVP 暂用 trade.page.pay(PC); 后续可加 trade.wap.pay(手机)
+			"pay_url":    payURL,
+			"trade_no":   tradeNo,
+			"amount":     req.Amount, // 展示金额
+			"pay_money":  payMoney,   // 实付人民币
+			"is_mobile":  false,      // MVP 暂用 trade.page.pay(PC); 后续可加 trade.wap.pay(手机)
 		},
 	})
 }
@@ -200,11 +219,10 @@ func AlipayNotify(c *gin.Context) {
 	// 注意:不能用 model.Recharge —— 那是 Stripe 专用(内部强校验
 	// PaymentProvider == stripe,其余一律 ErrPaymentMethodMismatch)。
 	// 这里沿用 Epay 的通用路径:置成功态 + IncreaseUserQuota。
-	quotaToAdd := int(topUp.Money * common.QuotaPerUnit)
-	if quotaToAdd <= 0 {
-		// 兜底:Money 缺失时回退到创建订单时已按 quota 存储的 Amount
-		quotaToAdd = int(topUp.Amount)
-	}
+	// 口径与 EpayNotify 一致:入账额度 = 展示金额 × QuotaPerUnit。
+	// 不能改成 Money × QuotaPerUnit —— Money 是按 Price 换算后的实付人民币,
+	// 再乘一次 QuotaPerUnit 会把额度放大 Price 倍(默认 7.3 倍)。
+	quotaToAdd := int(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart())
 	if quotaToAdd <= 0 {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 充值额度无效 trade_no=%s money=%.4f amount=%d", tradeNo, topUp.Money, topUp.Amount))
 		c.String(http.StatusInternalServerError, "fail")
