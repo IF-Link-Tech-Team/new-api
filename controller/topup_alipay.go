@@ -29,8 +29,8 @@ import (
 )
 
 type TopUpAlipayPayRequest struct {
-	Amount    int    `json:"amount"`     // 元
-	TopUpCode string `json:"top_up_code"` // 兼容老 topup 字段
+	Amount    float64 `json:"amount"`     // 元(支持小数,沙箱测试 ¥0.01 必须 float64)
+	TopUpCode string  `json:"top_up_code"` // 兼容老 topup 字段
 }
 
 func RequestAlipayPay(c *gin.Context) {
@@ -61,10 +61,10 @@ func RequestAlipayPay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "参数错误"})
 		return
 	}
-	if req.Amount < int(setting.AlipayMinTopUp) {
+	if req.Amount < setting.AlipayMinTopUp {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": fmt.Sprintf("最低充值金额 %d 元", int(setting.AlipayMinTopUp)),
+			"message": fmt.Sprintf("最低充值金额 %.2f 元", setting.AlipayMinTopUp),
 		})
 		return
 	}
@@ -78,7 +78,7 @@ func RequestAlipayPay(c *gin.Context) {
 	tradeNo := "TU-ALI-" + randstr.String(8) + "-" + strconv.FormatInt(time.Now().Unix(), 10)
 
 	// amount 元 -> quota (1元 = 500000 quota)
-	quota := int64(req.Amount) * 500000
+	quota := int64(req.Amount * 500000)
 
 	topUp := &model.TopUp{
 		UserId:        id,
