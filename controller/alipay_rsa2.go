@@ -28,11 +28,12 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 )
 
-// alipaySignParams 排序后拼接待签字符串,过滤 sign / sign_type / 空值
+// alipaySignParams 排序后拼接待签字符串,过滤 sign / 空值
+// 注意:沙箱验签字符串包含 sign_type (虽然官方文档说不要,但沙箱实际要求),因此不能过滤
 func alipaySignParams(params map[string]string) string {
 	keys := make([]string, 0, len(params))
 	for k, v := range params {
-		if k == "sign" || k == "sign_type" || v == "" {
+		if k == "sign" || v == "" {
 			continue
 		}
 		keys = append(keys, k)
