@@ -76,6 +76,17 @@ export function isStripePayment(paymentType: string): boolean {
 }
 
 /**
+ * Check if payment method is Alipay (native, not the epay aggregator)
+ *
+ * 支付宝是「原生直连」通道:走 /api/user/alipay 拿到收银台 pay_url 后整页跳转,
+ * 而不是像 epay 那样走 /api/user/pay 提交表单。因此必须在支付分发里单独分支,
+ * 否则会落到 epay 分支(未配置时直接报「当前管理员未配置支付信息」)。
+ */
+export function isAlipayPayment(paymentType: string): boolean {
+  return paymentType === PAYMENT_TYPES.ALIPAY
+}
+
+/**
  * Check if payment method is Waffo
  */
 export function isWaffoPayment(paymentType: string): boolean {

@@ -39,6 +39,18 @@ export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
   url?: string
 }
 export type StripePaymentResponse = ApiResponse<{ pay_link: string }>
+/**
+ * 支付宝原生支付(电脑网站支付)。
+ *
+ * 与 Stripe 不同,支付宝不返回 pay_link 而是返回收银台 pay_url,
+ * 前端直接整页跳转即可(不能用表单 POST,签名已在 URL 里)。
+ */
+export type AlipayPaymentResponse = ApiResponse<{
+  pay_url: string
+  trade_no: string
+  amount: number
+  is_mobile?: boolean
+}>
 export type AffiliateCodeResponse = ApiResponse<string>
 export type AffiliateTransferResponse = ApiResponse
 export type CreemPaymentResponse = ApiResponse<{ checkout_url: string }>
@@ -184,6 +196,17 @@ export interface PaymentRequest {
   amount: number
   /** Payment method identifier */
   payment_method: string
+}
+
+/**
+ * 支付宝原生支付请求参数
+ *
+ * 后端只接受 amount(元),不收 payment_method —— 见
+ * controller/topup_alipay.go 的 TopUpAlipayPayRequest。
+ */
+export interface AlipayPaymentRequest {
+  /** Topup amount */
+  amount: number
 }
 
 /**

@@ -29,6 +29,8 @@ import type {
   AmountResponse,
   PaymentResponse,
   StripePaymentResponse,
+  AlipayPaymentRequest,
+  AlipayPaymentResponse,
   AffiliateCodeResponse,
   AffiliateTransferResponse,
   BillingHistoryResponse,
@@ -128,6 +130,21 @@ export async function requestStripePayment(
   request: PaymentRequest
 ): Promise<StripePaymentResponse> {
   const res = await api.post('/api/user/stripe/pay', request, {
+    skipBusinessError: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
+/**
+ * Request Alipay native payment
+ *
+ * 返回收银台 pay_url,由调用方整页跳转。
+ * 注意:后端该接口不接收 payment_method,只收 amount。
+ */
+export async function requestAlipayPayment(
+  request: AlipayPaymentRequest
+): Promise<AlipayPaymentResponse> {
+  const res = await api.post('/api/user/alipay', request, {
     skipBusinessError: true,
   } as Record<string, unknown>)
   return res.data
