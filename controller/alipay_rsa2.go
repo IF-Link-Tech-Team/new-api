@@ -28,12 +28,15 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 )
 
-// alipaySignParams 排序后拼接待签字符串,过滤 sign / 空值
-// 注意:沙箱验签字符串包含 sign_type (虽然官方文档说不要,但沙箱实际要求),因此不能过滤
-func alipaySignParams(params map[string]string) string {
+// alipayBuildSignContent 按支付宝规则拼接待签/待验签字符串:
+// 过滤 skipped 中的键与空值,其余按键名升序,以 k=v&k=v 拼接。
+func alipayBuildSignContent(params map[string]string, skipSignType bool) string {
 	keys := make([]string, 0, len(params))
 	for k, v := range params {
 		if k == "sign" || v == "" {
+			continue
+		}
+		if skipSignType && k == "sign_type" {
 			continue
 		}
 		keys = append(keys, k)
@@ -44,6 +47,28 @@ func alipaySignParams(params map[string]string) string {
 		parts = append(parts, fmt.Sprintf("%s=%s", k, params[k]))
 	}
 	return strings.Join(parts, "&")
+}
+
+// alipaySignParams 请求签名口径:仅排除 sign,保留 sign_type。
+//
+// 支付宝网关对"我们发出的请求"做验签时,串里是包含 sign_type 的。沙箱网关
+// 在 invalid-signature 报错里回显的 canonical 串即为:
+//
+//	app_id=...&biz_content=...&charset=utf-8&method=...&notify_url=...&
+//	return_url=...&sign_type=RSA2&timestamp=...&version=1.0
+//
+// 因此这里不能过滤 sign_type。
+func alipaySignParams(params map[string]string) string {
+	return alipayBuildSignContent(params, false)
+}
+
+// alipayNotifySignParams 异步通知验签口径:排除 sign 且排除 sign_type。
+//
+// 与请求签名相反 —— 支付宝对"它发给我们的异步通知"签名时,串里不含 sign_type
+// (对应支付宝 SDK 的 rsaCheckV1 行为)。已用真实沙箱 TRADE_SUCCESS 通知验证:
+// 仅当同时排除 sign 与 sign_type 时,用支付宝公钥才能验签通过。
+func alipayNotifySignParams(params map[string]string) string {
+	return alipayBuildSignContent(params, true)
 }
 
 // alipaySignRSA2 用应用私钥对字符串做 SHA256withRSA 签名,返回 base64
@@ -158,11 +183,16 @@ func alipayVerifyNotifyParams(formRaw string) (map[string]string, bool) {
 	if sign == "" {
 		return nil, false
 	}
-	payload := alipaySignParams(params)
-	if !alipayVerifyRSA2(payload, sign) {
-		return nil, false
+	// 异步通知口径:排除 sign 与 sign_type(支付宝 rsaCheckV1)。
+	// 兜底再试请求签名口径(仅排除 sign),两者都属支付宝官方格式,
+	// 均使用支付宝公钥验签,不降低安全性。
+	if alipayVerifyRSA2(alipayNotifySignParams(params), sign) {
+		return params, true
 	}
-	return params, true
+	if alipayVerifyRSA2(alipaySignParams(params), sign) {
+		return params, true
+	}
+	return nil, false
 }
 
 // alipayGateway 决定实际网关(sandbox / production)

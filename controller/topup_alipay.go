@@ -81,14 +81,15 @@ func RequestAlipayPay(c *gin.Context) {
 	quota := int64(req.Amount * 500000)
 
 	topUp := &model.TopUp{
-		UserId:        id,
-		Amount:        quota,
-		Money:         float64(req.Amount),
-		TradeNo:       tradeNo,
-		PaymentMethod: model.PaymentMethodAlipay,
-		CreateTime:    time.Now().Unix(),
-		CompleteTime:  0,
-		Status:        common.TopUpStatusPending,
+		UserId:          id,
+		Amount:          quota, // 注意:此处 Amount 存的是 quota(非元),因 ¥0.01 无法用 int64 元表示
+		Money:           float64(req.Amount),
+		TradeNo:         tradeNo,
+		PaymentMethod:   model.PaymentMethodAlipay,
+		PaymentProvider: model.PaymentProviderAlipay,
+		CreateTime:      time.Now().Unix(),
+		CompleteTime:    0,
+		Status:          common.TopUpStatusPending,
 	}
 	if err := topUp.Insert(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "创建充值订单失败"})
@@ -195,13 +196,39 @@ func AlipayNotify(c *gin.Context) {
 	}
 
 	// 完成 topup
-	if err := model.Recharge(tradeNo, strconv.Itoa(topUp.UserId), c.ClientIP()); err != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 充值处理失败 trade_no=%s error=%q", tradeNo, err.Error()))
+	//
+	// 注意:不能用 model.Recharge —— 那是 Stripe 专用(内部强校验
+	// PaymentProvider == stripe,其余一律 ErrPaymentMethodMismatch)。
+	// 这里沿用 Epay 的通用路径:置成功态 + IncreaseUserQuota。
+	quotaToAdd := int(topUp.Money * common.QuotaPerUnit)
+	if quotaToAdd <= 0 {
+		// 兜底:Money 缺失时回退到创建订单时已按 quota 存储的 Amount
+		quotaToAdd = int(topUp.Amount)
+	}
+	if quotaToAdd <= 0 {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 充值额度无效 trade_no=%s money=%.4f amount=%d", tradeNo, topUp.Money, topUp.Amount))
 		c.String(http.StatusInternalServerError, "fail")
 		return
 	}
 
-	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 充值成功 trade_no=%s amount=%.2f quota=%d", tradeNo, paidMoney, topUp.Amount))
+	topUp.Status = common.TopUpStatusSuccess
+	topUp.CompleteTime = common.GetTimestamp()
+	if err := topUp.Update(); err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 更新充值订单失败 trade_no=%s error=%q", tradeNo, err.Error()))
+		c.String(http.StatusInternalServerError, "fail")
+		return
+	}
+	if err := model.IncreaseUserQuota(topUp.UserId, quotaToAdd, true); err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 更新用户额度失败 trade_no=%s user_id=%d quota=%d error=%q", tradeNo, topUp.UserId, quotaToAdd, err.Error()))
+		c.String(http.StatusInternalServerError, "fail")
+		return
+	}
+
+	model.RecordTopupLog(topUp.UserId,
+		fmt.Sprintf("支付宝充值成功,充值额度: %d,支付金额: %.2f", quotaToAdd, topUp.Money),
+		c.ClientIP(), topUp.PaymentMethod, model.PaymentProviderAlipay)
+
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 充值成功 trade_no=%s user_id=%d quota=%d money=%.2f", tradeNo, topUp.UserId, quotaToAdd, topUp.Money))
 	c.String(http.StatusOK, "success")
 }
 
