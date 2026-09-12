@@ -433,6 +433,24 @@ func updateOptionMap(key string, value string) (err error) {
 		operation_setting.MinTopUp, _ = strconv.Atoi(value)
 	case "StripeApiSecret":
 		setting.StripeApiSecret = value
+	case "AlipayAppID":
+		setting.AlipayAppID = value
+	case "AlipayPrivateKey":
+		setting.AlipayPrivateKey = value
+	case "AlipayPublicKey":
+		setting.AlipayPublicKey = value
+	case "AlipaySandbox":
+		setting.AlipaySandbox = value == "true"
+	case "AlipayGateway":
+		setting.AlipayGateway = value
+	case "AlipayReturnURL":
+		setting.AlipayReturnURL = value
+	case "AlipaySandboxGateway":
+		setting.AlipaySandboxGateway = value
+	case "AlipayMinTopUp":
+		setting.AlipayMinTopUp, _ = strconv.ParseFloat(value, 64)
+	case "AlipayUnitPrice":
+		setting.AlipayUnitPrice, _ = strconv.ParseFloat(value, 64)
 	case "StripeWebhookSecret":
 		setting.StripeWebhookSecret = value
 	case "StripePriceId":

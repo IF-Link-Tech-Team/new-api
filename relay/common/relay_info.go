@@ -81,13 +81,14 @@ type TokenCountMeta struct {
 }
 
 type RelayInfo struct {
-	TokenId           int
-	TokenKey          string
-	TokenGroup        string
-	UserId            int
-	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup         string // 用户所在分组
-	TokenUnlimited    bool
+	TokenId               int
+	TokenKey              string
+	TokenGroup            string
+	TokenUserSubscriptionId int // token 强绑定的 UserSubscription ID (>0 时强制只扣该订阅)
+	UserId                int
+	UsingGroup            string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup             string // 用户所在分组
+	TokenUnlimited        bool
 	StartTime         time.Time
 	FirstResponseTime time.Time
 	isFirstResponse   bool
@@ -481,6 +482,7 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		TokenKey:       common.GetContextKeyString(c, constant.ContextKeyTokenKey),
 		TokenUnlimited: common.GetContextKeyBool(c, constant.ContextKeyTokenUnlimited),
 		TokenGroup:     tokenGroup,
+		TokenUserSubscriptionId: common.GetContextKeyInt(c, constant.ContextKeyTokenUserSubscriptionId),
 
 		isFirstResponse: true,
 		RelayMode:       relayconstant.Path2RelayMode(c.Request.URL.Path),

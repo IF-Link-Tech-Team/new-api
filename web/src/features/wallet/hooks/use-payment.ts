@@ -27,10 +27,12 @@ import {
   calculateWaffoPancakeAmount,
   requestPayment,
   requestStripePayment,
+  requestAlipayPayment,
   isApiSuccess,
 } from '../api'
 import {
   isStripePayment,
+  isAlipayPayment,
   isWaffoPayment,
   isWaffoPancakePayment,
   submitPaymentForm,
@@ -112,7 +114,22 @@ export function usePayment() {
         setProcessing(true)
 
         const isStripe = isStripePayment(paymentType)
+        const isAlipay = isAlipayPayment(paymentType)
         const amount = Math.floor(topupAmount)
+
+        // 支付宝原生通道:单独取收银台 URL 后整页跳转
+        if (isAlipay) {
+          const alipayRes = await requestAlipayPayment({ amount })
+          if (!isApiSuccess(alipayRes) || !alipayRes.data?.pay_url) {
+            toast.error(
+              alipayRes.message || i18next.t('Payment request failed')
+            )
+            return false
+          }
+          toast.success(i18next.t('Redirecting to payment page...'))
+          window.location.href = alipayRes.data.pay_url
+          return true
+        }
 
         const response = isStripe
           ? await requestStripePayment({

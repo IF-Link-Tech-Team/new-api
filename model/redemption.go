@@ -199,6 +199,18 @@ func Redeem(key string, userId int) (quota int, err error) {
 		return 0, ErrRedeemFailed
 	}
 	RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码充值 %s，兑换码ID %d", logger.LogQuota(redemption.Quota), redemption.Id))
+
+	// Plan-bound redemption: 事务 commit 后再为用户生成一份绑定到该订阅的专属 Key。
+	// 即使 Key 生成失败也不影响套餐已发放的事实,用户可通过管理入口补发。
+	if redemption.TargetPlanId > 0 {
+		var sub UserSubscription
+		if lookupErr := DB.Where("user_id = ? AND plan_id = ?", userId, redemption.TargetPlanId).
+			Order("id desc").First(&sub).Error; lookupErr == nil && sub.Id > 0 {
+			if _, _, keyErr := CreateBoundTokenForSubscription(userId, sub.Id); keyErr != nil {
+				common.SysError(fmt.Sprintf("redemption succeeded but failed to create bound token for user %d subscription %d: %v", userId, sub.Id, keyErr))
+			}
+		}
+	}
 	return redemption.Quota, nil
 }
 
