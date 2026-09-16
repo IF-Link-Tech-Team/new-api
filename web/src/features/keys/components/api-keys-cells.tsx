@@ -157,15 +157,11 @@ export function UnlimitedQuotaBadge(props: UnlimitedQuotaBadgeProps) {
           <button
             type='button'
             className='focus-visible:ring-ring/50 -ml-1.5 cursor-help rounded-4xl focus-visible:ring-[3px] focus-visible:outline-none'
-            aria-label={`${t('Unlimited')}; ${t('Used:')} ${formattedUsed}`}
+            aria-label={`钱包额度池; ${t('Used:')} ${formattedUsed}`}
           />
         }
       >
-        <StatusBadge
-          label={t('Unlimited')}
-          variant='neutral'
-          copyable={false}
-        />
+        <StatusBadge label='钱包额度池' variant='neutral' copyable={false} />
       </PopoverTrigger>
       <PopoverContent className='w-auto p-2' side='top'>
         <span className='text-xs'>
@@ -182,7 +178,7 @@ export function ModelLimitsCell({ apiKey }: { apiKey: ApiKey }) {
   if (!apiKey.model_limits_enabled || !apiKey.model_limits) {
     return (
       <StatusBadge
-        label={t('Unlimited')}
+        label={apiKey.user_subscription_id ? '未配置' : '钱包可用模型'}
         variant='neutral'
         copyable={false}
         className='-ml-1.5'

@@ -30,6 +30,7 @@ import type {
   SubscriptionPayResponse,
   SubscriptionPayRequest,
   SelfSubscriptionData,
+  SubscriptionOrderStatus,
 } from './types'
 
 // ============================================================================
@@ -162,6 +163,13 @@ export async function paySubscriptionBalance(
   return res.data
 }
 
+export async function paySubscriptionAlipay(
+  data: SubscriptionPayRequest
+): Promise<SubscriptionPayResponse> {
+  const res = await api.post('/api/subscription/alipay/pay', data)
+  return res.data
+}
+
 // Mints a Pancake OnetimeProduct (see controller for the OnetimeProduct vs
 // SubscriptionProduct rationale) using persisted creds + StoreID.
 export async function createWaffoPancakeSubscriptionProduct(data: {
@@ -221,6 +229,17 @@ export async function getSelfSubscriptionFull(): Promise<
 
 export async function getPublicPlans(): Promise<ApiResponse<PlanRecord[]>> {
   const res = await api.get('/api/subscription/plans')
+  return res.data
+}
+
+export async function getSelfSubscriptionOrders(
+  tradeNo?: string
+): Promise<ApiResponse<SubscriptionOrderStatus[]>> {
+  const params = new URLSearchParams({ limit: '20' })
+  if (tradeNo) params.set('trade_no', tradeNo)
+  const res = await api.get(
+    `/api/subscription/self/orders?${params.toString()}`
+  )
   return res.data
 }
 

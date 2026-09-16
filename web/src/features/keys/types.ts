@@ -46,6 +46,21 @@ export const apiKeySchema = z.object({
   model_limits_enabled: z.boolean(),
   model_limits: z.string().nullish().default(''),
   allow_ips: z.string().nullish().default(''),
+  user_subscription_id: z.number().optional(),
+  entitlement_type: z.string().optional(),
+  product_type: z.string().optional(),
+  billing_multiplier: z.number().optional(),
+  price_version: z.string().optional(),
+  entitlement_name: z.string().optional(),
+  entitlement_product_code: z.string().optional(),
+  entitlement_tier: z.number().optional(),
+  entitlement_status: z.string().optional(),
+  entitlement_amount_total: z.number().optional(),
+  entitlement_amount_used: z.number().optional(),
+  entitlement_amount_remaining: z.number().optional(),
+  entitlement_start_time: z.number().optional(),
+  entitlement_end_time: z.number().optional(),
+  course_eligible: z.boolean().optional(),
 })
 
 export type ApiKey = z.infer<typeof apiKeySchema>

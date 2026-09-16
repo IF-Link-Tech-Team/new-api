@@ -96,6 +96,7 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         <Checkbox
           checked={row.getIsSelected()}
           onCheckedChange={(value) => row.toggleSelected(!!value)}
+          disabled={Boolean(row.original.user_subscription_id)}
           aria-label='Select row'
           className='translate-y-[2px]'
         />
@@ -107,9 +108,19 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
     {
       accessorKey: 'name',
       header: t('Name'),
-      cell: ({ row }) => (
-        <span className='font-medium'>{row.getValue('name')}</span>
-      ),
+      cell: ({ row }) => {
+        const apiKey = row.original
+        return (
+          <div className='min-w-0'>
+            <p className='truncate font-medium'>{row.getValue('name')}</p>
+            <p className='text-muted-foreground truncate text-xs'>
+              {apiKey.user_subscription_id
+                ? `${apiKey.entitlement_name || apiKey.product_type} · 实例 #${apiKey.user_subscription_id}`
+                : '按量余额 · 只扣钱包'}
+            </p>
+          </div>
+        )
+      },
       size: 180,
       meta: { mobileTitle: true },
     },
@@ -146,6 +157,37 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
       header: t('Quota'),
       cell: ({ row }) => {
         const apiKey = row.original
+        if (apiKey.user_subscription_id) {
+          const used = Number(apiKey.entitlement_amount_used || 0)
+          const remaining = Number(apiKey.entitlement_amount_remaining || 0)
+          const total = Number(apiKey.entitlement_amount_total || 0)
+          const percentage = total > 0 ? (remaining / total) * 100 : 0
+          return (
+            <Tooltip>
+              <TooltipTrigger render={<div className='w-[150px] space-y-1' />}>
+                <div className='flex justify-between text-xs'>
+                  <span className='font-medium tabular-nums'>
+                    {formatQuota(remaining)}
+                  </span>
+                  <span className='text-muted-foreground tabular-nums'>
+                    {formatQuota(total)}
+                  </span>
+                </div>
+                <Progress
+                  value={percentage}
+                  className={cn('h-1.5', getQuotaProgressColor(percentage))}
+                />
+              </TooltipTrigger>
+              <TooltipContent>
+                <div className='space-y-1 text-xs'>
+                  <div>权益池已用：{formatQuota(used)}</div>
+                  <div>权益池剩余：{formatQuota(remaining)}</div>
+                  <div>Key 不会改扣其他额度池</div>
+                </div>
+              </TooltipContent>
+            </Tooltip>
+          )
+        }
         if (apiKey.unlimited_quota) {
           return <UnlimitedQuotaBadge used={apiKey.used_quota} />
         }
