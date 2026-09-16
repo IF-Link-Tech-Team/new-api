@@ -100,7 +100,7 @@ func v1PackK3PlanFixture(t *testing.T, code string, price float64) *Subscription
 
 func createV1ContractUser(t *testing.T, username string) *User {
 	t.Helper()
-	user := &User{Username: username, Status: common.UserStatusEnabled, Group: "default"}
+	user := &User{Username: username, Status: common.UserStatusEnabled, Group: "default", AffCode: username}
 	require.NoError(t, DB.Create(user).Error)
 	return user
 }

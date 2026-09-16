@@ -31,9 +31,14 @@ const (
 	SubscriptionOrderTypePurchase = "purchase"
 	SubscriptionOrderTypeUpgrade  = "upgrade"
 
-	ProvisioningStatusPending     = "pending"
-	ProvisioningStatusProvisioned = "provisioned"
-	ProvisioningStatusFailed      = "failed"
+	ProvisioningStatusPending      = "pending"
+	ProvisioningStatusProvisioned  = "provisioned"
+	ProvisioningStatusFailed       = "failed"
+	ProvisioningStatusLegacyReview = "legacy_review"
+
+	LegacyOrderStateNone   = ""
+	LegacyOrderStateReview = "legacy_review"
+	LegacyOrderStateReady  = "legacy_ready"
 
 	CourseCodeV1Foundation = "cilai_v1_foundation_first_term"
 )
@@ -139,6 +144,11 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 	}
 	p.ProductType = strings.TrimSpace(p.ProductType)
 	if p.ProductType == "" {
+		return nil
+	}
+	if p.ProductType == ProductTypeLegacySubscription {
+		// Legacy plans retain their historical model scope and billing path. They
+		// are explicitly classified, but never opt into strict V1 validation.
 		return nil
 	}
 	if !RequiresStrictV1RoutePolicy(p.ProductType) {
@@ -537,11 +547,36 @@ func (c *MonthlySubscriptionCycle) BeforeUpdate(tx *gorm.DB) error {
 	return nil
 }
 
-// MigrateCilaiV1Contracts performs only deterministic metadata backfills. It
+// MigrateCilaiV1Contracts records an explicit state around the deterministic
+// backfill. The read-only preflight is performed by migrateDB before any DDL;
+// this wrapper makes a successful run idempotent and leaves a failed run
+// visible for operator recovery.
+func MigrateCilaiV1Contracts() error {
+	if _, err := PreflightCilaiV1Migration(); err != nil {
+		return err
+	}
+	state, err := getCilaiV1MigrationState()
+	if err != nil {
+		return err
+	}
+	if state != nil && state.State == CilaiV1MigrationApplied {
+		return nil
+	}
+	if err := setCilaiV1MigrationState(CilaiV1MigrationPreflightPassed, nil); err != nil {
+		return err
+	}
+	if err := backfillCilaiV1Contracts(); err != nil {
+		_ = setCilaiV1MigrationState(CilaiV1MigrationFailed, err)
+		return err
+	}
+	return setCilaiV1MigrationState(CilaiV1MigrationApplied, nil)
+}
+
+// backfillCilaiV1Contracts performs only deterministic metadata backfills. It
 // never guesses a V1 product for an unclassified legacy plan. Existing bound
 // subscriptions are made one-to-one; conflicting duplicate keys abort the
 // migration for explicit operator review instead of deleting user data.
-func MigrateCilaiV1Contracts() error {
+func backfillCilaiV1Contracts() error {
 	if DB == nil {
 		return errors.New("database is nil")
 	}
@@ -557,11 +592,28 @@ func MigrateCilaiV1Contracts() error {
 		}
 
 		var orders []SubscriptionOrder
-		if err := tx.Where("product_type <> ''").Order("id asc").Find(&orders).Error; err != nil {
+		if err := tx.Order("id asc").Find(&orders).Error; err != nil {
 			return err
 		}
 		for i := range orders {
 			order := &orders[i]
+			switch strings.ToLower(strings.TrimSpace(order.Status)) {
+			case common.TopUpStatusPending, common.TopUpStatusSuccess, common.TopUpStatusFailed, common.TopUpStatusExpired, "cancelled", "canceled":
+			default:
+				order.LegacyCompatibilityState = LegacyOrderStateReview
+				order.LegacyReviewReason = fmt.Sprintf("legacy order has unknown status %q", order.Status)
+				order.ProvisioningStatus = ProvisioningStatusLegacyReview
+				if err := tx.Save(order).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			if order.ProductType == "" {
+				if err := backfillLegacySubscriptionOrderTx(tx, order); err != nil {
+					return err
+				}
+				continue
+			}
 			if order.TargetPriceAmount > 0 && strings.TrimSpace(order.CurrencySnapshot) != "" && order.TotalAmountSnapshot > 0 {
 				continue
 			}
@@ -618,7 +670,7 @@ func MigrateCilaiV1Contracts() error {
 			}
 
 			var tokens []Token
-			if err := tx.Where("user_subscription_id = ?", sub.Id).Order("id asc").Find(&tokens).Error; err != nil {
+			if err := tx.Where("user_subscription_id = ? AND status = ?", sub.Id, common.TokenStatusEnabled).Order("id asc").Find(&tokens).Error; err != nil {
 				return err
 			}
 			if len(tokens) > 1 {
@@ -643,13 +695,14 @@ func MigrateCilaiV1Contracts() error {
 				multiplier = 1
 			}
 			if err := tx.Model(token).Updates(map[string]interface{}{
-				"entitlement_type":   productType,
-				"product_type":       productType,
-				"billing_multiplier": multiplier,
-				"price_version":      sub.PriceVersion,
-				"allowed_channels":   sub.AllowedChannels,
-				"max_upstream_cost":  sub.MaxUpstreamCost,
-				"fallback_allowed":   sub.FallbackAllowed,
+				"entitlement_type":     productType,
+				"product_type":         productType,
+				"entitlement_key_lock": fmt.Sprintf("subscription:%d", sub.Id),
+				"billing_multiplier":   multiplier,
+				"price_version":        sub.PriceVersion,
+				"allowed_channels":     sub.AllowedChannels,
+				"max_upstream_cost":    sub.MaxUpstreamCost,
+				"fallback_allowed":     sub.FallbackAllowed,
 			}).Error; err != nil {
 				return err
 			}
@@ -664,4 +717,54 @@ func MigrateCilaiV1Contracts() error {
 		}
 		return nil
 	})
+}
+
+func backfillLegacySubscriptionOrderTx(tx *gorm.DB, order *SubscriptionOrder) error {
+	if tx == nil || order == nil {
+		return errors.New("invalid legacy subscription order")
+	}
+	switch strings.ToLower(strings.TrimSpace(order.Status)) {
+	case common.TopUpStatusPending, common.TopUpStatusSuccess, common.TopUpStatusFailed, common.TopUpStatusExpired, "cancelled", "canceled":
+		// Known historical states are handled deterministically below.
+	default:
+		order.LegacyCompatibilityState = LegacyOrderStateReview
+		order.LegacyReviewReason = fmt.Sprintf("legacy order has unknown status %q", order.Status)
+		order.ProvisioningStatus = ProvisioningStatusLegacyReview
+		return tx.Save(order).Error
+	}
+	var plan SubscriptionPlan
+	if order.PlanId <= 0 || tx.Where("id = ?", order.PlanId).First(&plan).Error != nil {
+		order.LegacyCompatibilityState = LegacyOrderStateReview
+		order.LegacyReviewReason = "legacy order has no resolvable subscription plan"
+		order.ProvisioningStatus = ProvisioningStatusLegacyReview
+		return tx.Save(order).Error
+	}
+	if strings.TrimSpace(plan.ProductType) == "" {
+		if err := order.SnapshotLegacyPlan(&plan); err != nil {
+			order.LegacyCompatibilityState = LegacyOrderStateReview
+			order.LegacyReviewReason = err.Error()
+			order.ProvisioningStatus = ProvisioningStatusLegacyReview
+			return tx.Save(order).Error
+		}
+	} else {
+		order.SnapshotPlan(&plan)
+		order.LegacyCompatibilityState = LegacyOrderStateReady
+		order.LegacyReviewReason = ""
+	}
+
+	if order.Status == common.TopUpStatusSuccess && (order.UserSubscriptionId == nil || *order.UserSubscriptionId <= 0) {
+		var subscriptions []UserSubscription
+		if err := tx.Where("user_id = ? AND plan_id = ?", order.UserId, order.PlanId).Order("id asc").Find(&subscriptions).Error; err != nil {
+			return err
+		}
+		if len(subscriptions) == 1 {
+			order.UserSubscriptionId = &subscriptions[0].Id
+			order.ProvisioningStatus = ProvisioningStatusProvisioned
+		} else {
+			order.LegacyCompatibilityState = LegacyOrderStateReview
+			order.LegacyReviewReason = fmt.Sprintf("legacy successful order has %d matching subscriptions; manual linkage required", len(subscriptions))
+			order.ProvisioningStatus = ProvisioningStatusLegacyReview
+		}
+	}
+	return tx.Save(order).Error
 }

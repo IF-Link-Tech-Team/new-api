@@ -548,6 +548,10 @@ func RelayTask(c *gin.Context) {
 		var channel *model.Channel
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
+			if err := service.ValidateChannelAgainstEntitlementPolicy(lockedCh, relayInfo.OriginModelName, selectionPolicy); err != nil {
+				taskErr = service.TaskErrorWrapperLocal(errors.New("locked channel does not satisfy entitlement route policy"), "locked_channel_policy_rejected", http.StatusServiceUnavailable)
+				break
+			}
 			channel = lockedCh
 			if retryParam.GetRetry() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {

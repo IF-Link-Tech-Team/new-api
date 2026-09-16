@@ -33,7 +33,11 @@ type Token struct {
 	// > 0 时,调用只会从该订阅扣费,失败不回退钱包、不能串其他订阅;
 	// 套餐到期/耗尽后,token 调用被拒绝。
 	// == 0 时,沿用旧的 BillingPreference 选择路径(兼容)。
-	UserSubscriptionId int            `json:"user_subscription_id" gorm:"default:0;index"`
+	UserSubscriptionId int `json:"user_subscription_id" gorm:"default:0;index"`
+	// Nullable unique sentinel: wallet tokens keep NULL (multiple wallet keys
+	// are valid), while every entitlement token carries subscription:<id>.
+	// This is the database-level one-key-per-entitlement guard.
+	EntitlementKeyLock *string        `json:"-" gorm:"type:varchar(64);index:idx_tokens_entitlement_key_lock"`
 	EntitlementType    string         `json:"entitlement_type" gorm:"type:varchar(32);default:'wallet';index"`
 	ProductType        string         `json:"product_type" gorm:"type:varchar(32);default:'wallet';index"`
 	BillingMultiplier  float64        `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
@@ -45,6 +49,33 @@ type Token struct {
 }
 
 func (token *Token) BeforeCreate(tx *gorm.DB) error {
+	return token.syncEntitlementKeyLock(tx)
+}
+
+func (token *Token) BeforeSave(tx *gorm.DB) error {
+	return token.syncEntitlementKeyLock(tx)
+}
+
+func (token *Token) syncEntitlementKeyLock(tx *gorm.DB) error {
+	if token.UserSubscriptionId > 0 {
+		lock := fmt.Sprintf("subscription:%d", token.UserSubscriptionId)
+		token.EntitlementKeyLock = &lock
+		if tx != nil {
+			var count int64
+			query := tx.Model(&Token{}).Where("entitlement_key_lock = ?", lock)
+			if token.Id > 0 {
+				query = query.Where("id <> ?", token.Id)
+			}
+			if err := query.Count(&count).Error; err != nil {
+				return err
+			}
+			if count > 0 {
+				return fmt.Errorf("subscription %d already has an entitlement key", token.UserSubscriptionId)
+			}
+		}
+	} else {
+		token.EntitlementKeyLock = nil
+	}
 	if token.UserSubscriptionId == 0 {
 		if strings.TrimSpace(token.EntitlementType) == "" {
 			token.EntitlementType = ProductTypeWallet
@@ -57,6 +88,27 @@ func (token *Token) BeforeCreate(tx *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+// EnsureEntitlementKeyUniqueIndex installs the database boundary for the
+// one-entitlement/one-active-key invariant. The nullable sentinel keeps
+// legacy and wallet tokens unrestricted while entitlement tokens are unique.
+func EnsureEntitlementKeyUniqueIndex() error {
+	if DB == nil {
+		return errors.New("database is nil")
+	}
+	const indexName = "idx_tokens_entitlement_key_lock_unique"
+	if DB.Migrator().HasIndex(&Token{}, indexName) {
+		return nil
+	}
+	var statement string
+	switch {
+	case common.UsingMainDatabase(common.DatabaseTypePostgreSQL), common.UsingMainDatabase(common.DatabaseTypeSQLite):
+		statement = `CREATE UNIQUE INDEX IF NOT EXISTS idx_tokens_entitlement_key_lock_unique ON tokens (entitlement_key_lock) WHERE entitlement_key_lock IS NOT NULL`
+	default:
+		statement = `CREATE UNIQUE INDEX idx_tokens_entitlement_key_lock_unique ON tokens (entitlement_key_lock)`
+	}
+	return DB.Exec(statement).Error
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -300,6 +352,15 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	}
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
+		if token.UserSubscriptionId > 0 {
+			var binding SubscriptionKeyBinding
+			if bindingErr := DB.Where("token_id = ? AND user_subscription_id = ?", token.Id, token.UserSubscriptionId).First(&binding).Error; bindingErr != nil {
+				// A token pointing at an entitlement without the authoritative
+				// binding is not a valid credential, even if it was inserted by a
+				// direct SQL/import path that bypassed ORM hooks.
+				return token, ErrTokenInvalid
+			}
+		}
 		if token.Status == common.TokenStatusExhausted ||
 			token.Status == common.TokenStatusExpired ||
 			token.Status != common.TokenStatusEnabled {

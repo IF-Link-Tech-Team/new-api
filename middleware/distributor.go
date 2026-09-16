@@ -62,7 +62,7 @@ func Distribute() func(c *gin.Context) {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 				return
 			}
-			if selectionPolicy != nil && !model.ChannelSatisfiesPolicy(channel, modelRequest.Model, selectionPolicy) {
+			if err := service.ValidateChannelAgainstEntitlementPolicy(channel, modelRequest.Model, selectionPolicy); err != nil {
 				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "指定渠道不符合当前产品的成本规则", types.ErrorCodeModelNotFound)
 				return
 			}
@@ -124,7 +124,7 @@ func Distribute() func(c *gin.Context) {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
-						model.ChannelSatisfiesPolicy(preferred, modelRequest.Model, selectionPolicy) &&
+						service.ValidateChannelAgainstEntitlementPolicy(preferred, modelRequest.Model, selectionPolicy) == nil &&
 						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
