@@ -15,7 +15,6 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 func GetChannelConstraints(c *gin.Context) *dto.ChannelConstraints {
@@ -53,6 +52,23 @@ type RetryParam struct {
 	resetNextTry bool
 }
 
+// ValidateChannelAgainstEntitlementPolicy is the single boundary check used
+// after channel lookup (including locked-channel and retry paths). Selection
+// caches may be stale, so callers must invoke this immediately before relay.
+func ValidateChannelAgainstEntitlementPolicy(channel *model.Channel, modelName string, policy *model.ChannelSelectionPolicy) error {
+	if policy == nil {
+		return nil
+	}
+	if channel == nil || !model.ChannelSatisfiesPolicy(channel, modelName, policy) {
+		channelID := 0
+		if channel != nil {
+			channelID = channel.Id
+		}
+		return fmt.Errorf("channel %d violates entitlement route policy for model %s", channelID, modelName)
+	}
+	return nil
+}
+
 func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.ChannelSelectionPolicy, error) {
 	if ctx == nil {
 		return nil, nil
@@ -61,20 +77,7 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 	if productType == model.ProductTypeWallet {
 		price, err := model.GetCurrentProductPriceSnapshot(productType, modelName)
 		if err != nil {
-			// Compatibility gate: installations can configure wallet V1 rows
-			// incrementally. Once a row exists, both pricing and routing use its
-			// immutable version; until then the pre-V1 wallet path remains active.
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				configured, queryErr := model.HasProductPriceConfiguration(productType, modelName)
-				if queryErr != nil {
-					return nil, queryErr
-				}
-				if configured {
-					return nil, fmt.Errorf("wallet product price for model %s is disabled or not yet effective", modelName)
-				}
-				return nil, nil
-			}
-			return nil, err
+			return nil, fmt.Errorf("product price is disabled or not yet effective: %w", err)
 		}
 		var channelIds []int
 		if err := common.UnmarshalJsonStr(price.AllowedChannels, &channelIds); err != nil {

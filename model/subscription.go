@@ -304,6 +304,10 @@ type SubscriptionOrder struct {
 	QuotaResetPeriodSnapshot string  `json:"quota_reset_period_snapshot" gorm:"type:varchar(16);default:''"`
 	QuotaResetCustomSnapshot int64   `json:"quota_reset_custom_snapshot" gorm:"type:bigint;default:0"`
 	CategorySnapshot         string  `json:"category_snapshot" gorm:"type:varchar(16);default:''"`
+	// Legacy orders are explicitly classified during migration. They never
+	// masquerade as a V1 SKU, but pending paid orders remain recoverable.
+	LegacyCompatibilityState string `json:"legacy_compatibility_state" gorm:"type:varchar(32);default:'';index"`
+	LegacyReviewReason       string `json:"legacy_review_reason" gorm:"type:text"`
 }
 
 func (o *SubscriptionOrder) Insert() error {
@@ -327,7 +331,13 @@ func (o *SubscriptionOrder) Insert() error {
 		if err := validateV1ProductPriceCatalogTx(DB, plan); err != nil {
 			return err
 		}
-		o.SnapshotPlan(plan)
+		if strings.TrimSpace(plan.ProductType) == "" {
+			if err := o.SnapshotLegacyPlan(plan); err != nil {
+				return err
+			}
+		} else {
+			o.SnapshotPlan(plan)
+		}
 	}
 	return DB.Create(o).Error
 }
@@ -357,6 +367,43 @@ func (o *SubscriptionOrder) SnapshotPlan(plan *SubscriptionPlan) {
 	o.QuotaResetPeriodSnapshot = NormalizeResetPeriod(plan.QuotaResetPeriod)
 	o.QuotaResetCustomSnapshot = plan.QuotaResetCustomSeconds
 	o.CategorySnapshot = NormalizeSubscriptionCategory(plan.Category)
+}
+
+// SnapshotLegacyPlan preserves the amount/currency/model semantics of a
+// pre-V1 order while making its non-V1 status explicit. No V1 product is
+// invented from an empty historical product_type.
+func (o *SubscriptionOrder) SnapshotLegacyPlan(plan *SubscriptionPlan) error {
+	if o == nil || plan == nil || plan.Id <= 0 {
+		return errors.New("invalid legacy order snapshot")
+	}
+	if strings.TrimSpace(plan.Currency) == "" {
+		return errors.New("legacy plan currency is missing")
+	}
+	o.ProductType = ProductTypeLegacySubscription
+	o.ProductCode = fmt.Sprintf("legacy-plan-%d", plan.Id)
+	o.ProductFamily = fmt.Sprintf("legacy-plan-%d", plan.Id)
+	o.SourceTier = 0
+	o.TargetTier = 0
+	o.BillingMultiplier = 1
+	o.PriceVersion = "legacy"
+	o.ModelScope = strings.TrimSpace(plan.ModelScope)
+	o.AllowedChannels = strings.TrimSpace(plan.AllowedChannels)
+	o.MaxUpstreamCost = strings.TrimSpace(plan.MaxUpstreamCost)
+	o.FallbackAllowed = true
+	o.CourseEligible = false
+	o.PlanTitleSnapshot = strings.TrimSpace(plan.Title)
+	o.TargetPriceAmount = plan.PriceAmount
+	o.CurrencySnapshot = strings.TrimSpace(plan.Currency)
+	o.DurationUnitSnapshot = strings.TrimSpace(plan.DurationUnit)
+	o.DurationValueSnapshot = plan.DurationValue
+	o.CustomSecondsSnapshot = plan.CustomSeconds
+	o.TotalAmountSnapshot = plan.TotalAmount
+	o.QuotaResetPeriodSnapshot = NormalizeResetPeriod(plan.QuotaResetPeriod)
+	o.QuotaResetCustomSnapshot = plan.QuotaResetCustomSeconds
+	o.CategorySnapshot = NormalizeSubscriptionCategory(plan.Category)
+	o.LegacyCompatibilityState = LegacyOrderStateReady
+	o.LegacyReviewReason = ""
+	return nil
 }
 
 func (o *SubscriptionOrder) Update() error {
@@ -970,10 +1017,14 @@ func createBoundTokenForSubscriptionTx(tx *gorm.DB, userId int, subscriptionId i
 		return nil, "", fmt.Errorf("generate key: %w", err)
 	}
 	now := common.GetTimestamp()
+	productType := strings.TrimSpace(sub.ProductType)
+	if productType == "" {
+		productType = ProductTypeLegacySubscription
+	}
 	namePrefix := "权益"
-	if sub.ProductType == ProductTypeMonthlySubscription {
+	if productType == ProductTypeMonthlySubscription {
 		namePrefix = "月套餐"
-	} else if strings.HasPrefix(sub.ProductType, "pack_") {
+	} else if strings.HasPrefix(productType, "pack_") {
 		namePrefix = "流量包"
 	}
 	token := &Token{
@@ -994,13 +1045,18 @@ func createBoundTokenForSubscriptionTx(tx *gorm.DB, userId int, subscriptionId i
 		CrossGroupRetry:    false,
 		AutoGroups:         "",
 		UserSubscriptionId: subscriptionId,
-		EntitlementType:    sub.ProductType,
-		ProductType:        sub.ProductType,
-		BillingMultiplier:  sub.BillingMultiplier,
-		PriceVersion:       sub.PriceVersion,
-		AllowedChannels:    sub.AllowedChannels,
-		MaxUpstreamCost:    sub.MaxUpstreamCost,
-		FallbackAllowed:    sub.FallbackAllowed,
+		EntitlementType:    productType,
+		ProductType:        productType,
+		BillingMultiplier: func() float64 {
+			if sub.BillingMultiplier > 0 {
+				return sub.BillingMultiplier
+			}
+			return 1
+		}(),
+		PriceVersion:    sub.PriceVersion,
+		AllowedChannels: sub.AllowedChannels,
+		MaxUpstreamCost: sub.MaxUpstreamCost,
+		FallbackAllowed: sub.FallbackAllowed,
 	}
 	if err := tx.Create(token).Error; err != nil {
 		return nil, "", err
@@ -1234,6 +1290,12 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			// Idempotent recovery is safe because new orders persist the exact
 			// order -> entitlement link before becoming successful.
 			if order.UserSubscriptionId == nil || *order.UserSubscriptionId <= 0 {
+				if order.LegacyCompatibilityState != LegacyOrderStateNone {
+					// A historical success without a deterministic entitlement link
+					// is explicitly parked for manual review. Replayed notifies are
+					// acknowledged without issuing a second entitlement.
+					return nil
+				}
 				return errors.New("successful subscription order is missing entitlement linkage")
 			}
 			if _, _, err := createBoundTokenForSubscriptionTx(tx, order.UserId, *order.UserSubscriptionId); err != nil {
@@ -1538,10 +1600,10 @@ func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 
 // HasActiveUserSubscription returns whether the user has any active subscription.
 // This is a lightweight existence check to avoid heavy pre-consume transactions.
-// modelScopeMatches reports whether modelName is covered by a comma-separated
-// model scope. Entries match exact model IDs only. V1 intentionally forbids
-// series-prefix expansion because new models require an explicit cost review.
-// An empty legacy scope matches every model.
+// modelScopeMatches reports whether a V1 modelName is covered by a
+// comma-separated model scope. Entries match exact model IDs only. Legacy
+// entitlements use modelScopeMatchesForProduct and retain their historical
+// prefix behavior.
 func modelScopeMatches(scope string, modelName string) bool {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
@@ -1553,6 +1615,35 @@ func modelScopeMatches(scope string, modelName string) bool {
 			continue
 		}
 		if modelName == entry {
+			return true
+		}
+	}
+	return false
+}
+
+func modelScopeMatchesForProduct(scope string, modelName string, productType string) bool {
+	productType = strings.TrimSpace(productType)
+	if productType == "" || productType == ProductTypeLegacySubscription {
+		return legacyModelScopeMatches(scope, modelName)
+	}
+	return modelScopeMatches(scope, modelName)
+}
+
+func legacyModelScopeMatches(scope string, modelName string) bool {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return true
+	}
+	for _, entry := range strings.Split(scope, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		// Some legacy admin rows used a trailing glob marker while the
+		// historical matcher treated every scope entry as a prefix. Normalize
+		// the marker so both encodings retain their old reach.
+		entry = strings.TrimSuffix(entry, "*")
+		if modelName == entry || strings.HasPrefix(modelName, entry) {
 			return true
 		}
 	}
@@ -1590,7 +1681,7 @@ func HasActiveUserSubscriptionForModel(userId int, modelName string) (bool, erro
 		return false, err
 	}
 	for _, sub := range subs {
-		if modelScopeMatches(sub.ModelScope, modelName) {
+		if modelScopeMatchesForProduct(sub.ModelScope, modelName, sub.ProductType) {
 			return true, nil
 		}
 	}
@@ -2076,7 +2167,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 				}
 				return err
 			}
-			if !modelScopeMatches(bound.ModelScope, modelName) {
+			if !modelScopeMatchesForProduct(bound.ModelScope, modelName, bound.ProductType) {
 				return fmt.Errorf("bound subscription #%d does not support model %q (model_scope=%q)",
 					boundSubscriptionId, modelName, bound.ModelScope)
 			}
@@ -2139,7 +2230,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		for _, candidate := range subs {
 			sub := candidate
 			// 模型作用域: 套餐可限定适用模型,不匹配则跳过此套餐(回退钱包/拒绝)
-			if !modelScopeMatches(sub.ModelScope, modelName) {
+			if !modelScopeMatchesForProduct(sub.ModelScope, modelName, sub.ProductType) {
 				continue
 			}
 			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)

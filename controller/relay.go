@@ -564,8 +564,9 @@ func executeTaskSubmissionWith(
 		var channel *model.Channel
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
-			if !model.ChannelSatisfiesPolicy(lockedCh, relayInfo.OriginModelName, selectionPolicy) {
-				return nil, service.TaskErrorWrapperLocal(errors.New("locked channel violates product route policy"), "product_route_policy_failed", http.StatusServiceUnavailable)
+			if err := service.ValidateChannelAgainstEntitlementPolicy(lockedCh, relayInfo.OriginModelName, selectionPolicy); err != nil {
+				taskErr = service.TaskErrorWrapperLocal(errors.New("locked channel does not satisfy entitlement route policy"), "locked_channel_policy_rejected", http.StatusServiceUnavailable)
+				break
 			}
 			channel = lockedCh
 			policy.BeginAttempt(channel, relayInfo.UsingGroup)
