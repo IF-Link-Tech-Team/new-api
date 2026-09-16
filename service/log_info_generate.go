@@ -190,6 +190,15 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) 
 	if relayInfo.BillingSource != "" {
 		other.SetPublic("billing_source", relayInfo.BillingSource)
 	}
+	if relayInfo.ProductType != "" {
+		other.SetPublic("product_type", relayInfo.ProductType)
+	}
+	if relayInfo.ProductBillingMultiplier > 0 {
+		other.SetPublic("billing_multiplier", relayInfo.ProductBillingMultiplier)
+	}
+	if relayInfo.ProductPriceVersion != "" {
+		other.SetPublic("price_version", relayInfo.ProductPriceVersion)
+	}
 	if relayInfo.UserSetting.BillingPreference != "" {
 		other.SetPublic("billing_preference", relayInfo.UserSetting.BillingPreference)
 	}

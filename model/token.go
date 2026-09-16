@@ -34,9 +34,31 @@ type Token struct {
 	// 套餐到期/耗尽后,token 调用被拒绝。
 	// == 0 时,沿用旧的 BillingPreference 选择路径(兼容)。
 	UserSubscriptionId int            `json:"user_subscription_id" gorm:"default:0;index"`
+	EntitlementType    string         `json:"entitlement_type" gorm:"type:varchar(32);default:'wallet';index"`
+	ProductType        string         `json:"product_type" gorm:"type:varchar(32);default:'wallet';index"`
+	BillingMultiplier  float64        `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
+	PriceVersion       string         `json:"price_version" gorm:"type:varchar(64);default:''"`
+	AllowedChannels    string         `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost    string         `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed    bool           `json:"fallback_allowed"`
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
 	// 允许用此令牌查询所属用户的额度；新建令牌默认开启，已有令牌升级后保持关闭
 	AllowUserQuotaQuery bool `json:"allow_user_quota_query"`
+}
+
+func (token *Token) BeforeCreate(tx *gorm.DB) error {
+	if token.UserSubscriptionId == 0 {
+		if strings.TrimSpace(token.EntitlementType) == "" {
+			token.EntitlementType = ProductTypeWallet
+		}
+		if strings.TrimSpace(token.ProductType) == "" {
+			token.ProductType = ProductTypeWallet
+		}
+		if token.BillingMultiplier <= 0 {
+			token.BillingMultiplier = 1
+		}
+	}
+	return nil
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -115,6 +137,45 @@ func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
 	var err error
 	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(num).Offset(startIdx).Find(&tokens).Error
 	return tokens, err
+}
+
+// RotateBoundTokenKey changes only the credential material. The token row,
+// subscription binding, quota pool, expiry, model scope, and pricing snapshot
+// remain unchanged.
+func RotateBoundTokenKey(id int, userId int) (string, error) {
+	if id <= 0 || userId <= 0 {
+		return "", errors.New("invalid token id or user id")
+	}
+	var rotatedKey string
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var token Token
+		if err := lockForUpdate(tx).Where("id = ? AND user_id = ?", id, userId).First(&token).Error; err != nil {
+			return err
+		}
+		if token.UserSubscriptionId <= 0 {
+			return errors.New("only entitlement-bound keys can be rotated here")
+		}
+		var binding SubscriptionKeyBinding
+		if err := tx.Where("token_id = ? AND user_subscription_id = ?", token.Id, token.UserSubscriptionId).First(&binding).Error; err != nil {
+			return errors.New("entitlement key binding is missing")
+		}
+		key, err := common.GenerateKey()
+		if err != nil {
+			return err
+		}
+		if err := invalidateTokenCacheForMutation(token.Key); err != nil {
+			return fmt.Errorf("invalidate old credential before rotation: %w", err)
+		}
+		if err := tx.Model(&Token{}).Where("id = ? AND user_id = ?", id, userId).Update("key", key).Error; err != nil {
+			return err
+		}
+		rotatedKey = key
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return rotatedKey, err
 }
 
 // sanitizeLikePattern 校验并清洗用户输入的 LIKE 搜索模式。

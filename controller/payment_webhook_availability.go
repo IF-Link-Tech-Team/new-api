@@ -117,12 +117,14 @@ func isAlipayTopUpEnabled() bool {
 	}
 	return strings.TrimSpace(setting.AlipayAppID) != "" &&
 		strings.TrimSpace(setting.AlipayPrivateKey) != "" &&
-		strings.TrimSpace(setting.AlipayPublicKey) != ""
+		strings.TrimSpace(setting.AlipayPublicKey) != "" &&
+		strings.TrimSpace(setting.AlipaySellerID) != ""
 }
 
 func isAlipayWebhookConfigured() bool {
 	return strings.TrimSpace(setting.AlipayAppID) != "" &&
-		strings.TrimSpace(setting.AlipayPublicKey) != ""
+		strings.TrimSpace(setting.AlipayPublicKey) != "" &&
+		strings.TrimSpace(setting.AlipaySellerID) != ""
 }
 
 func isAlipayWebhookEnabled() bool {

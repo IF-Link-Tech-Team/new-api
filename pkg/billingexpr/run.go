@@ -66,6 +66,10 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 		}
 		trace.ImageCount = &imageCount
 	}
+	evaluationTime := time.Now().UTC()
+	if request.EvaluationUnix > 0 {
+		evaluationTime = time.Unix(request.EvaluationUnix, 0).UTC()
+	}
 
 	env := map[string]any{
 		"image_count": float64(imageCount),
@@ -134,11 +138,11 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 			}
 			return strings.Contains(fmt.Sprint(source), substr)
 		},
-		"hour":    func(tz string) int { return timeInZone(tz).Hour() },
-		"minute":  func(tz string) int { return timeInZone(tz).Minute() },
-		"weekday": func(tz string) int { return int(timeInZone(tz).Weekday()) },
-		"month":   func(tz string) int { return int(timeInZone(tz).Month()) },
-		"day":     func(tz string) int { return timeInZone(tz).Day() },
+		"hour":    func(tz string) int { return timeInZoneAt(evaluationTime, tz).Hour() },
+		"minute":  func(tz string) int { return timeInZoneAt(evaluationTime, tz).Minute() },
+		"weekday": func(tz string) int { return int(timeInZoneAt(evaluationTime, tz).Weekday()) },
+		"month":   func(tz string) int { return int(timeInZoneAt(evaluationTime, tz).Month()) },
+		"day":     func(tz string) int { return timeInZoneAt(evaluationTime, tz).Day() },
 		"max":     math.Max,
 		"min":     math.Min,
 		"abs":     math.Abs,
@@ -158,15 +162,19 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 }
 
 func timeInZone(tz string) time.Time {
+	return timeInZoneAt(time.Now().UTC(), tz)
+}
+
+func timeInZoneAt(at time.Time, tz string) time.Time {
 	tz = strings.TrimSpace(tz)
 	if tz == "" {
-		return time.Now().UTC()
+		return at.UTC()
 	}
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		return time.Now().UTC()
+		return at.UTC()
 	}
-	return time.Now().In(loc)
+	return at.In(loc)
 }
 
 func normalizeHeaders(headers map[string]string) map[string]string {

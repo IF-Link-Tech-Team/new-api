@@ -367,6 +367,10 @@ func migrateDB() error {
 		&SubscriptionOrder{},
 		&UserSubscription{},
 		&SubscriptionPreConsumeRecord{},
+		&ProductPrice{},
+		&SubscriptionKeyBinding{},
+		&CourseEntitlement{},
+		&MonthlySubscriptionCycle{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
@@ -397,6 +401,9 @@ func migrateDB() error {
 		if err := DB.AutoMigrate(&SubscriptionPlan{}); err != nil {
 			return err
 		}
+	}
+	if err := MigrateCilaiV1Contracts(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -533,6 +540,18 @@ func ensureSubscriptionPlanTableSQLite() error {
 ` + "`total_amount`" + ` bigint NOT NULL DEFAULT 0,
 ` + "`quota_reset_period`" + ` varchar(16) DEFAULT 'never',
 ` + "`quota_reset_custom_seconds`" + ` bigint DEFAULT 0,
+` + "`model_scope`" + ` varchar(255) DEFAULT '',
+` + "`category`" + ` varchar(16) DEFAULT 'package',
+` + "`product_type`" + ` varchar(32) DEFAULT '',
+` + "`product_code`" + ` varchar(64) DEFAULT '',
+` + "`product_family`" + ` varchar(64) DEFAULT '',
+` + "`product_tier`" + ` integer DEFAULT 0,
+` + "`billing_multiplier`" + ` decimal(8,6) NOT NULL DEFAULT 1,
+` + "`price_version`" + ` varchar(64) DEFAULT '',
+` + "`allowed_channels`" + ` text,
+` + "`max_upstream_cost`" + ` text,
+` + "`fallback_allowed`" + ` numeric DEFAULT 0,
+` + "`course_eligible`" + ` numeric DEFAULT 0,
 ` + "`created_at`" + ` bigint,
 ` + "`updated_at`" + ` bigint,
 PRIMARY KEY (` + "`id`" + `)
@@ -570,6 +589,18 @@ PRIMARY KEY (` + "`id`" + `)
 		{Name: "total_amount", DDL: "`total_amount` bigint NOT NULL DEFAULT 0"},
 		{Name: "quota_reset_period", DDL: "`quota_reset_period` varchar(16) DEFAULT 'never'"},
 		{Name: "quota_reset_custom_seconds", DDL: "`quota_reset_custom_seconds` bigint DEFAULT 0"},
+		{Name: "model_scope", DDL: "`model_scope` varchar(255) DEFAULT ''"},
+		{Name: "category", DDL: "`category` varchar(16) DEFAULT 'package'"},
+		{Name: "product_type", DDL: "`product_type` varchar(32) DEFAULT ''"},
+		{Name: "product_code", DDL: "`product_code` varchar(64) DEFAULT ''"},
+		{Name: "product_family", DDL: "`product_family` varchar(64) DEFAULT ''"},
+		{Name: "product_tier", DDL: "`product_tier` integer DEFAULT 0"},
+		{Name: "billing_multiplier", DDL: "`billing_multiplier` decimal(8,6) NOT NULL DEFAULT 1"},
+		{Name: "price_version", DDL: "`price_version` varchar(64) DEFAULT ''"},
+		{Name: "allowed_channels", DDL: "`allowed_channels` text"},
+		{Name: "max_upstream_cost", DDL: "`max_upstream_cost` text"},
+		{Name: "fallback_allowed", DDL: "`fallback_allowed` numeric DEFAULT 0"},
+		{Name: "course_eligible", DDL: "`course_eligible` numeric DEFAULT 0"},
 		{Name: "created_at", DDL: "`created_at` bigint"},
 		{Name: "updated_at", DDL: "`updated_at` bigint"},
 	}

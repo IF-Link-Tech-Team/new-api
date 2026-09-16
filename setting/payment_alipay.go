@@ -20,6 +20,11 @@ var (
 	// AlipayPublicKey 支付宝公钥 (从开放平台下载), 用于 iflink 验签支付宝 notify
 	AlipayPublicKey = ""
 
+	// AlipaySellerID is the merchant PID expected in every signed notify.
+	// It is deliberately independent from AppID and must be configured before
+	// the webhook is enabled.
+	AlipaySellerID = ""
+
 	// AlipayNotifyURL 异步通知 URL(由 code 拼接,不直接配置)
 	// e.g. https://token.iflink.tech/api/topup/alipay/notify (通用 topup)
 	//      https://token.iflink.tech/api/subscription/alipay/notify (订阅)

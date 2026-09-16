@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -47,7 +48,41 @@ type RetryParam struct {
 	ModelName    string
 	RequestPath  string
 	Retry        *int
+	Policy       *model.ChannelSelectionPolicy
 	resetNextTry bool
+}
+
+func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.ChannelSelectionPolicy, error) {
+	if ctx == nil || !model.RequiresStrictV1RoutePolicy(common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)) {
+		return nil, nil
+	}
+	allowedChannels := common.GetContextKeyString(ctx, constant.ContextKeyTokenAllowedChannels)
+	maxUpstreamCost := common.GetContextKeyString(ctx, constant.ContextKeyTokenMaxUpstreamCost)
+	if strings.TrimSpace(allowedChannels) == "" || strings.TrimSpace(maxUpstreamCost) == "" {
+		return nil, errors.New("product route policy is not configured")
+	}
+	policySnapshot, err := model.ParseProductRoutePolicy(
+		allowedChannels,
+		maxUpstreamCost,
+		common.GetContextKeyBool(ctx, constant.ContextKeyTokenFallbackAllowed),
+	)
+	if err != nil {
+		return nil, err
+	}
+	channelIds := policySnapshot.AllowedChannels[modelName]
+	maxCost, ok := policySnapshot.MaxUpstreamCost[modelName]
+	if len(channelIds) == 0 || !ok {
+		return nil, fmt.Errorf("model %s has no compliant product route", modelName)
+	}
+	allowed := make(map[int]struct{}, len(channelIds))
+	for _, channelId := range channelIds {
+		allowed[channelId] = struct{}{}
+	}
+	return &model.ChannelSelectionPolicy{
+		AllowedChannelIds: allowed,
+		MaxUpstreamCost:   maxCost,
+		RequireCost:       true,
+	}, nil
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -147,12 +182,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(
-				autoGroup,
-				param.ModelName,
-				priorityRetry,
-				filters,
-			)
+			channel, _ = model.GetRandomSatisfiedChannelWithPolicy(autoGroup, param.ModelName, priorityRetry, filters, param.Policy)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -190,12 +220,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(
-			param.TokenGroup,
-			param.ModelName,
-			param.GetRetry(),
-			filters,
-		)
+		channel, err = model.GetRandomSatisfiedChannelWithPolicy(param.TokenGroup, param.ModelName, param.GetRetry(), filters, param.Policy)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
@@ -282,6 +307,11 @@ type ChannelSelectError struct {
 // callers. The caller still applies SetupContextForSelectedChannel.
 func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam) (*model.Channel, string, *ChannelSelectError) {
 	constraints := GetChannelConstraints(c)
+	policy, policyErr := ResolveChannelSelectionPolicy(c, modelName)
+	if policyErr != nil {
+		return nil, "", &ChannelSelectError{StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, Message: "product_route_policy_unavailable"}
+	}
+	retry.Policy = policy
 	if pin, found, overridden := constraints.ResolvedPin(); found {
 		for _, lost := range overridden {
 			logger.LogWarn(c, common.LogText(
@@ -295,6 +325,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		}
 		if channel.Status != common.ChannelStatusEnabled {
 			return nil, "", pinnedChannelUnavailable(pin, http.StatusForbidden, i18n.MsgDistributorChannelDisabled)
+		}
+		if !model.ChannelSatisfiesPolicy(channel, modelName, policy) {
+			return nil, "", &ChannelSelectError{StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, Message: "product_route_policy_rejected"}
 		}
 		if ok, kind := model.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
 			return nil, "", &ChannelSelectError{
@@ -317,7 +350,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
 				affinitySatisfied, _ = model.ChannelSatisfiesFilters(preferred, modelName, constraints.Filters)
 			}
-			if affinitySatisfied {
+			if affinitySatisfied && model.ChannelSatisfiesPolicy(preferred, modelName, policy) {
 				if usingGroup == "auto" {
 					userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 					for _, g := range GetRequestAutoGroups(c, userGroup) {

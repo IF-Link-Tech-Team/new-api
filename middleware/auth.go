@@ -691,6 +691,13 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 	common.SetContextKey(c, constant.ContextKeyTokenGroup, token.Group)
 	common.SetContextKey(c, constant.ContextKeyTokenCrossGroupRetry, token.CrossGroupRetry)
 	common.SetContextKey(c, constant.ContextKeyTokenUserSubscriptionId, token.UserSubscriptionId)
+	common.SetContextKey(c, constant.ContextKeyTokenEntitlementType, token.EntitlementType)
+	common.SetContextKey(c, constant.ContextKeyTokenProductType, token.ProductType)
+	common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, token.BillingMultiplier)
+	common.SetContextKey(c, constant.ContextKeyTokenPriceVersion, token.PriceVersion)
+	common.SetContextKey(c, constant.ContextKeyTokenAllowedChannels, token.AllowedChannels)
+	common.SetContextKey(c, constant.ContextKeyTokenMaxUpstreamCost, token.MaxUpstreamCost)
+	common.SetContextKey(c, constant.ContextKeyTokenFallbackAllowed, token.FallbackAllowed)
 	if token.AutoGroups != "" {
 		autoGroups, err := token.GetAutoGroups()
 		if err != nil {

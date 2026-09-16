@@ -547,6 +547,8 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.AlipayPrivateKey = value
 	case "AlipayPublicKey":
 		setting.AlipayPublicKey = value
+	case "AlipaySellerID":
+		setting.AlipaySellerID = value
 	case "AlipaySandbox":
 		setting.AlipaySandbox = value == "true"
 	case "AlipayGateway":

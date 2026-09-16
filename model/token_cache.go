@@ -66,7 +66,7 @@ if redis.call('EXISTS', KEYS[2]) == 1 then
   return 0
 end
 if redis.call('EXISTS', KEYS[1]) == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[18])
+  redis.call('EXPIRE', KEYS[1], ARGV[27])
   return 2
 end
 redis.call('HSET', KEYS[1],
@@ -75,8 +75,11 @@ redis.call('HSET', KEYS[1],
   'UnlimitedQuota', ARGV[8], 'ModelLimitsEnabled', ARGV[9], 'ModelLimits', ARGV[10],
   'AllowIps', ARGV[11], 'Group', ARGV[12], 'CrossGroupRetry', ARGV[13],
   'AutoGroups', ARGV[14], 'RemainQuota', ARGV[15], 'UsedQuota', ARGV[16],
-  'AllowUserQuotaQuery', ARGV[17])
-redis.call('EXPIRE', KEYS[1], ARGV[18])
+  'AllowUserQuotaQuery', ARGV[17],
+  'UserSubscriptionId', ARGV[18], 'EntitlementType', ARGV[19], 'ProductType', ARGV[20],
+  'BillingMultiplier', ARGV[21], 'PriceVersion', ARGV[22], 'AllowedChannels', ARGV[23],
+  'MaxUpstreamCost', ARGV[24], 'FallbackAllowed', ARGV[25], 'CommerceCacheVersion', ARGV[26])
+redis.call('EXPIRE', KEYS[1], ARGV[27])
 return 1`
 
 	return common.RDB.Eval(context.Background(), script, []string{
@@ -88,6 +91,8 @@ return 1`
 		token.ModelLimits, allowIps, token.Group, strconv.FormatBool(token.CrossGroupRetry),
 		token.AutoGroups, token.RemainQuota, token.UsedQuota,
 		strconv.FormatBool(token.AllowUserQuotaQuery),
+		token.UserSubscriptionId, token.EntitlementType, token.ProductType, token.BillingMultiplier, token.PriceVersion,
+		token.AllowedChannels, token.MaxUpstreamCost, strconv.FormatBool(token.FallbackAllowed), 1,
 		tokenCacheTTLSeconds(),
 	).Int()
 }
@@ -96,6 +101,19 @@ return 1`
 func cacheGetTokenByKey(key string) (*Token, error) {
 	if !common.RedisEnabled {
 		return nil, fmt.Errorf("redis is not enabled")
+	}
+	version, err := common.RDB.HGet(context.Background(), getTokenCacheKey(key), "CommerceCacheVersion").Int()
+	if err != nil || version != 1 {
+		exists, existsErr := common.RDB.Exists(context.Background(), getTokenCacheKey(key)).Result()
+		if existsErr != nil {
+			return nil, existsErr
+		}
+		if exists > 0 {
+			if err := invalidateTokenCacheForMutation(key); err != nil {
+				return nil, err
+			}
+		}
+		return nil, fmt.Errorf("token cache predates commerce fields")
 	}
 	var token Token
 	if err := common.RedisHGetObj(getTokenCacheKey(key), &token); err != nil {
