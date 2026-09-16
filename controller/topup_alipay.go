@@ -11,11 +11,13 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -24,15 +26,69 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
-	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"github.com/thanhpk/randstr"
 )
 
 type TopUpAlipayPayRequest struct {
-	Amount    float64 `json:"amount"`     // 元(支持小数,沙箱测试 ¥0.01 必须 float64)
+	Amount    float64 `json:"amount"`      // 元(支持小数,沙箱测试 ¥0.01 必须 float64)
 	TopUpCode string  `json:"top_up_code"` // 兼容老 topup 字段
+}
+
+func isFrozenV1WalletAmount(amount float64) bool {
+	value := decimal.NewFromFloat(amount).Round(2)
+	return value.Equal(decimal.NewFromInt(10)) || value.Equal(decimal.NewFromInt(30)) || value.Equal(decimal.NewFromInt(50))
+}
+
+func validateAlipayNotifyIdentity(params map[string]string) error {
+	expectedAppID := strings.TrimSpace(setting.AlipayAppID)
+	if expectedAppID == "" {
+		return errors.New("Alipay AppID is not configured")
+	}
+	appID := strings.TrimSpace(params["app_id"])
+	authAppID := strings.TrimSpace(params["auth_app_id"])
+	if appID == "" && authAppID == "" {
+		return errors.New("Alipay notify is missing app_id/auth_app_id")
+	}
+	if appID != "" && appID != expectedAppID {
+		return errors.New("Alipay app_id mismatch")
+	}
+	if authAppID != "" && authAppID != expectedAppID {
+		return errors.New("Alipay auth_app_id mismatch")
+	}
+	expectedSellerID := strings.TrimSpace(setting.AlipaySellerID)
+	if expectedSellerID == "" {
+		return errors.New("Alipay seller_id is not configured")
+	}
+	if strings.TrimSpace(params["seller_id"]) != expectedSellerID {
+		return errors.New("Alipay seller_id mismatch")
+	}
+	return nil
+}
+
+func alipayPaymentReceipt(params map[string]string, payload string) (model.PaymentReceipt, error) {
+	amountText := strings.TrimSpace(params["total_amount"])
+	amount, err := decimal.NewFromString(amountText)
+	if err != nil || !amount.IsPositive() {
+		return model.PaymentReceipt{}, errors.New("Alipay total_amount is invalid")
+	}
+	currency := strings.ToUpper(strings.TrimSpace(params["currency"]))
+	if currency == "" {
+		// Domestic Alipay page-pay settles in CNY and does not always include a
+		// currency field in asynchronous notifications.
+		currency = "CNY"
+	}
+	if currency != "CNY" {
+		return model.PaymentReceipt{}, errors.New("Alipay currency must be CNY")
+	}
+	providerTradeNo := strings.TrimSpace(params["trade_no"])
+	if providerTradeNo == "" {
+		return model.PaymentReceipt{}, errors.New("Alipay trade_no is missing")
+	}
+	return model.PaymentReceipt{
+		Amount: amount, Currency: currency, ProviderTradeNo: providerTradeNo, ProviderPayload: payload,
+	}, nil
 }
 
 func RequestAlipayPay(c *gin.Context) {
@@ -69,22 +125,19 @@ func RequestAlipayPay(c *gin.Context) {
 		return
 	}
 
-	// 口径必须与 RequestEpay 一致:
-	//   前端传来的是「展示金额」(默认展示类型 USD),不是应付人民币。
-	//   应付人民币 = 展示金额 × operation_setting.Price × 分组倍率 × 折扣。
-	//   例:用户输入 10 → 应付 10 × 7.3 = ¥73.00。
-	// 直接把 req.Amount 当人民币收会导致只收 ¥10 却发放 $10 额度($1≈¥7.3),每单亏损。
-	group, err := model.GetUserGroup(id, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取用户分组失败"})
-		return
-	}
-	payMoney := getPayMoney(int64(req.Amount), group)
-	if payMoney < setting.AlipayMinTopUp {
+	// Frozen V1 wallet SKUs are CNY ¥10/¥30/¥50, face value 1:1, permanent.
+	// Native Alipay must not inherit the legacy USD display conversion or accept
+	// a caller-controlled custom amount.
+	if !isFrozenV1WalletAmount(req.Amount) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": fmt.Sprintf("最低充值金额 %.2f 元", setting.AlipayMinTopUp),
+			"message": "V1 钱包仅支持 ¥10、¥30、¥50 三档充值",
 		})
+		return
+	}
+	payMoney, _ := decimal.NewFromFloat(req.Amount).Round(2).Float64()
+	if payMoney < setting.AlipayMinTopUp {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": fmt.Sprintf("最低充值金额 %.2f 元", setting.AlipayMinTopUp)})
 		return
 	}
 
@@ -92,14 +145,9 @@ func RequestAlipayPay(c *gin.Context) {
 
 	// Amount 存「展示金额」、Money 存「实付人民币」,与 epay 的存储口径一致。
 	// 入账额度 = Amount × QuotaPerUnit(见 AlipayNotify),因此这里不能把 quota 塞进 Amount。
-	displayAmount := req.Amount
-	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
-		displayAmount = req.Amount / common.QuotaPerUnit
-	}
-
 	topUp := &model.TopUp{
 		UserId:          id,
-		Amount:          int64(displayAmount),
+		Amount:          int64(req.Amount),
 		Money:           payMoney,
 		TradeNo:         tradeNo,
 		PaymentMethod:   model.PaymentMethodAlipay,
@@ -107,6 +155,7 @@ func RequestAlipayPay(c *gin.Context) {
 		CreateTime:      time.Now().Unix(),
 		CompleteTime:    0,
 		Status:          common.TopUpStatusPending,
+		Currency:        "CNY",
 	}
 	if err := topUp.Insert(); err != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "创建充值订单失败"})
@@ -122,8 +171,8 @@ func RequestAlipayPay(c *gin.Context) {
 	biz := map[string]string{
 		"out_trade_no": tradeNo,
 		"product_code": "FAST_INSTANT_TRADE_PAY",
-		"total_amount":  fmt.Sprintf("%.2f", payMoney),
-		"subject":       fmt.Sprintf("IF.Link 钱包充值 - %s", user.Username),
+		"total_amount": fmt.Sprintf("%.2f", payMoney),
+		"subject":      fmt.Sprintf("IF.Link 钱包充值 - %s", user.Username),
 	}
 	bizJSON, _ := json.Marshal(biz)
 	form, err := alipayBuildSignedForm("alipay.trade.page.pay", string(bizJSON), notifyURL, returnURL, nil)
@@ -138,11 +187,11 @@ func RequestAlipayPay(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": gin.H{
-			"pay_url":    payURL,
-			"trade_no":   tradeNo,
-			"amount":     req.Amount, // 展示金额
-			"pay_money":  payMoney,   // 实付人民币
-			"is_mobile":  false,      // MVP 暂用 trade.page.pay(PC); 后续可加 trade.wap.pay(手机)
+			"pay_url":   payURL,
+			"trade_no":  tradeNo,
+			"amount":    req.Amount, // 展示金额
+			"pay_money": payMoney,   // 实付人民币
+			"is_mobile": false,      // MVP 暂用 trade.page.pay(PC); 后续可加 trade.wap.pay(手机)
 		},
 	})
 }
@@ -177,12 +226,23 @@ func AlipayNotify(c *gin.Context) {
 		c.String(http.StatusOK, "success") // 仍返回 success 避免重复通知
 		return
 	}
+	if err := validateAlipayNotifyIdentity(params); err != nil {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay notify 商户身份不匹配 trade_no=%s error=%q", tradeNo, err.Error()))
+		c.String(http.StatusOK, "fail")
+		return
+	}
+	receipt, err := alipayPaymentReceipt(params, string(bodyBytes))
+	if err != nil {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay notify 支付凭据无效 trade_no=%s error=%q", tradeNo, err.Error()))
+		c.String(http.StatusOK, "fail")
+		return
+	}
 
 	LockOrder(tradeNo)
 	defer UnlockOrder(tradeNo)
 
 	// Try complete subscription order first
-	if err := model.CompleteSubscriptionOrder(tradeNo, string(bodyBytes), model.PaymentProviderAlipay, params["trade_status"]); err == nil {
+	if err := model.CompleteSubscriptionOrderWithReceipt(tradeNo, model.PaymentProviderAlipay, model.PaymentMethodAlipay, receipt); err == nil {
 		logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 订阅订单处理成功 trade_no=%s", tradeNo))
 		c.String(http.StatusOK, "success")
 		return
@@ -192,59 +252,23 @@ func AlipayNotify(c *gin.Context) {
 		return
 	}
 
-	// 通用 topup 路径
-	topUp := model.GetTopUpByTradeNo(tradeNo)
-	if topUp == nil {
-		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay 充值订单不存在 trade_no=%s", tradeNo))
-		c.String(http.StatusOK, "fail")
-		return
-	}
-	if topUp.Status != common.TopUpStatusPending {
-		logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 充值订单已处理过,忽略重复通知 trade_no=%s status=%s", tradeNo, topUp.Status))
-		c.String(http.StatusOK, "success")
-		return
-	}
-
-	// 校验金额(防止伪造)
-	expectedMoney := topUp.Money
-	paidMoney, _ := strconv.ParseFloat(params["total_amount"], 64)
-	if paidMoney+0.001 < expectedMoney {
-		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay 通知金额不匹配 trade_no=%s expected=%.2f paid=%.2f", tradeNo, expectedMoney, paidMoney))
-		c.String(http.StatusOK, "fail")
-		return
-	}
-
-	// 完成 topup
-	//
-	// 注意:不能用 model.Recharge —— 那是 Stripe 专用(内部强校验
-	// PaymentProvider == stripe,其余一律 ErrPaymentMethodMismatch)。
-	// 这里沿用 Epay 的通用路径:置成功态 + IncreaseUserQuota。
-	// 口径与 EpayNotify 一致:入账额度 = 展示金额 × QuotaPerUnit。
-	// 不能改成 Money × QuotaPerUnit —— Money 是按 Price 换算后的实付人民币,
-	// 再乘一次 QuotaPerUnit 会把额度放大 Price 倍(默认 7.3 倍)。
-	quotaToAdd := int(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart())
-	if quotaToAdd <= 0 {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 充值额度无效 trade_no=%s money=%.4f amount=%d", tradeNo, topUp.Money, topUp.Amount))
+	// Wallet status and quota credit commit in one database transaction.
+	topUp, quotaToAdd, credited, err := model.CompleteTopUpPayment(tradeNo, model.PaymentProviderAlipay, receipt)
+	if err != nil {
+		if errors.Is(err, model.ErrTopUpNotFound) {
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay 充值订单不存在 trade_no=%s", tradeNo))
+			c.String(http.StatusOK, "fail")
+			return
+		}
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 充值原子入账失败 trade_no=%s error=%q", tradeNo, err.Error()))
 		c.String(http.StatusInternalServerError, "fail")
 		return
 	}
-
-	topUp.Status = common.TopUpStatusSuccess
-	topUp.CompleteTime = common.GetTimestamp()
-	if err := topUp.Update(); err != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 更新充值订单失败 trade_no=%s error=%q", tradeNo, err.Error()))
-		c.String(http.StatusInternalServerError, "fail")
-		return
+	if credited {
+		model.RecordTopupLog(topUp.UserId,
+			fmt.Sprintf("支付宝充值成功,充值额度: %d,支付金额: %.2f", quotaToAdd, topUp.Money),
+			c.ClientIP(), topUp.PaymentMethod, model.PaymentProviderAlipay)
 	}
-	if err := model.IncreaseUserQuota(topUp.UserId, quotaToAdd, true); err != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 更新用户额度失败 trade_no=%s user_id=%d quota=%d error=%q", tradeNo, topUp.UserId, quotaToAdd, err.Error()))
-		c.String(http.StatusInternalServerError, "fail")
-		return
-	}
-
-	model.RecordTopupLog(topUp.UserId,
-		fmt.Sprintf("支付宝充值成功,充值额度: %d,支付金额: %.2f", quotaToAdd, topUp.Money),
-		c.ClientIP(), topUp.PaymentMethod, model.PaymentProviderAlipay)
 
 	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 充值成功 trade_no=%s user_id=%d quota=%d money=%.2f", tradeNo, topUp.UserId, quotaToAdd, topUp.Money))
 	c.String(http.StatusOK, "success")
@@ -254,5 +278,5 @@ func AlipayNotify(c *gin.Context) {
 // 用户付款成功后浏览器跳转到此页,仅用于展示结果(实际入账以 notify 为准)
 func AlipayReturn(c *gin.Context) {
 	tradeNo := c.Query("trade_no")
-	c.Redirect(http.StatusFound, "/console/topup?alipay_return="+url.QueryEscape(tradeNo))
+	c.Redirect(http.StatusFound, paymentReturnPath("/wallet?alipay_return="+url.QueryEscape(tradeNo)))
 }

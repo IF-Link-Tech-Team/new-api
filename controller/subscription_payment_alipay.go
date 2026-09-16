@@ -20,7 +20,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -80,47 +79,31 @@ func SubscriptionRequestAlipayPay(c *gin.Context) {
 		return
 	}
 
-	if plan.MaxPurchasePerUser > 0 {
-		count, err := model.CountUserSubscriptionsByPlan(userId, plan.Id)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		if count >= int64(plan.MaxPurchasePerUser) {
-			c.JSON(http.StatusOK, gin.H{"success": false, "message": "已达到该套餐购买上限"})
-			return
-		}
-	}
-
 	tradeNo := "SUB-ALI-" + randstr.String(8)
-	order := &model.SubscriptionOrder{
-		UserId:          userId,
-		PlanId:          plan.Id,
-		Money:           plan.PriceAmount,
-		TradeNo:         tradeNo,
-		PaymentMethod:   model.PaymentMethodAlipay,
-		PaymentProvider: model.PaymentProviderAlipay,
-		CreateTime:      time.Now().Unix(),
-		Status:          common.TopUpStatusPending,
-	}
-	if err := order.Insert(); err != nil {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "创建订单失败"})
+	order, plan, err := model.CreateSubscriptionOrder(userId, plan.Id, tradeNo, model.PaymentMethodAlipay, model.PaymentProviderAlipay, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
 
 	callBack := service.GetCallbackAddress()
 	notifyURL := callBack + "/api/subscription/alipay/notify"
-	returnURL := callBack + "/api/subscription/alipay/return?trade_no=" + tradeNo
+	returnTarget := "plans"
+	if plan.Category == model.SubscriptionCategoryPackage {
+		returnTarget = "traffic-packs"
+	}
+	returnURL := callBack + "/api/subscription/alipay/return?trade_no=" + url.QueryEscape(tradeNo) + "&target=" + returnTarget
 
 	biz := map[string]string{
 		"out_trade_no": tradeNo,
 		"product_code": "FAST_INSTANT_TRADE_PAY",
-		"total_amount":  fmt.Sprintf("%.2f", plan.PriceAmount),
-		"subject":       fmt.Sprintf("IF.Link 订阅 - %s", plan.Title),
+		"total_amount": fmt.Sprintf("%.2f", order.Money),
+		"subject":      fmt.Sprintf("IF.Link 订阅 - %s", plan.Title),
 	}
 	bizJSON, _ := json.Marshal(biz)
 	form, err := alipayBuildSignedForm("alipay.trade.page.pay", string(bizJSON), notifyURL, returnURL, nil)
 	if err != nil {
+		_ = model.ExpireSubscriptionOrder(tradeNo, model.PaymentProviderAlipay)
 		logger.LogError(c.Request.Context(), fmt.Sprintf("Alipay 订阅支付签名失败 trade_no=%s error=%q", tradeNo, err.Error()))
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "签名失败"})
 		return
@@ -128,7 +111,7 @@ func SubscriptionRequestAlipayPay(c *gin.Context) {
 
 	payURL := alipayGateway() + "?" + form
 
-	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 订阅支付链接创建成功 trade_no=%s plan_id=%d user_id=%d amount=%.2f", tradeNo, plan.Id, userId, plan.PriceAmount))
+	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 订阅支付链接创建成功 trade_no=%s plan_id=%d user_id=%d amount=%.2f", tradeNo, plan.Id, userId, order.Money))
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -143,5 +126,9 @@ func SubscriptionRequestAlipayPay(c *gin.Context) {
 // SubscriptionAlipayReturn 同步跳转(GET)
 func SubscriptionAlipayReturn(c *gin.Context) {
 	tradeNo := c.Query("trade_no")
-	c.Redirect(http.StatusFound, "/console/subscription?alipay_return="+url.QueryEscape(tradeNo))
+	target := "/plans"
+	if c.Query("target") == "traffic-packs" {
+		target = "/traffic-packs"
+	}
+	c.Redirect(http.StatusFound, paymentReturnPath(target+"?alipay_return="+url.QueryEscape(tradeNo)))
 }

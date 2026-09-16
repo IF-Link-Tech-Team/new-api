@@ -27,6 +27,26 @@ type SubscriptionBalancePayRequest struct {
 	PlanId int `json:"plan_id"`
 }
 
+type SubscriptionOrderStatusDTO struct {
+	TradeNo            string  `json:"trade_no"`
+	Status             string  `json:"status"`
+	ProvisioningStatus string  `json:"provisioning_status"`
+	ProvisioningError  string  `json:"provisioning_error,omitempty"`
+	OrderType          string  `json:"order_type"`
+	ProductType        string  `json:"product_type"`
+	ProductCode        string  `json:"product_code"`
+	ProductFamily      string  `json:"product_family"`
+	SourceTier         int     `json:"source_tier"`
+	TargetTier         int     `json:"target_tier"`
+	PlanTitle          string  `json:"plan_title"`
+	Money              float64 `json:"money"`
+	Currency           string  `json:"currency"`
+	PaymentMethod      string  `json:"payment_method"`
+	UserSubscriptionId *int    `json:"user_subscription_id,omitempty"`
+	CreateTime         int64   `json:"create_time"`
+	CompleteTime       int64   `json:"complete_time"`
+}
+
 // ---- User APIs ----
 
 func GetSubscriptionPlans(c *gin.Context) {
@@ -103,6 +123,32 @@ func GetSubscriptionSelf(c *gin.Context) {
 	})
 }
 
+// GetSubscriptionSelfOrders is the recovery source for browser returns and
+// interrupted payment flows. It deliberately exposes neither provider payload
+// nor provider identifiers.
+func GetSubscriptionSelfOrders(c *gin.Context) {
+	userId := c.GetInt("id")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	orders, err := model.GetUserSubscriptionOrders(userId, c.Query("trade_no"), limit)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	result := make([]SubscriptionOrderStatusDTO, 0, len(orders))
+	for _, order := range orders {
+		result = append(result, SubscriptionOrderStatusDTO{
+			TradeNo: order.TradeNo, Status: order.Status,
+			ProvisioningStatus: order.ProvisioningStatus, ProvisioningError: order.ProvisioningError,
+			OrderType: order.OrderType, ProductType: order.ProductType, ProductCode: order.ProductCode,
+			ProductFamily: order.ProductFamily, SourceTier: order.SourceTier, TargetTier: order.TargetTier,
+			PlanTitle: order.PlanTitleSnapshot, Money: order.Money, Currency: order.CurrencySnapshot,
+			PaymentMethod: order.PaymentMethod, UserSubscriptionId: order.UserSubscriptionId,
+			CreateTime: order.CreateTime, CompleteTime: order.CompleteTime,
+		})
+	}
+	common.ApiSuccess(c, result)
+}
+
 func UpdateSubscriptionPreference(c *gin.Context) {
 	userId := c.GetInt("id")
 	var req BillingPreferenceRequest
@@ -167,6 +213,75 @@ type AdminUpsertSubscriptionPlanRequest struct {
 	Plan model.SubscriptionPlan `json:"plan"`
 }
 
+func normalizeAdminSubscriptionPlan(plan *model.SubscriptionPlan) error {
+	if plan == nil {
+		return fmt.Errorf("套餐不能为空")
+	}
+	plan.ProductType = strings.TrimSpace(plan.ProductType)
+	plan.ProductCode = strings.TrimSpace(plan.ProductCode)
+	plan.ProductFamily = strings.TrimSpace(plan.ProductFamily)
+	plan.PriceVersion = strings.TrimSpace(plan.PriceVersion)
+	plan.AllowedChannels = strings.TrimSpace(plan.AllowedChannels)
+	plan.MaxUpstreamCost = strings.TrimSpace(plan.MaxUpstreamCost)
+	plan.ModelScope = strings.TrimSpace(plan.ModelScope)
+	plan.Category = model.NormalizeSubscriptionCategory(plan.Category)
+	plan.QuotaResetPeriod = model.NormalizeResetPeriod(plan.QuotaResetPeriod)
+	if plan.ProductType != "" {
+		if plan.Currency == "" {
+			plan.Currency = "CNY"
+		}
+		plan.Currency = strings.ToUpper(strings.TrimSpace(plan.Currency))
+		if plan.AllowWalletOverflow == nil {
+			plan.AllowWalletOverflow = common.GetPointer(false)
+		}
+		if plan.BillingMultiplier <= 0 {
+			if multiplier, ok := model.ExpectedV1BillingMultiplier(plan.ProductType); ok {
+				plan.BillingMultiplier = multiplier
+			}
+		}
+	} else {
+		if plan.Currency == "" {
+			plan.Currency = "USD"
+		}
+		plan.Currency = "USD"
+		if plan.AllowWalletOverflow == nil {
+			plan.AllowWalletOverflow = common.GetPointer(true)
+		}
+	}
+	if plan.AllowBalancePay == nil {
+		plan.AllowBalancePay = common.GetPointer(true)
+	}
+	if plan.DurationUnit == "" {
+		plan.DurationUnit = model.SubscriptionDurationMonth
+	}
+	if plan.DurationValue <= 0 && plan.DurationUnit != model.SubscriptionDurationCustom {
+		plan.DurationValue = 1
+	}
+	if plan.QuotaResetPeriod == model.SubscriptionResetCustom && plan.QuotaResetCustomSeconds <= 0 {
+		return fmt.Errorf("自定义重置周期需大于0秒")
+	}
+	return plan.ValidateV1Contract()
+}
+
+func ensureUniqueProductCode(planId int, productCode string) error {
+	productCode = strings.TrimSpace(productCode)
+	if productCode == "" {
+		return nil
+	}
+	var count int64
+	query := model.DB.Model(&model.SubscriptionPlan{}).Where("product_code = ?", productCode)
+	if planId > 0 {
+		query = query.Where("id <> ?", planId)
+	}
+	if err := query.Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("product_code 已存在")
+	}
+	return nil
+}
+
 func AdminCreateSubscriptionPlan(c *gin.Context) {
 	if !requirePaymentCompliance(c) {
 		return
@@ -190,22 +305,6 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorMsg(c, "价格不能超过9999")
 		return
 	}
-	if req.Plan.Currency == "" {
-		req.Plan.Currency = "USD"
-	}
-	req.Plan.Currency = "USD"
-	if req.Plan.AllowBalancePay == nil {
-		req.Plan.AllowBalancePay = common.GetPointer(true)
-	}
-	if req.Plan.AllowWalletOverflow == nil {
-		req.Plan.AllowWalletOverflow = common.GetPointer(true)
-	}
-	if req.Plan.DurationUnit == "" {
-		req.Plan.DurationUnit = model.SubscriptionDurationMonth
-	}
-	if req.Plan.DurationValue <= 0 && req.Plan.DurationUnit != model.SubscriptionDurationCustom {
-		req.Plan.DurationValue = 1
-	}
 	if req.Plan.MaxPurchasePerUser < 0 {
 		common.ApiErrorMsg(c, "购买上限不能为负数")
 		return
@@ -228,13 +327,14 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 			return
 		}
 	}
-	req.Plan.ModelScope = strings.TrimSpace(req.Plan.ModelScope)
-	req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
-	if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
-		common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
+	if err := normalizeAdminSubscriptionPlan(&req.Plan); err != nil {
+		common.ApiError(c, err)
 		return
 	}
-	req.Plan.Category = model.NormalizeSubscriptionCategory(req.Plan.Category)
+	if err := ensureUniqueProductCode(0, req.Plan.ProductCode); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	err := model.DB.Create(&req.Plan).Error
 	if err != nil {
 		common.ApiError(c, err)
@@ -272,16 +372,6 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		return
 	}
 	req.Plan.Id = id
-	if req.Plan.Currency == "" {
-		req.Plan.Currency = "USD"
-	}
-	req.Plan.Currency = "USD"
-	if req.Plan.DurationUnit == "" {
-		req.Plan.DurationUnit = model.SubscriptionDurationMonth
-	}
-	if req.Plan.DurationValue <= 0 && req.Plan.DurationUnit != model.SubscriptionDurationCustom {
-		req.Plan.DurationValue = 1
-	}
 	if req.Plan.MaxPurchasePerUser < 0 {
 		common.ApiErrorMsg(c, "购买上限不能为负数")
 		return
@@ -304,13 +394,23 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			return
 		}
 	}
-	req.Plan.ModelScope = strings.TrimSpace(req.Plan.ModelScope)
-	req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
-	if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
-		common.ApiErrorMsg(c, "自定义重置周期需大于0秒")
+	if err := normalizeAdminSubscriptionPlan(&req.Plan); err != nil {
+		common.ApiError(c, err)
 		return
 	}
-	req.Plan.Category = model.NormalizeSubscriptionCategory(req.Plan.Category)
+	var existingPlan model.SubscriptionPlan
+	if err := model.DB.Where("id = ?", id).First(&existingPlan).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if existingPlan.ProductCode != "" && existingPlan.ProductCode != req.Plan.ProductCode {
+		common.ApiErrorMsg(c, "product_code 创建后不可修改")
+		return
+	}
+	if err := ensureUniqueProductCode(id, req.Plan.ProductCode); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// update plan (allow zero values updates with map)
@@ -335,6 +435,16 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"quota_reset_period":         req.Plan.QuotaResetPeriod,
 			"quota_reset_custom_seconds": req.Plan.QuotaResetCustomSeconds,
 			"category":                   model.NormalizeSubscriptionCategory(req.Plan.Category),
+			"product_type":               req.Plan.ProductType,
+			"product_code":               req.Plan.ProductCode,
+			"product_family":             req.Plan.ProductFamily,
+			"product_tier":               req.Plan.ProductTier,
+			"billing_multiplier":         req.Plan.BillingMultiplier,
+			"price_version":              req.Plan.PriceVersion,
+			"allowed_channels":           req.Plan.AllowedChannels,
+			"max_upstream_cost":          req.Plan.MaxUpstreamCost,
+			"fallback_allowed":           req.Plan.FallbackAllowed,
+			"course_eligible":            req.Plan.CourseEligible,
 			"updated_at":                 common.GetTimestamp(),
 		}
 		if req.Plan.AllowBalancePay != nil {

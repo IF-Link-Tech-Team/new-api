@@ -39,6 +39,14 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
+		var selectionPolicy *model.ChannelSelectionPolicy
+		if shouldSelectChannel && modelRequest.Model != "" {
+			selectionPolicy, err = service.ResolveChannelSelectionPolicy(c, modelRequest.Model)
+			if err != nil {
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "该模型当前没有符合产品成本规则的可用上游", types.ErrorCodeModelNotFound)
+				return
+			}
+		}
 		if ok {
 			id, err := strconv.Atoi(channelId.(string))
 			if err != nil {
@@ -52,6 +60,10 @@ func Distribute() func(c *gin.Context) {
 			}
 			if channel.Status != common.ChannelStatusEnabled {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
+				return
+			}
+			if selectionPolicy != nil && !model.ChannelSatisfiesPolicy(channel, modelRequest.Model, selectionPolicy) {
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "指定渠道不符合当前产品的成本规则", types.ErrorCodeModelNotFound)
 				return
 			}
 		} else {
@@ -70,7 +82,13 @@ func Distribute() func(c *gin.Context) {
 				if !ok {
 					tokenModelLimit = map[string]bool{}
 				}
-				matchName := ratio_setting.FormatMatchingModelName(modelRequest.Model) // match gpts & thinking-*
+				matchName := ratio_setting.FormatMatchingModelName(modelRequest.Model) // legacy aliases
+				productType := common.GetContextKeyString(c, constant.ContextKeyTokenProductType)
+				if model.RequiresStrictV1RoutePolicy(productType) {
+					// V1 paid products use explicit model IDs. Prefix/alias expansion
+					// would silently add models that have not passed cost review.
+					matchName = modelRequest.Model
+				}
 				if _, ok := tokenModelLimit[matchName]; !ok {
 					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
 					return
@@ -106,6 +124,7 @@ func Distribute() func(c *gin.Context) {
 					affinityUsable := false
 					preferred, err := model.CacheGetChannel(preferredChannelID)
 					if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled &&
+						model.ChannelSatisfiesPolicy(preferred, modelRequest.Model, selectionPolicy) &&
 						channelSupportsRequestPath(preferred, c.Request.URL.Path, modelRequest.Model) {
 						if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
@@ -139,6 +158,7 @@ func Distribute() func(c *gin.Context) {
 						TokenGroup:  usingGroup,
 						RequestPath: c.Request.URL.Path,
 						Retry:       common.GetPointer(0),
+						Policy:      selectionPolicy,
 					})
 					if err != nil {
 						showGroup := usingGroup

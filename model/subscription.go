@@ -197,6 +197,19 @@ type SubscriptionPlan struct {
 	// correctly even before admin sets it explicitly.
 	Category string `json:"category" gorm:"type:varchar(16);default:'package';index"`
 
+	// Frozen CILAI V1 product contract. Empty product_type keeps legacy plans
+	// readable but excludes them from the strict V1 purchase path.
+	ProductType       string  `json:"product_type" gorm:"type:varchar(32);default:'';index"`
+	ProductCode       string  `json:"product_code" gorm:"type:varchar(64);default:'';index"`
+	ProductFamily     string  `json:"product_family" gorm:"type:varchar(64);default:'';index"`
+	ProductTier       int     `json:"product_tier" gorm:"type:int;default:0"`
+	BillingMultiplier float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
+	PriceVersion      string  `json:"price_version" gorm:"type:varchar(64);default:''"`
+	AllowedChannels   string  `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost   string  `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed   bool    `json:"fallback_allowed"`
+	CourseEligible    bool    `json:"course_eligible"`
+
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
@@ -237,6 +250,9 @@ func (p *SubscriptionPlan) NormalizeDefaults() {
 	if p.AllowWalletOverflow == nil {
 		p.AllowWalletOverflow = common.GetPointer(true)
 	}
+	if p.BillingMultiplier <= 0 && strings.TrimSpace(p.ProductType) == "" {
+		p.BillingMultiplier = 1
+	}
 }
 
 // Subscription order (payment -> webhook -> create UserSubscription)
@@ -253,14 +269,94 @@ type SubscriptionOrder struct {
 	CreateTime      int64  `json:"create_time"`
 	CompleteTime    int64  `json:"complete_time"`
 
-	ProviderPayload string `json:"provider_payload" gorm:"type:text"`
+	ProviderPayload string  `json:"provider_payload" gorm:"type:text"`
+	PaidMoney       float64 `json:"paid_money" gorm:"type:decimal(10,6);not null;default:0"`
+	PaidCurrency    string  `json:"paid_currency" gorm:"type:varchar(8);default:''"`
+	ProviderTradeNo string  `json:"provider_trade_no" gorm:"type:varchar(255);default:'';index"`
+
+	OrderType          string  `json:"order_type" gorm:"type:varchar(16);default:'purchase';index"`
+	UserSubscriptionId *int    `json:"user_subscription_id" gorm:"index"`
+	ProductType        string  `json:"product_type" gorm:"type:varchar(32);default:'';index"`
+	ProductCode        string  `json:"product_code" gorm:"type:varchar(64);default:''"`
+	ProductFamily      string  `json:"product_family" gorm:"type:varchar(64);default:'';index"`
+	SourceTier         int     `json:"source_tier" gorm:"type:int;default:0"`
+	TargetTier         int     `json:"target_tier" gorm:"type:int;default:0"`
+	BillingMultiplier  float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
+	PriceVersion       string  `json:"price_version" gorm:"type:varchar(64);default:''"`
+	ModelScope         string  `json:"model_scope" gorm:"type:text"`
+	AllowedChannels    string  `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost    string  `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed    bool    `json:"fallback_allowed"`
+	CourseEligible     bool    `json:"course_eligible"`
+	ProvisioningStatus string  `json:"provisioning_status" gorm:"type:varchar(32);default:'pending';index"`
+	ProvisioningError  string  `json:"provisioning_error" gorm:"type:text"`
+
+	// Immutable commercial snapshot captured before the customer is sent to a
+	// payment provider. Completion must never read mutable price/quota/duration
+	// fields from the live plan for a V1 order.
+	PlanTitleSnapshot        string  `json:"plan_title_snapshot" gorm:"type:varchar(128);default:''"`
+	TargetPriceAmount        float64 `json:"target_price_amount" gorm:"type:decimal(10,6);not null;default:0"`
+	CurrencySnapshot         string  `json:"currency_snapshot" gorm:"type:varchar(8);default:''"`
+	DurationUnitSnapshot     string  `json:"duration_unit_snapshot" gorm:"type:varchar(16);default:''"`
+	DurationValueSnapshot    int     `json:"duration_value_snapshot" gorm:"type:int;default:0"`
+	CustomSecondsSnapshot    int64   `json:"custom_seconds_snapshot" gorm:"type:bigint;default:0"`
+	TotalAmountSnapshot      int64   `json:"total_amount_snapshot" gorm:"type:bigint;not null;default:0"`
+	QuotaResetPeriodSnapshot string  `json:"quota_reset_period_snapshot" gorm:"type:varchar(16);default:''"`
+	QuotaResetCustomSnapshot int64   `json:"quota_reset_custom_snapshot" gorm:"type:bigint;default:0"`
+	CategorySnapshot         string  `json:"category_snapshot" gorm:"type:varchar(16);default:''"`
 }
 
 func (o *SubscriptionOrder) Insert() error {
 	if o.CreateTime == 0 {
 		o.CreateTime = common.GetTimestamp()
 	}
+	if o.OrderType == "" {
+		o.OrderType = SubscriptionOrderTypePurchase
+	}
+	if o.ProvisioningStatus == "" {
+		o.ProvisioningStatus = ProvisioningStatusPending
+	}
+	if o.PlanId > 0 && o.ProductType == "" {
+		plan, err := GetSubscriptionPlanById(o.PlanId)
+		if err != nil {
+			return err
+		}
+		if err := plan.ValidateV1Contract(); err != nil {
+			return err
+		}
+		if err := validateV1ProductPriceCatalogTx(DB, plan); err != nil {
+			return err
+		}
+		o.SnapshotPlan(plan)
+	}
 	return DB.Create(o).Error
+}
+
+func (o *SubscriptionOrder) SnapshotPlan(plan *SubscriptionPlan) {
+	if o == nil || plan == nil {
+		return
+	}
+	o.ProductType = strings.TrimSpace(plan.ProductType)
+	o.ProductCode = strings.TrimSpace(plan.ProductCode)
+	o.ProductFamily = strings.TrimSpace(plan.ProductFamily)
+	o.TargetTier = plan.ProductTier
+	o.BillingMultiplier = plan.BillingMultiplier
+	o.PriceVersion = strings.TrimSpace(plan.PriceVersion)
+	o.ModelScope = strings.TrimSpace(plan.ModelScope)
+	o.AllowedChannels = strings.TrimSpace(plan.AllowedChannels)
+	o.MaxUpstreamCost = strings.TrimSpace(plan.MaxUpstreamCost)
+	o.FallbackAllowed = plan.FallbackAllowed
+	o.CourseEligible = plan.CourseEligible
+	o.PlanTitleSnapshot = strings.TrimSpace(plan.Title)
+	o.TargetPriceAmount = plan.PriceAmount
+	o.CurrencySnapshot = strings.TrimSpace(plan.Currency)
+	o.DurationUnitSnapshot = strings.TrimSpace(plan.DurationUnit)
+	o.DurationValueSnapshot = plan.DurationValue
+	o.CustomSecondsSnapshot = plan.CustomSeconds
+	o.TotalAmountSnapshot = plan.TotalAmount
+	o.QuotaResetPeriodSnapshot = NormalizeResetPeriod(plan.QuotaResetPeriod)
+	o.QuotaResetCustomSnapshot = plan.QuotaResetCustomSeconds
+	o.CategorySnapshot = NormalizeSubscriptionCategory(plan.Category)
 }
 
 func (o *SubscriptionOrder) Update() error {
@@ -276,6 +372,153 @@ func GetSubscriptionOrderByTradeNo(tradeNo string) *SubscriptionOrder {
 		return nil
 	}
 	return &order
+}
+
+// GetUserSubscriptionOrders returns only orders owned by the user. The
+// controller projects these rows to a public DTO so provider payloads never
+// leave the server. tradeNo is optional and is used by payment-return polling.
+func GetUserSubscriptionOrders(userId int, tradeNo string, limit int) ([]SubscriptionOrder, error) {
+	if userId <= 0 {
+		return nil, errors.New("invalid user id")
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	query := DB.Where("user_id = ?", userId)
+	if strings.TrimSpace(tradeNo) != "" {
+		query = query.Where("trade_no = ?", strings.TrimSpace(tradeNo))
+	}
+	var orders []SubscriptionOrder
+	if err := query.Order("id desc").Limit(limit).Find(&orders).Error; err != nil {
+		return nil, err
+	}
+	return orders, nil
+}
+
+// CreateSubscriptionOrder freezes a plan and classifies the operation as a
+// new purchase or an in-period monthly upgrade before any payment page is
+// opened. Providers with a fixed external product price must pass
+// supportsAmountOverride=false; they are rejected for upgrades because they
+// cannot safely charge the locally calculated difference.
+func CreateSubscriptionOrder(userId int, planId int, tradeNo string, paymentMethod string, paymentProvider string, supportsAmountOverride bool) (*SubscriptionOrder, *SubscriptionPlan, error) {
+	var order *SubscriptionOrder
+	var plan *SubscriptionPlan
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		order, plan, err = createSubscriptionOrderTx(tx, userId, planId, tradeNo, paymentMethod, paymentProvider, supportsAmountOverride)
+		return err
+	})
+	return order, plan, err
+}
+
+func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo string, paymentMethod string, paymentProvider string, supportsAmountOverride bool) (*SubscriptionOrder, *SubscriptionPlan, error) {
+	if tx == nil || userId <= 0 || planId <= 0 || strings.TrimSpace(tradeNo) == "" {
+		return nil, nil, errors.New("invalid subscription order args")
+	}
+	plan, err := getSubscriptionPlanByIdTx(tx, planId)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !plan.Enabled {
+		return nil, nil, errors.New("套餐未启用")
+	}
+	if plan.PriceAmount < 0 {
+		return nil, nil, errors.New("套餐价格不能为负数")
+	}
+	if err := plan.ValidateV1Contract(); err != nil {
+		return nil, nil, err
+	}
+	if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
+		return nil, nil, err
+	}
+
+	// The user row is the global serialization point for new monthly periods,
+	// upgrades, and concurrent callbacks across all three tiers.
+	var lockedUser User
+	if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&lockedUser).Error; err != nil {
+		return nil, nil, err
+	}
+
+	order := &SubscriptionOrder{
+		UserId:             userId,
+		PlanId:             plan.Id,
+		Money:              plan.PriceAmount,
+		TradeNo:            strings.TrimSpace(tradeNo),
+		PaymentMethod:      strings.TrimSpace(paymentMethod),
+		PaymentProvider:    strings.TrimSpace(paymentProvider),
+		Status:             common.TopUpStatusPending,
+		CreateTime:         common.GetTimestamp(),
+		OrderType:          SubscriptionOrderTypePurchase,
+		ProvisioningStatus: ProvisioningStatusPending,
+	}
+	order.SnapshotPlan(plan)
+
+	if plan.ProductType == ProductTypeMonthlySubscription {
+		now := getDBTimestampTx(tx)
+		var cycle MonthlySubscriptionCycle
+		result := lockForUpdate(tx).Where("user_id = ? AND product_family = ?", userId, plan.ProductFamily).Limit(1).Find(&cycle)
+		if result.Error != nil {
+			return nil, nil, result.Error
+		}
+		if result.RowsAffected > 0 && cycle.SubscriptionId > 0 && cycle.ExpiresAt > now {
+			var current UserSubscription
+			if err := lockForUpdate(tx).Where("id = ? AND user_id = ?", cycle.SubscriptionId, userId).First(&current).Error; err != nil {
+				return nil, nil, err
+			}
+			if current.Status != "active" || current.EndTime <= now || current.ProductFamily != plan.ProductFamily {
+				return nil, nil, errors.New("月套餐周期记录与权益状态不一致")
+			}
+			if plan.ProductTier <= current.ProductTier {
+				return nil, nil, errors.New("当前周期不可重复购买或降档，只能补差升级")
+			}
+			if !supportsAmountOverride {
+				return nil, nil, errors.New("该支付方式不支持月套餐补差升级，请使用支付宝、易支付或余额")
+			}
+			currentPrice := current.PriceAmountSnapshot
+			if currentPrice <= 0 {
+				var sourcePlan SubscriptionPlan
+				if err := tx.Where("id = ?", current.PlanId).First(&sourcePlan).Error; err != nil {
+					return nil, nil, errors.New("原月套餐缺少不可变价格快照，无法安全计算升级差价")
+				}
+				currentPrice = sourcePlan.PriceAmount
+			}
+			delta := decimal.NewFromFloat(plan.PriceAmount).Sub(decimal.NewFromFloat(currentPrice))
+			if !delta.IsPositive() {
+				return nil, nil, errors.New("月套餐升级差价必须大于零")
+			}
+			order.Money, _ = delta.Float64()
+			order.OrderType = SubscriptionOrderTypeUpgrade
+			order.SourceTier = current.ProductTier
+			order.TargetTier = plan.ProductTier
+			order.UserSubscriptionId = &current.Id
+
+			var pendingCount int64
+			if err := tx.Model(&SubscriptionOrder{}).
+				Where("user_id = ? AND product_family = ? AND order_type = ? AND status = ?", userId, plan.ProductFamily, SubscriptionOrderTypeUpgrade, common.TopUpStatusPending).
+				Count(&pendingCount).Error; err != nil {
+				return nil, nil, err
+			}
+			if pendingCount > 0 {
+				return nil, nil, errors.New("已有待支付的月套餐升级订单")
+			}
+		}
+	}
+
+	if order.OrderType == SubscriptionOrderTypePurchase && plan.MaxPurchasePerUser > 0 {
+		var count int64
+		if err := tx.Model(&UserSubscription{}).
+			Where("user_id = ? AND plan_id = ?", userId, plan.Id).
+			Count(&count).Error; err != nil {
+			return nil, nil, err
+		}
+		if count >= int64(plan.MaxPurchasePerUser) {
+			return nil, nil, errors.New("已达到该套餐购买上限")
+		}
+	}
+	if err := tx.Create(order).Error; err != nil {
+		return nil, nil, err
+	}
+	return order, plan, nil
 }
 
 // User subscription instance
@@ -317,6 +560,20 @@ type UserSubscription struct {
 	// billing falls back to the user's wallet (when AllowWalletOverflow=true)
 	// or rejects the request.
 	DailyQuotaLimit int64 `json:"daily_quota_limit" gorm:"type:bigint;not null;default:0"`
+
+	ProductType         string  `json:"product_type" gorm:"type:varchar(32);default:'';index"`
+	ProductCode         string  `json:"product_code" gorm:"type:varchar(64);default:''"`
+	ProductFamily       string  `json:"product_family" gorm:"type:varchar(64);default:'';index:idx_user_product_cycle,priority:2"`
+	ProductTier         int     `json:"product_tier" gorm:"type:int;default:0"`
+	BillingMultiplier   float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
+	PriceVersion        string  `json:"price_version" gorm:"type:varchar(64);default:''"`
+	AllowedChannels     string  `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost     string  `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed     bool    `json:"fallback_allowed"`
+	CourseEligible      bool    `json:"course_eligible"`
+	PeriodId            string  `json:"period_id" gorm:"type:varchar(64);default:'';index"`
+	PriceAmountSnapshot float64 `json:"price_amount_snapshot" gorm:"type:decimal(10,6);not null;default:0"`
+	CurrencySnapshot    string  `json:"currency_snapshot" gorm:"type:varchar(8);default:''"`
 
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
@@ -533,6 +790,34 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if userId <= 0 {
 		return nil, errors.New("invalid user id")
 	}
+	plan.NormalizeDefaults()
+	if err := plan.ValidateV1Contract(); err != nil {
+		return nil, err
+	}
+	if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
+		return nil, err
+	}
+	nowUnix := getDBTimestampTx(tx)
+	var monthlyCycle *MonthlySubscriptionCycle
+	periodId := ""
+	if plan.ProductType == ProductTypeMonthlySubscription {
+		// Lock the user row first. This serializes all monthly tiers for the user
+		// and closes the cross-SKU concurrent-purchase race on every supported DB.
+		var lockedUser User
+		if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&lockedUser).Error; err != nil {
+			return nil, err
+		}
+		var cycle MonthlySubscriptionCycle
+		result := tx.Where("user_id = ? AND product_family = ?", userId, plan.ProductFamily).Limit(1).Find(&cycle)
+		if result.Error != nil {
+			return nil, result.Error
+		}
+		if result.RowsAffected > 0 && cycle.ExpiresAt > nowUnix && cycle.SubscriptionId > 0 {
+			return nil, errors.New("当前 30 天周期已有月套餐，只允许补差升级")
+		}
+		monthlyCycle = &cycle
+		periodId = fmt.Sprintf("M%d-%d-%s", userId, nowUnix, common.GetRandomString(8))
+	}
 	if plan.MaxPurchasePerUser > 0 {
 		var count int64
 		if err := tx.Model(&UserSubscription{}).
@@ -544,7 +829,6 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 			return nil, errors.New("已达到该套餐购买上限")
 		}
 	}
-	nowUnix := GetDBTimestamp()
 	now := time.Unix(nowUnix, 0)
 	endUnix, err := calcPlanEndTime(now, plan)
 	if err != nil {
@@ -591,13 +875,64 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		DowngradeGroup:      strings.TrimSpace(plan.DowngradeGroup),
 		AllowWalletOverflow: allowWalletOverflow,
 		ModelScope:          strings.TrimSpace(plan.ModelScope),
+		ProductType:         strings.TrimSpace(plan.ProductType),
+		ProductCode:         strings.TrimSpace(plan.ProductCode),
+		ProductFamily:       strings.TrimSpace(plan.ProductFamily),
+		ProductTier:         plan.ProductTier,
+		BillingMultiplier:   plan.BillingMultiplier,
+		PriceVersion:        strings.TrimSpace(plan.PriceVersion),
+		AllowedChannels:     strings.TrimSpace(plan.AllowedChannels),
+		MaxUpstreamCost:     strings.TrimSpace(plan.MaxUpstreamCost),
+		FallbackAllowed:     plan.FallbackAllowed,
+		CourseEligible:      plan.CourseEligible,
+		PeriodId:            periodId,
+		PriceAmountSnapshot: plan.PriceAmount,
+		CurrencySnapshot:    strings.TrimSpace(plan.Currency),
 		CreatedAt:           common.GetTimestamp(),
 		UpdatedAt:           common.GetTimestamp(),
 	}
 	if err := tx.Create(sub).Error; err != nil {
 		return nil, err
 	}
+	if monthlyCycle != nil {
+		monthlyCycle.UserId = userId
+		monthlyCycle.ProductFamily = plan.ProductFamily
+		monthlyCycle.PeriodId = periodId
+		monthlyCycle.SubscriptionId = sub.Id
+		monthlyCycle.StartedAt = sub.StartTime
+		monthlyCycle.ExpiresAt = sub.EndTime
+		monthlyCycle.CurrentTier = sub.ProductTier
+		monthlyCycle.UpgradeHistory = "[]"
+		if monthlyCycle.Id == 0 {
+			if err := tx.Create(monthlyCycle).Error; err != nil {
+				return nil, err
+			}
+		} else if err := tx.Save(monthlyCycle).Error; err != nil {
+			return nil, err
+		}
+	}
+	if sub.CourseEligible {
+		if err := grantV1CourseEntitlementTx(tx, sub, source); err != nil {
+			return nil, err
+		}
+	}
 	return sub, nil
+}
+
+func grantV1CourseEntitlementTx(tx *gorm.DB, sub *UserSubscription, source string) error {
+	if tx == nil || sub == nil || sub.Id <= 0 || sub.UserId <= 0 {
+		return errors.New("invalid course entitlement args")
+	}
+	grant := CourseEntitlement{
+		UserId:             sub.UserId,
+		UserSubscriptionId: sub.Id,
+		CourseCode:         CourseCodeV1Foundation,
+		Source:             strings.TrimSpace(source),
+		GrantedAt:          common.GetTimestamp(),
+		Status:             "active",
+	}
+	return tx.Where("user_id = ? AND course_code = ?", grant.UserId, grant.CourseCode).
+		FirstOrCreate(&grant).Error
 }
 
 // CreateBoundTokenForSubscription 在已落库的 UserSubscription 上, 给用户生成一个
@@ -606,25 +941,46 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 // 时间与订阅 end_time 一致(订阅到期后 token 自动失效)。
 //
 // 调用方必须保证 subscriptionId 是已 commit 的、status=active 的、属于 userId 的订阅。
-func CreateBoundTokenForSubscription(userId int, subscriptionId int) (*Token, string, error) {
+func createBoundTokenForSubscriptionTx(tx *gorm.DB, userId int, subscriptionId int) (*Token, string, error) {
+	if tx == nil {
+		return nil, "", errors.New("tx is nil")
+	}
 	if userId <= 0 || subscriptionId <= 0 {
 		return nil, "", errors.New("invalid args")
 	}
 	var sub UserSubscription
-	if err := DB.Where("id = ? AND user_id = ? AND status = ?", subscriptionId, userId, "active").
+	if err := lockForUpdate(tx).Where("id = ? AND user_id = ? AND status = ?", subscriptionId, userId, "active").
 		First(&sub).Error; err != nil {
 		return nil, "", fmt.Errorf("subscription #%d not found / not active: %w", subscriptionId, err)
+	}
+	var existingBinding SubscriptionKeyBinding
+	result := tx.Where("user_subscription_id = ?", subscriptionId).Limit(1).Find(&existingBinding)
+	if result.Error != nil {
+		return nil, "", result.Error
+	}
+	if result.RowsAffected > 0 {
+		var existingToken Token
+		if err := tx.Where("id = ? AND user_id = ?", existingBinding.TokenId, userId).First(&existingToken).Error; err != nil {
+			return nil, "", fmt.Errorf("subscription #%d has an invalid key binding: %w", subscriptionId, err)
+		}
+		return &existingToken, existingToken.Key, nil
 	}
 	key, err := common.GenerateKey()
 	if err != nil {
 		return nil, "", fmt.Errorf("generate key: %w", err)
 	}
 	now := common.GetTimestamp()
+	namePrefix := "权益"
+	if sub.ProductType == ProductTypeMonthlySubscription {
+		namePrefix = "月套餐"
+	} else if strings.HasPrefix(sub.ProductType, "pack_") {
+		namePrefix = "流量包"
+	}
 	token := &Token{
 		UserId:             userId,
 		Key:                key,
 		Status:             1,
-		Name:               fmt.Sprintf("套餐 #%d 专属 Key", subscriptionId),
+		Name:               fmt.Sprintf("%s #%d 专属 Key", namePrefix, subscriptionId),
 		CreatedTime:        now,
 		AccessedTime:       now,
 		ExpiredTime:        sub.EndTime,
@@ -638,11 +994,49 @@ func CreateBoundTokenForSubscription(userId int, subscriptionId int) (*Token, st
 		CrossGroupRetry:    false,
 		AutoGroups:         "",
 		UserSubscriptionId: subscriptionId,
+		EntitlementType:    sub.ProductType,
+		ProductType:        sub.ProductType,
+		BillingMultiplier:  sub.BillingMultiplier,
+		PriceVersion:       sub.PriceVersion,
+		AllowedChannels:    sub.AllowedChannels,
+		MaxUpstreamCost:    sub.MaxUpstreamCost,
+		FallbackAllowed:    sub.FallbackAllowed,
 	}
-	if err := DB.Create(token).Error; err != nil {
+	if err := tx.Create(token).Error; err != nil {
+		return nil, "", err
+	}
+	binding := &SubscriptionKeyBinding{
+		UserId:             userId,
+		UserSubscriptionId: subscriptionId,
+		TokenId:            token.Id,
+	}
+	if err := tx.Create(binding).Error; err != nil {
 		return nil, "", err
 	}
 	return token, key, nil
+}
+
+func CreateBoundTokenForSubscription(userId int, subscriptionId int) (*Token, string, error) {
+	var token *Token
+	var key string
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		token, key, err = createBoundTokenForSubscriptionTx(tx, userId, subscriptionId)
+		return err
+	})
+	return token, key, err
+}
+
+func createProvisionedSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *SubscriptionPlan, source string) (*UserSubscription, *Token, error) {
+	sub, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, source)
+	if err != nil {
+		return nil, nil, err
+	}
+	token, _, err := createBoundTokenForSubscriptionTx(tx, userId, sub.Id)
+	if err != nil {
+		return nil, nil, err
+	}
+	return sub, token, nil
 }
 
 func refreshSubscriptionUserGroupCache(userId int, operation string) {
@@ -651,10 +1045,166 @@ func refreshSubscriptionUserGroupCache(userId int, operation string) {
 	}
 }
 
+func provisionPlanFromOrder(order *SubscriptionOrder, livePlan *SubscriptionPlan) (*SubscriptionPlan, error) {
+	if order == nil || livePlan == nil {
+		return nil, errors.New("invalid order plan snapshot")
+	}
+	plan := *livePlan
+	if order.ProductType == "" {
+		return &plan, nil
+	}
+	plan.Title = order.PlanTitleSnapshot
+	plan.PriceAmount = order.TargetPriceAmount
+	plan.Currency = order.CurrencySnapshot
+	plan.DurationUnit = order.DurationUnitSnapshot
+	plan.DurationValue = order.DurationValueSnapshot
+	plan.CustomSeconds = order.CustomSecondsSnapshot
+	plan.TotalAmount = order.TotalAmountSnapshot
+	plan.QuotaResetPeriod = order.QuotaResetPeriodSnapshot
+	plan.QuotaResetCustomSeconds = order.QuotaResetCustomSnapshot
+	plan.Category = order.CategorySnapshot
+	plan.ProductType = order.ProductType
+	plan.ProductCode = order.ProductCode
+	plan.ProductFamily = order.ProductFamily
+	plan.ProductTier = order.TargetTier
+	plan.BillingMultiplier = order.BillingMultiplier
+	plan.PriceVersion = order.PriceVersion
+	plan.ModelScope = order.ModelScope
+	plan.AllowedChannels = order.AllowedChannels
+	plan.MaxUpstreamCost = order.MaxUpstreamCost
+	plan.FallbackAllowed = order.FallbackAllowed
+	plan.CourseEligible = order.CourseEligible
+	allowWalletOverflow := false
+	plan.AllowWalletOverflow = &allowWalletOverflow
+	if err := plan.ValidateV1Contract(); err != nil {
+		return nil, fmt.Errorf("invalid immutable order snapshot: %w", err)
+	}
+	return &plan, nil
+}
+
+type monthlyUpgradeHistoryItem struct {
+	TradeNo     string  `json:"trade_no"`
+	SourceTier  int     `json:"source_tier"`
+	TargetTier  int     `json:"target_tier"`
+	Amount      float64 `json:"amount"`
+	CompletedAt int64   `json:"completed_at"`
+}
+
+func upgradeMonthlySubscriptionTx(tx *gorm.DB, order *SubscriptionOrder, targetPlan *SubscriptionPlan) (*UserSubscription, error) {
+	if tx == nil || order == nil || targetPlan == nil || order.UserSubscriptionId == nil || *order.UserSubscriptionId <= 0 {
+		return nil, errors.New("invalid monthly upgrade args")
+	}
+	if order.OrderType != SubscriptionOrderTypeUpgrade || targetPlan.ProductType != ProductTypeMonthlySubscription {
+		return nil, errors.New("order is not a monthly upgrade")
+	}
+	now := getDBTimestampTx(tx)
+	var sub UserSubscription
+	if err := lockForUpdate(tx).Where("id = ? AND user_id = ?", *order.UserSubscriptionId, order.UserId).First(&sub).Error; err != nil {
+		return nil, err
+	}
+	if sub.Status != "active" || sub.EndTime <= now {
+		return nil, errors.New("月套餐已失效，不能补差升级")
+	}
+	if sub.ProductType != ProductTypeMonthlySubscription || sub.ProductFamily != order.ProductFamily || sub.PeriodId == "" {
+		return nil, errors.New("升级订单与月套餐权益不匹配")
+	}
+	if sub.ProductTier != order.SourceTier || targetPlan.ProductTier != order.TargetTier || targetPlan.ProductTier <= sub.ProductTier {
+		return nil, errors.New("月套餐档位已变化，升级订单已失效")
+	}
+	quotaDelta := targetPlan.TotalAmount - sub.AmountTotal
+	if quotaDelta <= 0 {
+		return nil, errors.New("月套餐升级额度差必须大于零")
+	}
+
+	var cycle MonthlySubscriptionCycle
+	if err := lockForUpdate(tx).Where("user_id = ? AND product_family = ?", order.UserId, order.ProductFamily).First(&cycle).Error; err != nil {
+		return nil, err
+	}
+	if cycle.SubscriptionId != sub.Id || cycle.PeriodId != sub.PeriodId || cycle.ExpiresAt != sub.EndTime || cycle.CurrentTier != sub.ProductTier {
+		return nil, errors.New("月套餐周期状态已变化，升级订单已失效")
+	}
+
+	// Only the face-value difference is appended. AmountUsed, StartTime,
+	// EndTime, PeriodId and the bound key's identity remain untouched.
+	sub.AmountTotal += quotaDelta
+	sub.PlanId = targetPlan.Id
+	sub.ModelScope = strings.TrimSpace(targetPlan.ModelScope)
+	sub.ProductCode = strings.TrimSpace(targetPlan.ProductCode)
+	sub.ProductTier = targetPlan.ProductTier
+	sub.BillingMultiplier = targetPlan.BillingMultiplier
+	sub.PriceVersion = strings.TrimSpace(targetPlan.PriceVersion)
+	sub.AllowedChannels = strings.TrimSpace(targetPlan.AllowedChannels)
+	sub.MaxUpstreamCost = strings.TrimSpace(targetPlan.MaxUpstreamCost)
+	sub.FallbackAllowed = targetPlan.FallbackAllowed
+	sub.CourseEligible = targetPlan.CourseEligible
+	sub.PriceAmountSnapshot = targetPlan.PriceAmount
+	sub.CurrencySnapshot = strings.TrimSpace(targetPlan.Currency)
+	if err := tx.Save(&sub).Error; err != nil {
+		return nil, err
+	}
+
+	var binding SubscriptionKeyBinding
+	if err := lockForUpdate(tx).Where("user_subscription_id = ?", sub.Id).First(&binding).Error; err != nil {
+		return nil, fmt.Errorf("monthly subscription key binding missing: %w", err)
+	}
+	var token Token
+	if err := lockForUpdate(tx).Where("id = ? AND user_id = ? AND user_subscription_id = ?", binding.TokenId, sub.UserId, sub.Id).First(&token).Error; err != nil {
+		return nil, fmt.Errorf("monthly subscription key missing: %w", err)
+	}
+	keyBefore := token.Key
+	expiresBefore := token.ExpiredTime
+	token.Name = fmt.Sprintf("%s 专属 Key", targetPlan.Title)
+	token.ModelLimits = strings.TrimSpace(targetPlan.ModelScope)
+	token.ModelLimitsEnabled = token.ModelLimits != ""
+	token.EntitlementType = ProductTypeMonthlySubscription
+	token.ProductType = ProductTypeMonthlySubscription
+	token.BillingMultiplier = targetPlan.BillingMultiplier
+	token.PriceVersion = strings.TrimSpace(targetPlan.PriceVersion)
+	token.AllowedChannels = strings.TrimSpace(targetPlan.AllowedChannels)
+	token.MaxUpstreamCost = strings.TrimSpace(targetPlan.MaxUpstreamCost)
+	token.FallbackAllowed = targetPlan.FallbackAllowed
+	if err := tx.Save(&token).Error; err != nil {
+		return nil, err
+	}
+	if token.Key != keyBefore || token.ExpiredTime != expiresBefore || token.UserSubscriptionId != sub.Id {
+		return nil, errors.New("monthly upgrade attempted to change key identity or expiry")
+	}
+
+	var history []monthlyUpgradeHistoryItem
+	if strings.TrimSpace(cycle.UpgradeHistory) != "" {
+		if err := common.UnmarshalJsonStr(cycle.UpgradeHistory, &history); err != nil {
+			return nil, fmt.Errorf("invalid monthly upgrade history: %w", err)
+		}
+	}
+	history = append(history, monthlyUpgradeHistoryItem{
+		TradeNo: order.TradeNo, SourceTier: order.SourceTier, TargetTier: order.TargetTier,
+		Amount: order.Money, CompletedAt: now,
+	})
+	cycle.CurrentTier = targetPlan.ProductTier
+	cycle.UpgradeHistory = common.GetJsonString(history)
+	if err := tx.Save(&cycle).Error; err != nil {
+		return nil, err
+	}
+	if sub.CourseEligible {
+		if err := grantV1CourseEntitlementTx(tx, &sub, "upgrade"); err != nil {
+			return nil, err
+		}
+	}
+	return &sub, nil
+}
+
 // Complete a subscription order (idempotent). Creates a UserSubscription snapshot from the plan.
 // expectedPaymentProvider guards against cross-gateway callback attacks (empty skips the check).
 // actualPaymentMethod updates the order's PaymentMethod to reflect the real payment type used (empty skips update).
 func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedPaymentProvider string, actualPaymentMethod string) error {
+	return completeSubscriptionOrder(tradeNo, providerPayload, expectedPaymentProvider, actualPaymentMethod, nil)
+}
+
+func CompleteSubscriptionOrderWithReceipt(tradeNo string, expectedPaymentProvider string, actualPaymentMethod string, receipt PaymentReceipt) error {
+	return completeSubscriptionOrder(tradeNo, receipt.ProviderPayload, expectedPaymentProvider, actualPaymentMethod, &receipt)
+}
+
+func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedPaymentProvider string, actualPaymentMethod string, receipt *PaymentReceipt) error {
 	if tradeNo == "" {
 		return errors.New("tradeNo is empty")
 	}
@@ -667,7 +1217,6 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	var logMoney float64
 	var logPaymentMethod string
 	var upgradeGroup string
-	var completedPlanId int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order SubscriptionOrder
 		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
@@ -676,23 +1225,47 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		if expectedPaymentProvider != "" && order.PaymentProvider != expectedPaymentProvider {
 			return ErrPaymentMethodMismatch
 		}
+		if receipt != nil {
+			if err := validatePaymentReceipt(order.Money, order.CurrencySnapshot, receipt); err != nil {
+				return err
+			}
+		}
 		if order.Status == common.TopUpStatusSuccess {
-			// 幂等: 重复回调直接返回成功,但仍需要为该订单已发放的 subscription 生成绑定 Key。
-			completedPlanId = order.PlanId
+			// Idempotent recovery is safe because new orders persist the exact
+			// order -> entitlement link before becoming successful.
+			if order.UserSubscriptionId == nil || *order.UserSubscriptionId <= 0 {
+				return errors.New("successful subscription order is missing entitlement linkage")
+			}
+			if _, _, err := createBoundTokenForSubscriptionTx(tx, order.UserId, *order.UserSubscriptionId); err != nil {
+				return err
+			}
+			if order.ProvisioningStatus != ProvisioningStatusProvisioned {
+				order.ProvisioningStatus = ProvisioningStatusProvisioned
+				order.ProvisioningError = ""
+				return tx.Save(&order).Error
+			}
 			return nil
 		}
 		if order.Status != common.TopUpStatusPending {
 			return ErrSubscriptionOrderStatusInvalid
 		}
-		completedPlanId = order.PlanId
-		plan, err := GetSubscriptionPlanById(order.PlanId)
+		plan, err := getSubscriptionPlanByIdTx(tx, order.PlanId)
 		if err != nil {
 			return err
 		}
 		if !plan.Enabled {
 			// still allow completion for already purchased orders
 		}
-		subscription, err := CreateUserSubscriptionFromPlanTx(tx, order.UserId, plan, "order")
+		provisionPlan, err := provisionPlanFromOrder(&order, plan)
+		if err != nil {
+			return err
+		}
+		var subscription *UserSubscription
+		if order.OrderType == SubscriptionOrderTypeUpgrade {
+			subscription, err = upgradeMonthlySubscriptionTx(tx, &order, provisionPlan)
+		} else {
+			subscription, _, err = createProvisionedSubscriptionFromPlanTx(tx, order.UserId, provisionPlan, "order")
+		}
 		if err != nil {
 			return err
 		}
@@ -703,6 +1276,9 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			return err
 		}
 		order.Status = common.TopUpStatusSuccess
+		order.UserSubscriptionId = &subscription.Id
+		order.ProvisioningStatus = ProvisioningStatusProvisioned
+		order.ProvisioningError = ""
 		order.CompleteTime = common.GetTimestamp()
 		if providerPayload != "" {
 			order.ProviderPayload = providerPayload
@@ -710,11 +1286,16 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		if actualPaymentMethod != "" && order.PaymentMethod != actualPaymentMethod {
 			order.PaymentMethod = actualPaymentMethod
 		}
+		if receipt != nil {
+			order.PaidMoney, _ = receipt.Amount.Float64()
+			order.PaidCurrency = strings.ToUpper(strings.TrimSpace(receipt.Currency))
+			order.ProviderTradeNo = strings.TrimSpace(receipt.ProviderTradeNo)
+		}
 		if err := tx.Save(&order).Error; err != nil {
 			return err
 		}
 		logUserId = order.UserId
-		logPlanTitle = plan.Title
+		logPlanTitle = provisionPlan.Title
 		logMoney = order.Money
 		logPaymentMethod = order.PaymentMethod
 		return nil
@@ -728,15 +1309,6 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	if logUserId > 0 {
 		msg := fmt.Sprintf("订阅购买成功，套餐: %s，支付金额: %.2f，支付方式: %s", logPlanTitle, logMoney, logPaymentMethod)
 		RecordLog(logUserId, LogTypeTopup, msg)
-		// 事务提交后, 为用户生成一份绑定到该套餐的专属 Key。
-		// 失败仅记日志,不影响订单已完成的事实。
-		var sub UserSubscription
-		if lookupErr := DB.Where("user_id = ? AND plan_id = ?", logUserId, completedPlanId).
-			Order("id desc").First(&sub).Error; lookupErr == nil && sub.Id > 0 {
-			if _, _, keyErr := CreateBoundTokenForSubscription(logUserId, sub.Id); keyErr != nil {
-				common.SysError(fmt.Sprintf("order PAID succeeded but failed to create bound token for user %d subscription %d: %v", logUserId, sub.Id, keyErr))
-			}
-		}
 	}
 	return nil
 }
@@ -813,7 +1385,7 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 	}
 	groupChanged := false
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		subscription, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "admin")
+		subscription, _, err := createProvisionedSubscriptionFromPlanTx(tx, userId, plan, "admin")
 		if err == nil {
 			groupChanged = subscription.PrevUserGroup != ""
 		}
@@ -854,21 +1426,17 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 	var chargedQuota int
 	var upgradeGroup string
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		plan, err := getSubscriptionPlanByIdTx(tx, planId)
+		now := common.GetTimestamp()
+		tradeNo := fmt.Sprintf("SUBBALUSR%dNO%s%d", userId, common.GetRandomString(6), time.Now().UnixNano())
+		order, plan, err := createSubscriptionOrderTx(tx, userId, planId, tradeNo, PaymentMethodBalance, PaymentProviderBalance, true)
 		if err != nil {
 			return err
-		}
-		if !plan.Enabled {
-			return errors.New("套餐未启用")
-		}
-		if plan.PriceAmount < 0 {
-			return errors.New("套餐价格不能为负数")
 		}
 		if plan.AllowBalancePay != nil && !*plan.AllowBalancePay {
 			return errors.New("该套餐不允许使用余额兑换")
 		}
 
-		requiredQuota, err := calcSubscriptionBalanceQuota(plan.PriceAmount)
+		requiredQuota, err := calcSubscriptionBalanceQuota(order.Money)
 		if err != nil {
 			return err
 		}
@@ -887,31 +1455,26 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			}
 		}
 
-		subscription, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, PaymentMethodBalance)
+		order.ProviderPayload = fmt.Sprintf("charged_quota=%d", requiredQuota)
+		var subscription *UserSubscription
+		if order.OrderType == SubscriptionOrderTypeUpgrade {
+			subscription, err = upgradeMonthlySubscriptionTx(tx, order, plan)
+		} else {
+			subscription, _, err = createProvisionedSubscriptionFromPlanTx(tx, userId, plan, PaymentMethodBalance)
+		}
 		if err != nil {
 			return err
 		}
-
-		now := common.GetTimestamp()
-		tradeNo := fmt.Sprintf("SUBBALUSR%dNO%s%d", userId, common.GetRandomString(6), time.Now().UnixNano())
-		order := &SubscriptionOrder{
-			UserId:          userId,
-			PlanId:          plan.Id,
-			Money:           plan.PriceAmount,
-			TradeNo:         tradeNo,
-			PaymentMethod:   PaymentMethodBalance,
-			PaymentProvider: PaymentProviderBalance,
-			Status:          common.TopUpStatusSuccess,
-			CreateTime:      now,
-			CompleteTime:    now,
-			ProviderPayload: fmt.Sprintf("charged_quota=%d", requiredQuota),
-		}
-		if err := tx.Create(order).Error; err != nil {
+		order.UserSubscriptionId = &subscription.Id
+		order.Status = common.TopUpStatusSuccess
+		order.CompleteTime = now
+		order.ProvisioningStatus = ProvisioningStatusProvisioned
+		if err := tx.Save(order).Error; err != nil {
 			return err
 		}
 
 		logPlanTitle = plan.Title
-		logMoney = plan.PriceAmount
+		logMoney = order.Money
 		chargedQuota = requiredQuota
 		if subscription.PrevUserGroup != "" {
 			upgradeGroup = strings.TrimSpace(subscription.UpgradeGroup)
@@ -954,8 +1517,9 @@ func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 // HasActiveUserSubscription returns whether the user has any active subscription.
 // This is a lightweight existence check to avoid heavy pre-consume transactions.
 // modelScopeMatches reports whether modelName is covered by a comma-separated
-// model scope. Entries match exactly or as prefixes (e.g. "deepseek-v4" covers
-// "deepseek-v4-pro-202606"). An empty scope matches every model.
+// model scope. Entries match exact model IDs only. V1 intentionally forbids
+// series-prefix expansion because new models require an explicit cost review.
+// An empty legacy scope matches every model.
 func modelScopeMatches(scope string, modelName string) bool {
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
@@ -966,7 +1530,7 @@ func modelScopeMatches(scope string, modelName string) bool {
 		if entry == "" {
 			continue
 		}
-		if modelName == entry || strings.HasPrefix(modelName, entry) {
+		if modelName == entry {
 			return true
 		}
 	}
@@ -1432,9 +1996,12 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 // PreConsumeUserSubscription pre-consumes from any active subscription total quota.
 //
 // boundSubscriptionId == 0: 兼容模式,按 userId 找所有匹配 modelName 的 active 订阅,
-//   按 end_time asc + amount 充足 选择一个扣费(原有逻辑)。
+//
+//	按 end_time asc + amount 充足 选择一个扣费(原有逻辑)。
+//
 // boundSubscriptionId > 0: 强绑定模式,只从该 ID 的订阅扣费(用于 token 强绑定场景),
-//   即使其他订阅也匹配也不会被选用,失败直接报错(不会回退钱包)。
+//
+//	即使其他订阅也匹配也不会被选用,失败直接报错(不会回退钱包)。
 func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64, boundSubscriptionId int) (*SubscriptionPreConsumeResult, error) {
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")

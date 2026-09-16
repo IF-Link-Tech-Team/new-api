@@ -106,6 +106,10 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 }
 
 func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+	return GetChannelWithPolicy(group, model, retry, requestPath, nil)
+}
+
+func GetChannelWithPolicy(group string, model string, retry int, requestPath string, policy *ChannelSelectionPolicy) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
@@ -122,6 +126,29 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	if policy != nil && len(abilities) > 0 {
+		channelIds := make([]int, 0, len(abilities))
+		for _, ability := range abilities {
+			channelIds = append(channelIds, ability.ChannelId)
+		}
+		var candidates []*Channel
+		if err := DB.Where("id IN ?", channelIds).Find(&candidates).Error; err != nil {
+			return nil, err
+		}
+		allowed := make(map[int]struct{}, len(candidates))
+		for _, candidate := range candidates {
+			if ChannelSatisfiesPolicy(candidate, model, policy) {
+				allowed[candidate.Id] = struct{}{}
+			}
+		}
+		filtered := make([]Ability, 0, len(abilities))
+		for _, ability := range abilities {
+			if _, ok := allowed[ability.ChannelId]; ok {
+				filtered = append(filtered, ability)
+			}
+		}
+		abilities = filtered
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one

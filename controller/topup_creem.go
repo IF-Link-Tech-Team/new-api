@@ -9,15 +9,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
-	"io"
-	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/thanhpk/randstr"
 )
 
@@ -302,7 +305,17 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 	// Try complete subscription order first
 	LockOrder(referenceId)
 	defer UnlockOrder(referenceId)
-	if err := model.CompleteSubscriptionOrder(referenceId, common.GetJsonString(event), model.PaymentProviderCreem, ""); err == nil {
+	providerTradeNo := strings.TrimSpace(event.Object.Order.Transaction)
+	if providerTradeNo == "" {
+		providerTradeNo = strings.TrimSpace(event.Object.Order.Id)
+	}
+	receipt := model.PaymentReceipt{
+		Amount:          decimal.NewFromInt(int64(event.Object.Order.AmountPaid)).Div(decimal.NewFromInt(100)),
+		Currency:        event.Object.Order.Currency,
+		ProviderTradeNo: providerTradeNo,
+		ProviderPayload: common.GetJsonString(event),
+	}
+	if err := model.CompleteSubscriptionOrderWithReceipt(referenceId, model.PaymentProviderCreem, "", receipt); err == nil {
 		logger.LogInfo(c.Request.Context(), fmt.Sprintf("Creem 订阅订单处理成功 trade_no=%s creem_order_id=%s", referenceId, event.Object.Order.Id))
 		c.Status(http.StatusOK)
 		return

@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
+	"github.com/shopspring/decimal"
 )
 
 type SubscriptionEpayPayRequest struct {
@@ -51,18 +52,6 @@ func SubscriptionRequestEpay(c *gin.Context) {
 	}
 
 	userId := c.GetInt("id")
-	if plan.MaxPurchasePerUser > 0 {
-		count, err := model.CountUserSubscriptionsByPlan(userId, plan.Id)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		if count >= int64(plan.MaxPurchasePerUser) {
-			common.ApiErrorMsg(c, "已达到该套餐购买上限")
-			return
-		}
-	}
-
 	callBackAddress := service.GetCallbackAddress()
 	returnUrl, err := url.Parse(callBackAddress + "/api/subscription/epay/return")
 	if err != nil {
@@ -84,25 +73,16 @@ func SubscriptionRequestEpay(c *gin.Context) {
 		return
 	}
 
-	order := &model.SubscriptionOrder{
-		UserId:          userId,
-		PlanId:          plan.Id,
-		Money:           plan.PriceAmount,
-		TradeNo:         tradeNo,
-		PaymentMethod:   req.PaymentMethod,
-		PaymentProvider: model.PaymentProviderEpay,
-		CreateTime:      time.Now().Unix(),
-		Status:          common.TopUpStatusPending,
-	}
-	if err := order.Insert(); err != nil {
-		common.ApiErrorMsg(c, "创建订单失败")
+	order, plan, err := model.CreateSubscriptionOrder(userId, plan.Id, tradeNo, req.PaymentMethod, model.PaymentProviderEpay, true)
+	if err != nil {
+		common.ApiErrorMsg(c, err.Error())
 		return
 	}
 	uri, params, err := client.Purchase(&epay.PurchaseArgs{
 		Type:           req.PaymentMethod,
 		ServiceTradeNo: tradeNo,
 		Name:           fmt.Sprintf("SUB:%s", plan.Title),
-		Money:          strconv.FormatFloat(plan.PriceAmount, 'f', 2, 64),
+		Money:          strconv.FormatFloat(order.Money, 'f', 2, 64),
 		Device:         epay.PC,
 		NotifyUrl:      notifyUrl,
 		ReturnUrl:      returnUrl,
@@ -160,7 +140,14 @@ func SubscriptionEpayNotify(c *gin.Context) {
 	LockOrder(verifyInfo.ServiceTradeNo)
 	defer UnlockOrder(verifyInfo.ServiceTradeNo)
 
-	if err := model.CompleteSubscriptionOrder(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo), model.PaymentProviderEpay, verifyInfo.Type); err != nil {
+	paidAmount, err := decimal.NewFromString(verifyInfo.Money)
+	if err != nil || !paidAmount.IsPositive() || verifyInfo.TradeNo == "" {
+		_, _ = c.Writer.Write([]byte("fail"))
+		return
+	}
+	if err := model.CompleteSubscriptionOrderWithReceipt(verifyInfo.ServiceTradeNo, model.PaymentProviderEpay, verifyInfo.Type, model.PaymentReceipt{
+		Amount: paidAmount, Currency: "CNY", ProviderTradeNo: verifyInfo.TradeNo, ProviderPayload: common.GetJsonString(verifyInfo),
+	}); err != nil {
 		_, _ = c.Writer.Write([]byte("fail"))
 		return
 	}
@@ -207,9 +194,16 @@ func SubscriptionEpayReturn(c *gin.Context) {
 		return
 	}
 	if verifyInfo.TradeStatus == epay.StatusTradeSuccess {
+		paidAmount, parseErr := decimal.NewFromString(verifyInfo.Money)
+		if parseErr != nil || !paidAmount.IsPositive() || verifyInfo.TradeNo == "" {
+			c.Redirect(http.StatusFound, paymentReturnPath("/wallet?pay=fail"))
+			return
+		}
 		LockOrder(verifyInfo.ServiceTradeNo)
 		defer UnlockOrder(verifyInfo.ServiceTradeNo)
-		if err := model.CompleteSubscriptionOrder(verifyInfo.ServiceTradeNo, common.GetJsonString(verifyInfo), model.PaymentProviderEpay, verifyInfo.Type); err != nil {
+		if err := model.CompleteSubscriptionOrderWithReceipt(verifyInfo.ServiceTradeNo, model.PaymentProviderEpay, verifyInfo.Type, model.PaymentReceipt{
+			Amount: paidAmount, Currency: "CNY", ProviderTradeNo: verifyInfo.TradeNo, ProviderPayload: common.GetJsonString(verifyInfo),
+		}); err != nil {
 			c.Redirect(http.StatusFound, paymentReturnPath("/wallet?pay=fail"))
 			return
 		}

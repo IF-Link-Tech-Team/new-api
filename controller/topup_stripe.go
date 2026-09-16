@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stripe/stripe-go/v81"
 	"github.com/stripe/stripe-go/v81/checkout/session"
 	"github.com/stripe/stripe-go/v81/webhook"
@@ -270,7 +271,22 @@ func fulfillOrder(ctx context.Context, event stripe.Event, referenceId string, c
 		"currency":     strings.ToUpper(event.GetObjectValue("currency")),
 		"event_type":   string(event.Type),
 	}
-	if err := model.CompleteSubscriptionOrder(referenceId, common.GetJsonString(payload), model.PaymentProviderStripe, ""); err == nil {
+	amountMinor, parseErr := decimal.NewFromString(event.GetObjectValue("amount_total"))
+	if parseErr != nil {
+		logger.LogError(ctx, fmt.Sprintf("Stripe 回调金额无效 trade_no=%s amount_total=%q event_type=%s client_ip=%s", referenceId, event.GetObjectValue("amount_total"), string(event.Type), callerIp))
+		return
+	}
+	providerTradeNo := strings.TrimSpace(event.GetObjectValue("payment_intent"))
+	if providerTradeNo == "" {
+		providerTradeNo = strings.TrimSpace(event.GetObjectValue("id"))
+	}
+	receipt := model.PaymentReceipt{
+		Amount:          amountMinor.Div(decimal.NewFromInt(100)),
+		Currency:        strings.ToUpper(event.GetObjectValue("currency")),
+		ProviderTradeNo: providerTradeNo,
+		ProviderPayload: common.GetJsonString(payload),
+	}
+	if err := model.CompleteSubscriptionOrderWithReceipt(referenceId, model.PaymentProviderStripe, "", receipt); err == nil {
 		logger.LogInfo(ctx, fmt.Sprintf("Stripe 订阅订单处理成功 trade_no=%s event_type=%s client_ip=%s", referenceId, string(event.Type), callerIp))
 		return
 	} else if err != nil && !errors.Is(err, model.ErrSubscriptionOrderNotFound) {

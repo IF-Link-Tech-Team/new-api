@@ -81,17 +81,24 @@ type TokenCountMeta struct {
 }
 
 type RelayInfo struct {
-	TokenId               int
-	TokenKey              string
-	TokenGroup            string
-	TokenUserSubscriptionId int // token 强绑定的 UserSubscription ID (>0 时强制只扣该订阅)
-	UserId                int
-	UsingGroup            string // 使用的分组，当auto跨分组重试时，会变动
-	UserGroup             string // 用户所在分组
-	TokenUnlimited        bool
-	StartTime         time.Time
-	FirstResponseTime time.Time
-	isFirstResponse   bool
+	TokenId                  int
+	TokenKey                 string
+	TokenGroup               string
+	TokenUserSubscriptionId  int // token 强绑定的 UserSubscription ID (>0 时强制只扣该订阅)
+	TokenEntitlementType     string
+	ProductType              string
+	ProductBillingMultiplier float64
+	ProductPriceVersion      string
+	ProductAllowedChannels   string
+	ProductMaxUpstreamCost   string
+	ProductFallbackAllowed   bool
+	UserId                   int
+	UsingGroup               string // 使用的分组，当auto跨分组重试时，会变动
+	UserGroup                string // 用户所在分组
+	TokenUnlimited           bool
+	StartTime                time.Time
+	FirstResponseTime        time.Time
+	isFirstResponse          bool
 	//SendLastReasoningResponse bool
 	IsStream               bool
 	IsGeminiBatchEmbedding bool
@@ -478,11 +485,18 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 
 		OriginModelName: common.GetContextKeyString(c, constant.ContextKeyOriginalModel),
 
-		TokenId:        common.GetContextKeyInt(c, constant.ContextKeyTokenId),
-		TokenKey:       common.GetContextKeyString(c, constant.ContextKeyTokenKey),
-		TokenUnlimited: common.GetContextKeyBool(c, constant.ContextKeyTokenUnlimited),
-		TokenGroup:     tokenGroup,
-		TokenUserSubscriptionId: common.GetContextKeyInt(c, constant.ContextKeyTokenUserSubscriptionId),
+		TokenId:                  common.GetContextKeyInt(c, constant.ContextKeyTokenId),
+		TokenKey:                 common.GetContextKeyString(c, constant.ContextKeyTokenKey),
+		TokenUnlimited:           common.GetContextKeyBool(c, constant.ContextKeyTokenUnlimited),
+		TokenGroup:               tokenGroup,
+		TokenUserSubscriptionId:  common.GetContextKeyInt(c, constant.ContextKeyTokenUserSubscriptionId),
+		TokenEntitlementType:     common.GetContextKeyString(c, constant.ContextKeyTokenEntitlementType),
+		ProductType:              common.GetContextKeyString(c, constant.ContextKeyTokenProductType),
+		ProductBillingMultiplier: c.GetFloat64(string(constant.ContextKeyTokenBillingMultiplier)),
+		ProductPriceVersion:      common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion),
+		ProductAllowedChannels:   common.GetContextKeyString(c, constant.ContextKeyTokenAllowedChannels),
+		ProductMaxUpstreamCost:   common.GetContextKeyString(c, constant.ContextKeyTokenMaxUpstreamCost),
+		ProductFallbackAllowed:   common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed),
 
 		isFirstResponse: true,
 		RelayMode:       relayconstant.Path2RelayMode(c.Request.URL.Path),
@@ -500,6 +514,12 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 			//promptTokens: common.GetContextKeyInt(c, constant.ContextKeyPromptTokens),
 			estimatePromptTokens: common.GetContextKeyInt(c, constant.ContextKeyEstimatedTokens),
 		},
+	}
+	if info.ProductBillingMultiplier <= 0 {
+		info.ProductBillingMultiplier = 1
+	}
+	if info.ProductType == "" && info.TokenUserSubscriptionId == 0 {
+		info.ProductType = "wallet"
 	}
 
 	if info.RelayMode == relayconstant.RelayModeUnknown {
