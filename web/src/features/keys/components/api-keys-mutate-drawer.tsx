@@ -656,7 +656,7 @@ export function ApiKeysMutateDrawer({
                   <FormItem className={sideDrawerSwitchItemClassName()}>
                     <div className='flex flex-col gap-0.5'>
                       <FormLabel className='text-sm'>
-                        {t('Unlimited Quota')}
+                        不设置 Key 级额度上限（仍受钱包余额限制）
                       </FormLabel>
                       <FormDescription className='text-xs'>
                         {t('Enable unlimited quota for this API key')}

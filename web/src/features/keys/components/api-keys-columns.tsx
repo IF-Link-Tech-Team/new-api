@@ -95,6 +95,7 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
           <Checkbox
             checked={row.getIsSelected()}
             onCheckedChange={(value) => row.toggleSelected(!!value)}
+            disabled={Boolean(row.original.user_subscription_id)}
             aria-label={t('Select row')}
             className='translate-y-[2px]'
           />
@@ -107,7 +108,14 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         accessorKey: 'name',
         header: t('Name'),
         cell: ({ row }) => (
-          <span className='font-medium'>{row.getValue('name')}</span>
+          <div className='min-w-0'>
+            <p className='truncate font-medium'>{row.getValue('name')}</p>
+            <p className='text-muted-foreground truncate text-xs'>
+              {row.original.user_subscription_id
+                ? `${row.original.entitlement_name || row.original.product_type} · #${row.original.user_subscription_id}`
+                : t('Wallet balance only')}
+            </p>
+          </div>
         ),
         size: 180,
         meta: { mobileTitle: true },

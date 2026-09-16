@@ -134,6 +134,8 @@ export interface WaffoPayMethod {
 export interface TopupInfo {
   /** Whether online topup is enabled */
   enable_online_topup: boolean
+  /** Whether native Alipay page-pay is available */
+  enable_alipay_topup?: boolean
   /** Whether Stripe topup is enabled */
   enable_stripe_topup: boolean
   /** Available payment methods */

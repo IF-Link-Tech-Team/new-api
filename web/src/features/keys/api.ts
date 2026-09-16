@@ -116,6 +116,13 @@ export async function fetchTokenKey(
   return res.data
 }
 
+export async function rotateEntitlementToken(
+  id: number
+): Promise<{ success: boolean; message?: string; data?: { key: string } }> {
+  const res = await api.post(`/api/token/${id}/rotate`)
+  return res.data
+}
+
 // Batch fetch real (unmasked) keys for multiple tokens
 export async function fetchTokenKeysBatch(ids: number[]): Promise<{
   success: boolean

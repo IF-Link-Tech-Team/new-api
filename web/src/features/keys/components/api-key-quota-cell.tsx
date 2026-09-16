@@ -39,10 +39,18 @@ export function ApiKeyQuotaCell(props: ApiKeyQuotaCellProps) {
   useSystemConfigStore((state) => state.config.currency)
   const { meta: currency } = getCurrencyDisplay()
   const quotaUnit = currency.kind === 'tokens' ? t('Tokens') : currency.symbol
-  const used = props.apiKey.used_quota
-  const remaining = props.apiKey.remain_quota
-  const total = used + remaining
-  const hasProgress = !props.apiKey.unlimited_quota && total > 0
+  const isEntitlement = Boolean(props.apiKey.user_subscription_id)
+  const unlimited = !isEntitlement && props.apiKey.unlimited_quota
+  const used = isEntitlement
+    ? Number(props.apiKey.entitlement_amount_used || 0)
+    : props.apiKey.used_quota
+  const remaining = isEntitlement
+    ? Number(props.apiKey.entitlement_amount_remaining || 0)
+    : props.apiKey.remain_quota
+  const total = isEntitlement
+    ? Number(props.apiKey.entitlement_amount_total || 0)
+    : used + remaining
+  const hasProgress = !unlimited && total > 0
   const percentage = hasProgress
     ? Math.min(100, Math.max(0, (remaining / total) * 100))
     : 0
@@ -68,16 +76,16 @@ export function ApiKeyQuotaCell(props: ApiKeyQuotaCellProps) {
   const remainingDescription = hasProgress
     ? `${t('Remaining')} ${formattedRemaining}; ${t('Remaining percentage')} ${formattedPercentage}%`
     : `${t('Remaining')} ${formattedRemaining}`
-  const triggerLabel = props.apiKey.unlimited_quota
+  const triggerLabel = unlimited
     ? `${t('Unlimited')}; ${usageDescription}`
     : `${remainingDescription}; ${usageDescription}`
 
   const details = []
-  if (!props.apiKey.unlimited_quota) {
+  if (!unlimited) {
     details.push({ label: t('Remaining'), value: formattedRemaining })
   }
   details.push({ label: t('Used amount'), value: formattedUsed })
-  if (!props.apiKey.unlimited_quota) {
+  if (!unlimited) {
     details.push({ label: t('Current total quota'), value: formattedTotal })
   }
   if (hasProgress) {
@@ -85,6 +93,17 @@ export function ApiKeyQuotaCell(props: ApiKeyQuotaCellProps) {
       label: t('Remaining percentage'),
       value: `${formattedPercentage}%`,
     })
+  }
+
+  let description = t(
+    'Total = used + remaining. It is not an initial allocation or a periodic budget; changing the remaining quota changes the total and percentage.'
+  )
+  if (isEntitlement) {
+    description = t('This key uses only its bound entitlement quota.')
+  } else if (unlimited) {
+    description = t(
+      'This API key has no quota limit. Requests still require available wallet or subscription quota.'
+    )
   }
 
   return (
@@ -96,21 +115,13 @@ export function ApiKeyQuotaCell(props: ApiKeyQuotaCellProps) {
           : triggerLabel
       }
       details={details}
-      description={
-        props.apiKey.unlimited_quota
-          ? t(
-              'This API key has no quota limit. Requests still require available wallet or subscription quota.'
-            )
-          : t(
-              'Total = used + remaining. It is not an initial allocation or a periodic budget; changing the remaining quota changes the total and percentage.'
-            )
-      }
+      description={description}
       className={
         props.variant === 'card' ? 'space-y-2.5' : 'max-w-45 space-y-1.5'
       }
       triggerClassName={props.variant === 'card' ? 'py-0' : undefined}
       afterTrigger={
-        !props.apiKey.unlimited_quota && (
+        !unlimited && (
           <Progress
             value={percentage}
             aria-label={t('Remaining percentage')}
@@ -143,16 +154,12 @@ export function ApiKeyQuotaCell(props: ApiKeyQuotaCellProps) {
             props.variant === 'card'
               ? 'text-right text-sm leading-5 font-normal'
               : 'text-left font-medium',
-            !props.apiKey.unlimited_quota && 'tabular-nums',
-            !props.apiKey.unlimited_quota &&
-              remaining < 0 &&
-              'text-destructive',
-            remaining === 0 &&
-              !props.apiKey.unlimited_quota &&
-              'text-muted-foreground'
+            !unlimited && 'tabular-nums',
+            !unlimited && remaining < 0 && 'text-destructive',
+            remaining === 0 && !unlimited && 'text-muted-foreground'
           )}
         >
-          {props.apiKey.unlimited_quota ? t('Unlimited') : formattedRemaining}
+          {unlimited ? t('Unlimited') : formattedRemaining}
         </span>
         {props.variant === 'card' && (
           <span className='text-muted-foreground'>{t('Used amount')}</span>
