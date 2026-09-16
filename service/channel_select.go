@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type RetryParam struct {
@@ -23,7 +24,52 @@ type RetryParam struct {
 }
 
 func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.ChannelSelectionPolicy, error) {
-	if ctx == nil || !model.RequiresStrictV1RoutePolicy(common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)) {
+	if ctx == nil {
+		return nil, nil
+	}
+	productType := common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)
+	if productType == model.ProductTypeWallet {
+		price, err := model.GetCurrentProductPriceSnapshot(productType, modelName)
+		if err != nil {
+			// Compatibility gate: installations can configure wallet V1 rows
+			// incrementally. Once a row exists, both pricing and routing use its
+			// immutable version; until then the pre-V1 wallet path remains active.
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				configured, queryErr := model.HasProductPriceConfiguration(productType, modelName)
+				if queryErr != nil {
+					return nil, queryErr
+				}
+				if configured {
+					return nil, fmt.Errorf("wallet product price for model %s is disabled or not yet effective", modelName)
+				}
+				return nil, nil
+			}
+			return nil, err
+		}
+		var channelIds []int
+		if err := common.UnmarshalJsonStr(price.AllowedChannels, &channelIds); err != nil {
+			return nil, err
+		}
+		var maxCost model.PriceComponents
+		if err := common.UnmarshalJsonStr(price.MaxUpstreamCost, &maxCost); err != nil {
+			return nil, err
+		}
+		common.SetContextKey(ctx, constant.ContextKeyTokenBillingMultiplier, price.BillingMultiplier)
+		common.SetContextKey(ctx, constant.ContextKeyTokenPriceVersion, price.PriceVersion)
+		common.SetContextKey(ctx, constant.ContextKeyTokenAllowedChannels, price.AllowedChannels)
+		common.SetContextKey(ctx, constant.ContextKeyTokenMaxUpstreamCost, price.MaxUpstreamCost)
+		common.SetContextKey(ctx, constant.ContextKeyTokenFallbackAllowed, price.FallbackAllowed)
+		allowed := make(map[int]struct{}, len(channelIds))
+		for _, channelId := range channelIds {
+			allowed[channelId] = struct{}{}
+		}
+		return &model.ChannelSelectionPolicy{
+			AllowedChannelIds: allowed,
+			MaxUpstreamCost:   maxCost,
+			RequireCost:       true,
+		}, nil
+	}
+	if !model.RequiresStrictV1RoutePolicy(productType) {
 		return nil, nil
 	}
 	allowedChannels := common.GetContextKeyString(ctx, constant.ContextKeyTokenAllowedChannels)

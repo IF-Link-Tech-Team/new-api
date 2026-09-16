@@ -109,6 +109,10 @@ func TestValidateV1ContractRejectsFrozenRuleDrift(t *testing.T) {
 	plan := v1MonthlyPlanFixture(t, "monthly-49", 2, 49.9)
 
 	broken := *plan
+	broken.ProductType = ProductTypeWallet
+	require.ErrorContains(t, broken.ValidateV1Contract(), "unsupported product_type")
+
+	broken = *plan
 	broken.BillingMultiplier = 0.8
 	require.ErrorContains(t, broken.ValidateV1Contract(), "must be 0.85")
 
@@ -135,6 +139,43 @@ func TestValidateV1ContractRejectsFrozenRuleDrift(t *testing.T) {
 	broken = *plan
 	broken.FallbackAllowed = true
 	require.ErrorContains(t, broken.ValidateV1Contract(), "fail closed")
+}
+
+func TestWalletProductPriceResolvesCurrentImmutableVersion(t *testing.T) {
+	truncateTables(t)
+	now := GetDBTimestamp()
+	base := ProductPrice{
+		ProductType: ProductTypeWallet, Model: "wallet-versioned-model",
+		OfficialReferencePrice:  `{"input":1,"cached_input":0.2,"output":4}`,
+		UserSellingPrice:        `{"input":1,"cached_input":0.2,"output":4}`,
+		UpstreamSettlementPrice: `{"input":0.5,"cached_input":0.1,"output":2}`,
+		BillingExpression:       `tier("default", p * 1 + cr * 0.2 + c * 4)`,
+		BillingMultiplier:       1,
+		AllowedChannels:         `[14,15]`,
+		MaxUpstreamCost:         `{"input":0.8,"cached_input":0.15,"output":3}`,
+		FallbackAllowed:         true,
+		Enabled:                 true,
+	}
+	v1 := base
+	v1.PriceVersion = "wallet-v1"
+	v1.EffectiveAt = now - 10
+	require.NoError(t, DB.Create(&v1).Error)
+	v2 := base
+	v2.PriceVersion = "wallet-v2"
+	v2.EffectiveAt = now
+	require.NoError(t, DB.Create(&v2).Error)
+	future := base
+	future.PriceVersion = "wallet-future"
+	future.EffectiveAt = now + 3600
+	require.NoError(t, DB.Create(&future).Error)
+
+	current, err := GetCurrentProductPriceSnapshot(ProductTypeWallet, base.Model)
+	require.NoError(t, err)
+	require.Equal(t, "wallet-v2", current.PriceVersion)
+	require.True(t, current.FallbackAllowed)
+
+	current.BillingExpression = `tier("tampered", p * 2 + c * 8)`
+	require.ErrorContains(t, DB.Save(current).Error, "immutable")
 }
 
 func TestMigrateCilaiV1ContractsBackfillsWalletAndActiveEntitlementBindings(t *testing.T) {

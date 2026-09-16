@@ -347,7 +347,9 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	productType := common.GetContextKeyString(c, constant.ContextKeyTokenProductType)
-	if model.RequiresStrictV1RoutePolicy(productType) && !common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
+	if model.UsesVersionedProductPricing(productType) &&
+		common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion) != "" &&
+		!common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
 		return false
 	}
 	if types.IsChannelError(openaiErr) {
@@ -648,7 +650,9 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 		return false
 	}
 	productType := common.GetContextKeyString(c, constant.ContextKeyTokenProductType)
-	if model.RequiresStrictV1RoutePolicy(productType) && !common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
+	if model.UsesVersionedProductPricing(productType) &&
+		common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion) != "" &&
+		!common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
 		return false
 	}
 	if retryTimes <= 0 {

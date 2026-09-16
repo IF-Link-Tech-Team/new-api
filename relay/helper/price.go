@@ -73,7 +73,7 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
-	if model.RequiresStrictV1RoutePolicy(info.ProductType) {
+	if model.UsesVersionedProductPricing(info.ProductType) && strings.TrimSpace(info.ProductPriceVersion) != "" {
 		productPrice, err := model.GetProductPriceSnapshot(info.ProductType, info.OriginModelName, info.ProductPriceVersion)
 		if err != nil {
 			return hosttypes.PriceData{}, fmt.Errorf("V1 product price unavailable: %w", err)
@@ -83,6 +83,9 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		}
 		groupRatioInfo := HandleGroupRatio(c, info)
 		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo, productPrice.BillingExpression)
+	}
+	if model.RequiresStrictV1RoutePolicy(info.ProductType) {
+		return hosttypes.PriceData{}, errors.New("V1 product price version is required")
 	}
 	modelPrice, usePrice := ratio_setting.GetModelPrice(info.OriginModelName, false)
 
