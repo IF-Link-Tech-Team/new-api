@@ -858,7 +858,7 @@ func decideTaskRetry(c *gin.Context, taskErr *taskdto.TaskError, retryTimes int)
 		if source := service.RequestPolicy(c).SessionModeSource; source != "" {
 			stop.Source = source
 		}
-	case model.RequiresStrictV1RoutePolicy(common.GetContextKeyString(c, constant.ContextKeyTokenProductType)) && !common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed):
+	case model.UsesVersionedProductPricing(common.GetContextKeyString(c, constant.ContextKeyTokenProductType)) && common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion) != "" && !common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed):
 		stop.Reason, stop.Source = "product_fallback_disabled", "product"
 	case retryTimes <= 0:
 		stop.Reason, stop.Source = "attempt_budget_exhausted", "global"

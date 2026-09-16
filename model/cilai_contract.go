@@ -117,6 +117,14 @@ func RequiresStrictV1RoutePolicy(productType string) bool {
 	}
 }
 
+// UsesVersionedProductPricing identifies products that can settle from the
+// immutable product_type + model + price_version catalog. Wallet requests may
+// opt into this catalog per request while legacy wallet installations remain
+// readable until their V1 price rows are configured.
+func UsesVersionedProductPricing(productType string) bool {
+	return strings.TrimSpace(productType) == ProductTypeWallet || RequiresStrictV1RoutePolicy(productType)
+}
+
 func ExpectedV1BillingMultiplier(productType string) (float64, bool) {
 	multiplier, ok := frozenV1BillingMultipliers[strings.TrimSpace(productType)]
 	return multiplier, ok
@@ -133,7 +141,7 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 	if p.ProductType == "" {
 		return nil
 	}
-	if !IsV1ProductType(p.ProductType) {
+	if !RequiresStrictV1RoutePolicy(p.ProductType) {
 		return fmt.Errorf("unsupported product_type %q", p.ProductType)
 	}
 	if strings.TrimSpace(p.ProductCode) == "" {
@@ -273,13 +281,13 @@ func (p *ProductPrice) ValidateV1() error {
 	p.ProductType = strings.TrimSpace(p.ProductType)
 	p.Model = strings.TrimSpace(p.Model)
 	p.PriceVersion = strings.TrimSpace(p.PriceVersion)
-	if !RequiresStrictV1RoutePolicy(p.ProductType) || p.Model == "" || p.PriceVersion == "" {
+	if !UsesVersionedProductPricing(p.ProductType) || p.Model == "" || p.PriceVersion == "" {
 		return errors.New("product_type, exact model, and price_version are required for a V1 product price")
 	}
 	if strings.ContainsAny(p.Model, "*?") {
 		return errors.New("product price model must be an exact model ID")
 	}
-	if p.FallbackAllowed {
+	if RequiresStrictV1RoutePolicy(p.ProductType) && p.FallbackAllowed {
 		return errors.New("V1 product prices must fail closed and cannot enable route fallback")
 	}
 	expectedMultiplier, ok := ExpectedV1BillingMultiplier(p.ProductType)
@@ -373,6 +381,34 @@ func GetProductPriceSnapshot(productType string, modelName string, priceVersion 
 		return nil, err
 	}
 	return &price, nil
+}
+
+// GetCurrentProductPriceSnapshot resolves the newest enabled version that is
+// already effective. It is used by wallet requests because wallet balance is
+// permanent and future calls must follow the current official-price version;
+// the selected immutable version is then copied into the request/log snapshot.
+func GetCurrentProductPriceSnapshot(productType string, modelName string) (*ProductPrice, error) {
+	var price ProductPrice
+	now := GetDBTimestamp()
+	if err := DB.Where("product_type = ? AND model = ? AND enabled = ? AND (effective_at = 0 OR effective_at <= ?)",
+		strings.TrimSpace(productType), strings.TrimSpace(modelName), true, now).
+		Order("effective_at desc, id desc").First(&price).Error; err != nil {
+		return nil, fmt.Errorf("current product price is not configured: %w", err)
+	}
+	if err := price.ValidateV1(); err != nil {
+		return nil, err
+	}
+	return &price, nil
+}
+
+func HasProductPriceConfiguration(productType string, modelName string) (bool, error) {
+	var count int64
+	if err := DB.Model(&ProductPrice{}).
+		Where("product_type = ? AND model = ?", strings.TrimSpace(productType), strings.TrimSpace(modelName)).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func validateV1ProductPriceCatalogTx(tx *gorm.DB, plan *SubscriptionPlan) error {

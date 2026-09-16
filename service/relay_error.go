@@ -28,7 +28,7 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 		}
 		return PolicyDecision{Action: "stop", Reason: "strict_session", Source: source}
 	}
-	if model.RequiresStrictV1RoutePolicy(common.GetContextKeyString(c, constant.ContextKeyTokenProductType)) && !common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
+	if model.UsesVersionedProductPricing(common.GetContextKeyString(c, constant.ContextKeyTokenProductType)) && common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion) != "" && !common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
 		return PolicyDecision{Action: "stop", Reason: "product_fallback_disabled", Source: "product"}
 	}
 	if GetChannelConstraints(c).SuppressesRetry() {
