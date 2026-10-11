@@ -263,7 +263,7 @@ response = client.chat.completions.create(
                           setPurchaseOpen(true)
                         }}
                       >
-                        {t('View Alipay payment details')}
+                        {t('Buy Now')}
                       </Button>
                     </CardContent>
                   </Card>
