@@ -636,6 +636,7 @@ export function SubscriptionPlansCard({
 
       <SubscriptionPurchaseDialog
         open={purchaseOpen}
+        displayOnly
         onOpenChange={(open) => {
           setPurchaseOpen(open)
           if (!open) {

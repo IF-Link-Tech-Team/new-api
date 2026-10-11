@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { Copy, KeyRound, Package, RefreshCw, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
@@ -15,6 +16,11 @@ import {
 } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
+import {
+  loadPurchaseCatalog,
+  type PurchaseCatalogItem,
+} from '@/features/payment-display/lib/purchase-catalog'
 import { api } from '@/lib/api'
 
 interface SelfSubscription {
@@ -71,12 +77,17 @@ export function TrafficPacks({
   category?: 'package' | 'subscription'
   title?: string
 }) {
+  const { t } = useTranslation()
   const [items, setItems] = useState<SelfSubscriptionItem[]>([])
+  const [products, setProducts] = useState<PurchaseCatalogItem[]>([])
   const [loading, setLoading] = useState(true)
   const [tokens, setTokens] = useState<TokenRow[]>([])
   const [revealedKey, setRevealedKey] = useState<string>('')
   const [keyBusy, setKeyBusy] = useState(false)
   const [copied, setCopied] = useState<string>('')
+  const [selectedProduct, setSelectedProduct] =
+    useState<PurchaseCatalogItem | null>(null)
+  const [purchaseOpen, setPurchaseOpen] = useState(false)
 
   const loadSubscriptions = useCallback(async () => {
     const res = await api.get('/api/subscription/self')
@@ -95,12 +106,16 @@ export function TrafficPacks({
     setTokens(rows.filter((row) => row.name === PACK_KEY_NAME && row.status === 1))
   }, [])
 
+  const loadProducts = useCallback(async () => {
+    setProducts(await loadPurchaseCatalog(category))
+  }, [category])
+
   useEffect(() => {
     setLoading(true)
-    Promise.all([loadSubscriptions(), loadTokens()])
+    void Promise.all([loadSubscriptions(), loadTokens(), loadProducts()])
       .catch(() => toast.error('加载流量包数据失败'))
       .finally(() => setLoading(false))
-  }, [loadSubscriptions, loadTokens])
+  }, [loadProducts, loadSubscriptions, loadTokens])
 
   const baseUrl = `${window.location.origin}/v1`
 
@@ -218,13 +233,54 @@ response = client.chat.completions.create(
       <SectionPageLayout.Title>{title}</SectionPageLayout.Title>
       <SectionPageLayout.Content>
         <div className='flex flex-col gap-4 pb-6'>
-          {loading ? (
+          {!loading && products.length > 0 && (
+            <section aria-labelledby='available-products-title'>
+              <h2
+                id='available-products-title'
+                className='mb-3 text-lg font-semibold'
+              >
+                {category === 'subscription'
+                  ? t('Subscription Plans')
+                  : t('Traffic Packs')}
+              </h2>
+              <div className='grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3'>
+                {products.map((product) => (
+                  <Card key={product.id}>
+                    <CardHeader>
+                      <CardTitle className='text-base'>
+                        {product.name}
+                      </CardTitle>
+                      <CardDescription>{product.description}</CardDescription>
+                    </CardHeader>
+                    <CardContent className='space-y-4'>
+                      <p className='text-2xl font-semibold text-primary'>
+                        {product.amount}
+                      </p>
+                      <Button
+                        className='w-full'
+                        onClick={() => {
+                          setSelectedProduct(product)
+                          setPurchaseOpen(true)
+                        }}
+                      >
+                        {t('View Alipay payment details')}
+                      </Button>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {loading && (
             <Card>
               <CardContent className='py-10 text-center text-sm text-muted-foreground'>
                 加载中…
               </CardContent>
             </Card>
-          ) : items.length === 0 ? (
+          )}
+
+          {!loading && items.length === 0 && (
             <Card>
               <CardContent className='py-10 text-center'>
                 <Package className='mx-auto mb-3 h-10 w-10 text-muted-foreground' />
@@ -245,7 +301,10 @@ response = client.chat.completions.create(
                 </Button>
               </CardContent>
             </Card>
-          ) : (
+          )}
+
+          {!loading &&
+            items.length > 0 &&
             items.map((item) => {
               const sub = item.subscription
               const total = Number(sub.amount_total)
@@ -324,8 +383,7 @@ response = client.chat.completions.create(
                   </CardContent>
                 </Card>
               )
-            })
-          )}
+            })}
 
           {items.length > 0 && (
             <Card>
@@ -425,6 +483,12 @@ response = client.chat.completions.create(
           )}
         </div>
       </SectionPageLayout.Content>
+      <PaymentDisplayDialog
+        open={purchaseOpen}
+        onOpenChange={setPurchaseOpen}
+        productName={selectedProduct?.name ?? ''}
+        amount={selectedProduct?.amount ?? ''}
+      />
     </SectionPageLayout>
   )
 }

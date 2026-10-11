@@ -27,6 +27,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
 import { Separator } from '@/components/ui/separator'
+import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { formatQuota } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -60,6 +61,7 @@ interface Props {
   purchaseCount?: number
   userQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
+  displayOnly?: boolean
 }
 
 export function SubscriptionPurchaseDialog(props: Props) {
@@ -222,6 +224,17 @@ export function SubscriptionPurchaseDialog(props: Props) {
     } finally {
       setPaying(false)
     }
+  }
+
+  if (props.displayOnly) {
+    return (
+      <PaymentDisplayDialog
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        productName={plan.title}
+        amount={`${plan.currency === 'CNY' ? '¥' : `${plan.currency} `}${price}`}
+      />
+    )
   }
 
   return (

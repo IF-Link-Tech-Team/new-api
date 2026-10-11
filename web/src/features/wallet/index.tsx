@@ -20,6 +20,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
+import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
@@ -72,6 +73,7 @@ export function Wallet(props: WalletProps) {
   >(null)
   const [paymentLoading, setPaymentLoading] = useState<string | null>(null)
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
+  const [paymentDisplayOpen, setPaymentDisplayOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [redemptionCode, setRedemptionCode] = useState('')
@@ -173,6 +175,11 @@ export function Wallet(props: WalletProps) {
   const handlePaymentMethodSelect = async (method: PaymentMethod) => {
     setSelectedPaymentMethod(method)
     setSelectedWaffoMethodIndex(null)
+    if (method.display_only) {
+      setPaymentDisplayOpen(true)
+      return
+    }
+
     setPaymentLoading(method.type)
 
     try {
@@ -328,6 +335,7 @@ export function Wallet(props: WalletProps) {
                   enableWaffoPancakeTopup={
                     topupInfo?.enable_waffo_pancake_topup
                   }
+                  displayPendingAlipay
                 />
               </div>
 
@@ -363,6 +371,13 @@ export function Wallet(props: WalletProps) {
         processing={processing || waffoProcessing || pancakeProcessing}
         discountRate={getDiscountRate()}
         usdExchangeRate={effectiveUsdExchangeRate}
+      />
+
+      <PaymentDisplayDialog
+        open={paymentDisplayOpen}
+        onOpenChange={setPaymentDisplayOpen}
+        productName={`${t('Wallet')} · ${t('Recharge')}`}
+        amount={`¥${topupAmount.toFixed(2)}`}
       />
 
       <TransferDialog

@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { MouseEventHandler } from 'react'
+
 import { HtmlContent, type HtmlContentVariant } from '@/components/html-content'
 import { Markdown } from '@/components/ui/markdown'
 
@@ -27,6 +29,7 @@ interface RichContentProps {
   breaks?: boolean
   className?: string
   htmlVariant?: HtmlContentVariant
+  onClick?: MouseEventHandler<HTMLDivElement>
 }
 
 export function RichContent(props: RichContentProps) {
@@ -36,6 +39,7 @@ export function RichContent(props: RichContentProps) {
         content={props.content}
         className={props.className}
         variant={props.htmlVariant}
+        onClick={props.onClick}
       />
     )
   }
