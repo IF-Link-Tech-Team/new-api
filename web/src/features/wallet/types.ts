@@ -112,6 +112,8 @@ export interface PaymentMethod {
   min_topup?: number
   /** Optional react-icons component name or safe icon URL */
   icon?: string
+  /** Opens the pending-payment information dialog without creating an order. */
+  display_only?: boolean
 }
 
 /**

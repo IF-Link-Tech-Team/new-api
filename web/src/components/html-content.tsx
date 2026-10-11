@@ -27,6 +27,7 @@ interface HtmlContentProps {
   content: string
   className?: string
   variant?: HtmlContentVariant
+  onClick?: React.MouseEventHandler<HTMLDivElement>
 }
 
 const isolatedContentSandbox =
@@ -139,6 +140,7 @@ function syncDarkClass(wrapper: HTMLElement): void {
 function IsolatedHtmlContent(props: {
   className?: string
   html: string
+  onClick?: React.MouseEventHandler<HTMLDivElement>
 }): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -179,7 +181,11 @@ function IsolatedHtmlContent(props: {
   }, [props.html])
 
   return (
-    <div ref={containerRef} className={cn('block w-full', props.className)} />
+    <div
+      ref={containerRef}
+      className={cn('block w-full', props.className)}
+      onClick={props.onClick}
+    />
   )
 }
 
@@ -191,7 +197,13 @@ export function HtmlContent(props: HtmlContentProps) {
   )
 
   if (variant === 'isolated') {
-    return <IsolatedHtmlContent className={props.className} html={html} />
+    return (
+      <IsolatedHtmlContent
+        className={props.className}
+        html={html}
+        onClick={props.onClick}
+      />
+    )
   }
 
   return (
@@ -200,6 +212,7 @@ export function HtmlContent(props: HtmlContentProps) {
         'prose prose-neutral dark:prose-invert max-w-none',
         props.className
       )}
+      onClick={props.onClick}
       // eslint-disable-next-line react/no-danger -- html is sanitized above
       dangerouslySetInnerHTML={{ __html: html }}
     />

@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { formatQuota } from '@/lib/format'
 import { DEFAULT_CURRENCY_CONFIG } from '@/stores/system-config-store'
@@ -66,6 +67,7 @@ interface Props {
   purchaseCount?: number
   userQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
+  displayOnly?: boolean
 }
 
 export function SubscriptionPurchaseDialog(props: Props) {
@@ -255,6 +257,17 @@ export function SubscriptionPurchaseDialog(props: Props) {
     }
   }
 
+  if (props.displayOnly) {
+    return (
+      <PaymentDisplayDialog
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        productName={plan.title}
+        amount={`${plan.currency === 'CNY' ? '¥' : `${plan.currency} `}${price}`}
+      />
+    )
+  }
+
   return (
     <Dialog
       open={props.open}
@@ -405,12 +418,10 @@ export function SubscriptionPurchaseDialog(props: Props) {
             {hasEpay && (
               <div className='grid grid-cols-[minmax(0,1fr)_auto] gap-2'>
                 <Select
-                  items={[
-                    ...(props.epayMethods || []).map((m) => ({
-                      value: m.type,
-                      label: m.name || m.type,
-                    })),
-                  ]}
+                  items={(props.epayMethods || []).map((m) => ({
+                    value: m.type,
+                    label: m.name || m.type,
+                  }))}
                   value={selectedEpayMethod}
                   onValueChange={(v) => v !== null && setSelectedEpayMethod(v)}
                   disabled={limitReached}
