@@ -618,7 +618,7 @@ export function SubscriptionPlansCard({
                           setPurchaseOpen(true)
                         }}
                       >
-                        {t('Subscribe Now')}
+                        {t('Buy Now')}
                       </Button>
                     )}
                   </CardContent>
