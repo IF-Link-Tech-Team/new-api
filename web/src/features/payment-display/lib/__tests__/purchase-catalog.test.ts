@@ -18,7 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
-import { purchaseCatalogFromDocument } from '../purchase-catalog'
+import {
+  loadPurchaseCatalogProduct,
+  purchaseCatalogFromDocument,
+  purchaseCatalogProductFromDocument,
+} from '../purchase-catalog'
 
 const bunTestModule = 'bun:test'
 const { describe, test } = (await import(bunTestModule)) as {
@@ -74,5 +78,35 @@ describe('public purchase catalog', () => {
       purchaseCatalogFromDocument({ plans: [{ id: 1 }] }, 'subscription'),
       []
     )
+  })
+
+  test('resolves a checkout product by id from the server document', () => {
+    assert.deepEqual(purchaseCatalogProductFromDocument(catalog, 'pro'), {
+      id: 'pro',
+      name: 'Pro',
+      description: '稳定使用',
+      amount: '¥79/ 月',
+    })
+    assert.deepEqual(purchaseCatalogProductFromDocument(catalog, 'deepseek'), {
+      id: 'deepseek',
+      name: 'DeepSeek 流量包',
+      description: '专项使用',
+      amount: '内测价 ¥19.9',
+    })
+    assert.equal(purchaseCatalogProductFromDocument(catalog, 'missing'), null)
+  })
+
+  test('loads checkout price from the catalog instead of request parameters', async () => {
+    const requests: string[] = []
+    const product = await loadPurchaseCatalogProduct('pro', async (input) => {
+      requests.push(String(input))
+      return {
+        ok: true,
+        json: async () => catalog,
+      } as Response
+    })
+
+    assert.equal(product?.amount, '¥79/ 月')
+    assert.deepEqual(requests, ['/purchase-catalog.json'])
   })
 })
