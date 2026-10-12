@@ -31,7 +31,7 @@ import (
 )
 
 type TopUpAlipayPayRequest struct {
-	Amount    float64 `json:"amount"`     // 元(支持小数,沙箱测试 ¥0.01 必须 float64)
+	Amount    float64 `json:"amount"`      // 元(支持小数,沙箱测试 ¥0.01 必须 float64)
 	TopUpCode string  `json:"top_up_code"` // 兼容老 topup 字段
 }
 
@@ -122,8 +122,8 @@ func RequestAlipayPay(c *gin.Context) {
 	biz := map[string]string{
 		"out_trade_no": tradeNo,
 		"product_code": "FAST_INSTANT_TRADE_PAY",
-		"total_amount":  fmt.Sprintf("%.2f", payMoney),
-		"subject":       fmt.Sprintf("IF.Link 钱包充值 - %s", user.Username),
+		"total_amount": fmt.Sprintf("%.2f", payMoney),
+		"subject":      fmt.Sprintf("IF.Link 钱包充值 - %s", user.Username),
 	}
 	bizJSON, _ := json.Marshal(biz)
 	form, err := alipayBuildSignedForm("alipay.trade.page.pay", string(bizJSON), notifyURL, returnURL, nil)
@@ -138,11 +138,11 @@ func RequestAlipayPay(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": gin.H{
-			"pay_url":    payURL,
-			"trade_no":   tradeNo,
-			"amount":     req.Amount, // 展示金额
-			"pay_money":  payMoney,   // 实付人民币
-			"is_mobile":  false,      // MVP 暂用 trade.page.pay(PC); 后续可加 trade.wap.pay(手机)
+			"pay_url":   payURL,
+			"trade_no":  tradeNo,
+			"amount":    req.Amount, // 展示金额
+			"pay_money": payMoney,   // 实付人民币
+			"is_mobile": false,      // MVP 暂用 trade.page.pay(PC); 后续可加 trade.wap.pay(手机)
 		},
 	})
 }

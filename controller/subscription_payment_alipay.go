@@ -120,8 +120,8 @@ func SubscriptionRequestAlipayPay(c *gin.Context) {
 	biz := map[string]string{
 		"out_trade_no": tradeNo,
 		"product_code": "FAST_INSTANT_TRADE_PAY",
-		"total_amount":  fmt.Sprintf("%.2f", plan.PriceAmount),
-		"subject":       fmt.Sprintf("IF.Link 订阅 - %s", plan.Title),
+		"total_amount": fmt.Sprintf("%.2f", plan.PriceAmount),
+		"subject":      fmt.Sprintf("IF.Link 订阅 - %s", plan.Title),
 	}
 	bizJSON, _ := json.Marshal(biz)
 	form, err := alipayBuildSignedForm("alipay.trade.page.pay", string(bizJSON), notifyURL, returnURL, nil)
