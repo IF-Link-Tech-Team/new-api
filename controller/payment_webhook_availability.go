@@ -1,10 +1,13 @@
 package controller
 
 import (
+	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/gin-gonic/gin"
 )
 
 func isPaymentComplianceConfirmed() bool {
@@ -129,4 +132,30 @@ func isAlipayWebhookConfigured() bool {
 
 func isAlipayWebhookEnabled() bool {
 	return isAlipayTopUpEnabled() && isAlipayWebhookConfigured()
+}
+
+func isAlipayUserAllowed(userID int) bool {
+	switch strings.ToLower(strings.TrimSpace(setting.AlipayAccessMode)) {
+	case "all":
+		return true
+	case "allowlist":
+		for _, rawID := range strings.Split(setting.AlipayAllowedUserIDs, ",") {
+			allowedID, err := strconv.Atoi(strings.TrimSpace(rawID))
+			if err == nil && allowedID > 0 && allowedID == userID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func requireAlipayUserAccess(c *gin.Context) bool {
+	if isAlipayUserAllowed(c.GetInt("id")) {
+		return true
+	}
+	c.JSON(http.StatusForbidden, gin.H{
+		"success": false,
+		"message": "支付宝支付当前仅向授权测试用户开放",
+	})
+	return false
 }

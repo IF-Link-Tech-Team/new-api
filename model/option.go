@@ -88,6 +88,8 @@ func InitOptionMap() {
 	common.OptionMap["AlipayPrivateKey"] = setting.AlipayPrivateKey
 	common.OptionMap["AlipayPublicKey"] = setting.AlipayPublicKey
 	common.OptionMap["AlipaySandbox"] = strconv.FormatBool(setting.AlipaySandbox)
+	common.OptionMap["AlipayAccessMode"] = setting.AlipayAccessMode
+	common.OptionMap["AlipayAllowedUserIDs"] = setting.AlipayAllowedUserIDs
 	common.OptionMap["AlipayGateway"] = setting.AlipayGateway
 	common.OptionMap["AlipayReturnURL"] = setting.AlipayReturnURL
 	common.OptionMap["AlipaySandboxGateway"] = setting.AlipaySandboxGateway
@@ -453,6 +455,10 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.AlipayPublicKey = value
 	case "AlipaySandbox":
 		setting.AlipaySandbox = value == "true"
+	case "AlipayAccessMode":
+		setting.AlipayAccessMode = value
+	case "AlipayAllowedUserIDs":
+		setting.AlipayAllowedUserIDs = value
 	case "AlipayGateway":
 		setting.AlipayGateway = value
 	case "AlipayReturnURL":

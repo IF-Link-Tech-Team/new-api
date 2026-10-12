@@ -40,6 +40,15 @@ var (
 	// MVP 默认 true,真实跑通后再切到 false
 	AlipaySandbox = true
 
+	// AlipayAccessMode controls who may create a new Alipay order.
+	// disabled: nobody; allowlist: only AlipayAllowedUserIDs; all: every
+	// authenticated user. Keep the default fail-closed for production rollout.
+	AlipayAccessMode = "disabled"
+
+	// AlipayAllowedUserIDs is a comma-separated list of trusted internal user
+	// IDs used only when AlipayAccessMode is "allowlist".
+	AlipayAllowedUserIDs = ""
+
 	// AlipayMinTopUp 最小充值金额(单位:元),低于此金额禁止下单
 	AlipayMinTopUp = 1.0
 

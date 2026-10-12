@@ -139,6 +139,40 @@ func TestUpdatePendingTopUpStatus_RejectsMismatchedPaymentProvider(t *testing.T)
 	}
 }
 
+func TestCompleteAlipayTopUp_IsAtomicAndIdempotent(t *testing.T) {
+	truncateTables(t)
+	originalQuotaPerUnit := common.QuotaPerUnit
+	common.QuotaPerUnit = 100
+	t.Cleanup(func() { common.QuotaPerUnit = originalQuotaPerUnit })
+
+	insertUserForPaymentGuardTest(t, 175, 10)
+	insertTopUpForPaymentGuardTest(t, "alipay-complete", 175, PaymentProviderAlipay)
+
+	completed, quota, _, err := CompleteAlipayTopUp("alipay-complete")
+	require.NoError(t, err)
+	require.True(t, completed)
+	assert.Equal(t, 200, quota)
+	assert.Equal(t, common.TopUpStatusSuccess, getTopUpStatusForPaymentGuardTest(t, "alipay-complete"))
+	assert.Equal(t, 210, getUserQuotaForPaymentGuardTest(t, 175))
+
+	completed, quota, _, err = CompleteAlipayTopUp("alipay-complete")
+	require.NoError(t, err)
+	require.False(t, completed)
+	assert.Zero(t, quota)
+	assert.Equal(t, 210, getUserQuotaForPaymentGuardTest(t, 175))
+}
+
+func TestCompleteAlipayTopUp_RejectsMismatchedProvider(t *testing.T) {
+	truncateTables(t)
+	insertUserForPaymentGuardTest(t, 176, 10)
+	insertTopUpForPaymentGuardTest(t, "alipay-provider-guard", 176, PaymentProviderStripe)
+
+	_, _, _, err := CompleteAlipayTopUp("alipay-provider-guard")
+	require.ErrorIs(t, err, ErrPaymentMethodMismatch)
+	assert.Equal(t, common.TopUpStatusPending, getTopUpStatusForPaymentGuardTest(t, "alipay-provider-guard"))
+	assert.Equal(t, 10, getUserQuotaForPaymentGuardTest(t, 176))
+}
+
 func TestCompleteSubscriptionOrder_RejectsMismatchedPaymentProvider(t *testing.T) {
 	truncateTables(t)
 

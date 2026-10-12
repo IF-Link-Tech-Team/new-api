@@ -192,3 +192,30 @@ func TestAlipayWebhookEnabledRequiresMerchantAndKeyConfig(t *testing.T) {
 	require.False(t, isAlipayTopUpEnabled())
 	require.False(t, isAlipayWebhookEnabled())
 }
+
+func TestAlipayUserAccessModes(t *testing.T) {
+	originalMode := setting.AlipayAccessMode
+	originalAllowedIDs := setting.AlipayAllowedUserIDs
+	t.Cleanup(func() {
+		setting.AlipayAccessMode = originalMode
+		setting.AlipayAllowedUserIDs = originalAllowedIDs
+	})
+
+	setting.AlipayAccessMode = "disabled"
+	setting.AlipayAllowedUserIDs = "7"
+	require.False(t, isAlipayUserAllowed(7))
+
+	setting.AlipayAccessMode = "allowlist"
+	setting.AlipayAllowedUserIDs = " 7, invalid, 42 "
+	require.True(t, isAlipayUserAllowed(7))
+	require.True(t, isAlipayUserAllowed(42))
+	require.False(t, isAlipayUserAllowed(8))
+	require.False(t, isAlipayUserAllowed(0))
+
+	setting.AlipayAccessMode = "all"
+	setting.AlipayAllowedUserIDs = ""
+	require.True(t, isAlipayUserAllowed(8))
+
+	setting.AlipayAccessMode = "unexpected"
+	require.False(t, isAlipayUserAllowed(7))
+}

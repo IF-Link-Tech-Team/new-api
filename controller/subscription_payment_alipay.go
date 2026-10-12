@@ -46,6 +46,9 @@ func SubscriptionRequestAlipayPay(c *gin.Context) {
 	if !requirePaymentCompliance(c) {
 		return
 	}
+	if !requireAlipayUserAccess(c) {
+		return
+	}
 
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
