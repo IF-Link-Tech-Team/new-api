@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -31,7 +30,7 @@ import (
 )
 
 type TopUpAlipayPayRequest struct {
-	Amount    float64 `json:"amount"`     // 元(支持小数,沙箱测试 ¥0.01 必须 float64)
+	Amount    float64 `json:"amount"`      // 元(支持小数,沙箱测试 ¥0.01 必须 float64)
 	TopUpCode string  `json:"top_up_code"` // 兼容老 topup 字段
 }
 
@@ -46,7 +45,7 @@ func RequestAlipayPay(c *gin.Context) {
 	id := c.GetInt("id")
 	lock := getTopUpLock(id)
 	if !lock.TryLock() {
-		common.ApiErrorI18n(c, i18n.MsgUserTopUpProcessing)
+		common.ApiErrorT(c, "Top-up is processing, please try again later")
 		return
 	}
 	defer lock.Unlock()
@@ -122,8 +121,8 @@ func RequestAlipayPay(c *gin.Context) {
 	biz := map[string]string{
 		"out_trade_no": tradeNo,
 		"product_code": "FAST_INSTANT_TRADE_PAY",
-		"total_amount":  fmt.Sprintf("%.2f", payMoney),
-		"subject":       fmt.Sprintf("IF.Link 钱包充值 - %s", user.Username),
+		"total_amount": fmt.Sprintf("%.2f", payMoney),
+		"subject":      fmt.Sprintf("IF.Link 钱包充值 - %s", user.Username),
 	}
 	bizJSON, _ := json.Marshal(biz)
 	form, err := alipayBuildSignedForm("alipay.trade.page.pay", string(bizJSON), notifyURL, returnURL, nil)
@@ -138,11 +137,11 @@ func RequestAlipayPay(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": gin.H{
-			"pay_url":    payURL,
-			"trade_no":   tradeNo,
-			"amount":     req.Amount, // 展示金额
-			"pay_money":  payMoney,   // 实付人民币
-			"is_mobile":  false,      // MVP 暂用 trade.page.pay(PC); 后续可加 trade.wap.pay(手机)
+			"pay_url":   payURL,
+			"trade_no":  tradeNo,
+			"amount":    req.Amount, // 展示金额
+			"pay_money": payMoney,   // 实付人民币
+			"is_mobile": false,      // MVP 暂用 trade.page.pay(PC); 后续可加 trade.wap.pay(手机)
 		},
 	})
 }
@@ -243,7 +242,7 @@ func AlipayNotify(c *gin.Context) {
 	}
 
 	model.RecordTopupLog(topUp.UserId,
-		fmt.Sprintf("支付宝充值成功,充值额度: %d,支付金额: %.2f", quotaToAdd, topUp.Money),
+		common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"provider": "Alipay", "quota": logger.FormatQuota(quotaToAdd), "amount": fmt.Sprintf("%.2f", topUp.Money)}),
 		c.ClientIP(), topUp.PaymentMethod, model.PaymentProviderAlipay)
 
 	logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 充值成功 trade_no=%s user_id=%d quota=%d money=%.2f", tradeNo, topUp.UserId, quotaToAdd, topUp.Money))

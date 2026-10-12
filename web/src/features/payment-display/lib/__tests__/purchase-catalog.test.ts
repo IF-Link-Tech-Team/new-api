@@ -24,11 +24,7 @@ import {
   purchaseCatalogProductFromDocument,
 } from '../purchase-catalog'
 
-const bunTestModule = 'bun:test'
-const { describe, test } = (await import(bunTestModule)) as {
-  describe: typeof import('node:test').describe
-  test: typeof import('node:test').test
-}
+import { describe, test } from 'vitest'
 
 const catalog = {
   plans: [

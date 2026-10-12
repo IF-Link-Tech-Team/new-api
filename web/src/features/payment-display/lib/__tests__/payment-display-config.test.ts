@@ -23,11 +23,7 @@ import {
   normalizePaymentDisplayConfig,
 } from '../payment-display-config'
 
-const bunTestModule = 'bun:test'
-const { describe, test } = (await import(bunTestModule)) as {
-  describe: typeof import('node:test').describe
-  test: typeof import('node:test').test
-}
+import { describe, test } from 'vitest'
 
 describe('payment display configuration', () => {
   test('keeps the placeholder when the QR code URL is empty', () => {

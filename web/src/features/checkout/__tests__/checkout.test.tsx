@@ -18,39 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
-import { Window } from 'happy-dom'
-
-const bunTestModule = 'bun:test'
-const { afterAll, afterEach, test } = (await import(bunTestModule)) as {
-  afterAll: typeof import('node:test').after
-  afterEach: typeof import('node:test').afterEach
-  test: typeof import('node:test').test
-}
-
-const domWindow = new Window({ url: 'https://token.iflink.tech/checkout' })
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'HTMLImageElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
+import { afterEach, test } from 'vitest'
 
 const { QueryClient, QueryClientProvider } =
   await import('@tanstack/react-query')
@@ -99,10 +67,6 @@ afterEach(async () => {
   root = null
   host = null
   document.body.replaceChildren()
-})
-
-afterAll(() => {
-  domWindow.close()
 })
 
 test('renders trusted catalog details without creating an order', async () => {

@@ -20,10 +20,7 @@ import assert from 'node:assert/strict'
 
 import { buildCheckoutPath } from '../checkout-path'
 
-const bunTestModule = 'bun:test'
-const { test } = (await import(bunTestModule)) as {
-  test: typeof import('node:test').test
-}
+import { test } from 'vitest'
 
 test('builds a return-safe checkout path with only the product id', () => {
   assert.equal(
