@@ -1,7 +1,7 @@
+import { useNavigate } from '@tanstack/react-router'
+import { Copy, KeyRound, Package, RefreshCw, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-
-import { Copy, KeyRound, Package, RefreshCw, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -16,7 +16,6 @@ import {
 } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
 import {
   loadPurchaseCatalog,
   type PurchaseCatalogItem,
@@ -78,6 +77,7 @@ export function TrafficPacks({
   title?: string
 }) {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const [items, setItems] = useState<SelfSubscriptionItem[]>([])
   const [products, setProducts] = useState<PurchaseCatalogItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -85,16 +85,12 @@ export function TrafficPacks({
   const [revealedKey, setRevealedKey] = useState<string>('')
   const [keyBusy, setKeyBusy] = useState(false)
   const [copied, setCopied] = useState<string>('')
-  const [selectedProduct, setSelectedProduct] =
-    useState<PurchaseCatalogItem | null>(null)
-  const [purchaseOpen, setPurchaseOpen] = useState(false)
 
   const loadSubscriptions = useCallback(async () => {
     const res = await api.get('/api/subscription/self')
     const data = res.data?.data ?? {}
     const list: SelfSubscriptionItem[] = (data.subscriptions ?? []).filter(
-      (it: SelfSubscriptionItem) =>
-        (it.plan_category ?? 'package') === category
+      (it: SelfSubscriptionItem) => (it.plan_category ?? 'package') === category
     )
     setItems(list)
   }, [category])
@@ -103,7 +99,9 @@ export function TrafficPacks({
     const res = await api.get('/api/token/?p=1&size=100')
     const data = res.data?.data ?? {}
     const rows: TokenRow[] = data.items ?? data.records ?? []
-    setTokens(rows.filter((row) => row.name === PACK_KEY_NAME && row.status === 1))
+    setTokens(
+      rows.filter((row) => row.name === PACK_KEY_NAME && row.status === 1)
+    )
   }, [])
 
   const loadProducts = useCallback(async () => {
@@ -206,7 +204,11 @@ export function TrafficPacks({
   }, [packKeyToken, items, loadTokens])
 
   const pythonSnippet = useMemo(() => {
-    const key = revealedKey || (packKeyToken ? 'sk-****（点击「查看 Key」显示）' : '点击下方「生成专属 API Key」')
+    const key =
+      revealedKey ||
+      (packKeyToken
+        ? 'sk-****（点击「查看 Key」显示）'
+        : '点击下方「生成专属 API Key」')
     return `from openai import OpenAI
 
 client = OpenAI(
@@ -253,14 +255,16 @@ response = client.chat.completions.create(
                       <CardDescription>{product.description}</CardDescription>
                     </CardHeader>
                     <CardContent className='space-y-4'>
-                      <p className='text-2xl font-semibold text-primary'>
+                      <p className='text-primary text-2xl font-semibold'>
                         {product.amount}
                       </p>
                       <Button
                         className='w-full'
                         onClick={() => {
-                          setSelectedProduct(product)
-                          setPurchaseOpen(true)
+                          void navigate({
+                            to: '/checkout',
+                            search: { product_id: product.id },
+                          })
                         }}
                       >
                         {t('Buy Now')}
@@ -274,7 +278,7 @@ response = client.chat.completions.create(
 
           {loading && (
             <Card>
-              <CardContent className='py-10 text-center text-sm text-muted-foreground'>
+              <CardContent className='text-muted-foreground py-10 text-center text-sm'>
                 加载中…
               </CardContent>
             </Card>
@@ -283,8 +287,8 @@ response = client.chat.completions.create(
           {!loading && items.length === 0 && (
             <Card>
               <CardContent className='py-10 text-center'>
-                <Package className='mx-auto mb-3 h-10 w-10 text-muted-foreground' />
-                <p className='text-sm text-muted-foreground'>
+                <Package className='text-muted-foreground mx-auto mb-3 h-10 w-10' />
+                <p className='text-muted-foreground text-sm'>
                   {category === 'package'
                     ? '暂无可用流量包。兑换流量包后，可在这里查看剩余额度与有效期。'
                     : '暂无可用套餐。购买套餐后，可在这里查看剩余额度与有效期。'}
@@ -326,8 +330,8 @@ response = client.chat.completions.create(
                 <Card key={sub.id}>
                   <CardHeader className='pb-2'>
                     <div className='flex items-center gap-3'>
-                      <div className='flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10'>
-                        <Package className='h-5 w-5 text-primary' />
+                      <div className='bg-primary/10 flex h-10 w-10 items-center justify-center rounded-lg'>
+                        <Package className='text-primary h-5 w-5' />
                       </div>
                       <div>
                         <CardTitle className='text-base'>
@@ -345,21 +349,32 @@ response = client.chat.completions.create(
                   <CardContent className='flex flex-col gap-5'>
                     <div className='grid grid-cols-1 gap-3 sm:grid-cols-3'>
                       <div>
-                        <p className='text-xs text-muted-foreground'>剩余有效期</p>
-                        <p className='text-sm font-medium'>剩余 {daysLeft(sub.end_time)} 天</p>
-                      </div>
-                      <div>
-                        <p className='text-xs text-muted-foreground'>有效期</p>
+                        <p className='text-muted-foreground text-xs'>
+                          剩余有效期
+                        </p>
                         <p className='text-sm font-medium'>
-                          {formatDate(sub.start_time)} ~ {formatDate(sub.end_time)}
+                          剩余 {daysLeft(sub.end_time)} 天
                         </p>
                       </div>
                       <div>
-                        <p className='text-xs text-muted-foreground'>支持模型</p>
+                        <p className='text-muted-foreground text-xs'>有效期</p>
+                        <p className='text-sm font-medium'>
+                          {formatDate(sub.start_time)} ~{' '}
+                          {formatDate(sub.end_time)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className='text-muted-foreground text-xs'>
+                          支持模型
+                        </p>
                         <div className='mt-1 flex flex-wrap gap-1'>
                           {models.length > 0 ? (
                             models.map((m) => (
-                              <Badge key={m} variant='secondary' className='text-xs'>
+                              <Badge
+                                key={m}
+                                variant='secondary'
+                                className='text-xs'
+                              >
                                 {m}
                               </Badge>
                             ))
@@ -373,9 +388,10 @@ response = client.chat.completions.create(
                     <div>
                       <p className='mb-2 text-sm font-medium'>用量概览</p>
                       <Progress value={pct} className='h-2' />
-                      <div className='mt-2 flex items-center justify-between text-xs text-muted-foreground'>
+                      <div className='text-muted-foreground mt-2 flex items-center justify-between text-xs'>
                         <span>
-                          已使用 {toCny(used)} / 剩余 {toCny(remain)} / 总额度 {toCny(total)}
+                          已使用 {toCny(used)} / 剩余 {toCny(remain)} / 总额度{' '}
+                          {toCny(total)}
                         </span>
                         <span>{pctText}%</span>
                       </div>
@@ -399,13 +415,17 @@ response = client.chat.completions.create(
               <CardContent className='flex flex-col gap-4'>
                 <div>
                   <p className='mb-1 text-sm font-medium'>专属 API Key</p>
-                  <p className='mb-2 text-xs text-muted-foreground'>
-                    此 Key 仅当前流量包额度可用，且仅支持本流量包包含的模型，与「API 密钥」页的
-                    Key 相互独立。
+                  <p className='text-muted-foreground mb-2 text-xs'>
+                    此 Key
+                    仅当前流量包额度可用，且仅支持本流量包包含的模型，与「API
+                    密钥」页的 Key 相互独立。
                   </p>
                   <div className='flex flex-wrap items-center gap-2'>
-                    <code className='min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-3 py-2 font-mono text-sm'>
-                      {revealedKey || (packKeyToken ? 'sk-******（已生成，点击「查看 Key」显示）' : '尚未生成')}
+                    <code className='bg-muted/40 min-w-0 flex-1 truncate rounded-md border px-3 py-2 font-mono text-sm'>
+                      {revealedKey ||
+                        (packKeyToken
+                          ? 'sk-******（已生成，点击「查看 Key」显示）'
+                          : '尚未生成')}
                     </code>
                     {revealedKey && (
                       <Button
@@ -440,10 +460,14 @@ response = client.chat.completions.create(
                 <div>
                   <p className='mb-1 text-sm font-medium'>Base URL</p>
                   <div className='flex items-center gap-2'>
-                    <code className='min-w-0 flex-1 truncate rounded-md border bg-muted/40 px-3 py-2 font-mono text-sm'>
+                    <code className='bg-muted/40 min-w-0 flex-1 truncate rounded-md border px-3 py-2 font-mono text-sm'>
                       {baseUrl}
                     </code>
-                    <Button size='sm' variant='outline' onClick={() => copy(baseUrl, 'Base URL')}>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      onClick={() => copy(baseUrl, 'Base URL')}
+                    >
                       <Copy className='mr-1 h-4 w-4' />
                       {copied === 'Base URL' ? '已复制' : '复制'}
                     </Button>
@@ -465,17 +489,17 @@ response = client.chat.completions.create(
                     <TabsTrigger value='curl'>cURL</TabsTrigger>
                   </TabsList>
                   <TabsContent value='python'>
-                    <pre className='overflow-x-auto rounded-md bg-muted/40 p-4 font-mono text-xs leading-relaxed'>
+                    <pre className='bg-muted/40 overflow-x-auto rounded-md p-4 font-mono text-xs leading-relaxed'>
                       {pythonSnippet}
                     </pre>
                   </TabsContent>
                   <TabsContent value='curl'>
-                    <pre className='overflow-x-auto rounded-md bg-muted/40 p-4 font-mono text-xs leading-relaxed'>
+                    <pre className='bg-muted/40 overflow-x-auto rounded-md p-4 font-mono text-xs leading-relaxed'>
                       {curlSnippet}
                     </pre>
                   </TabsContent>
                 </Tabs>
-                <p className='mt-3 text-xs text-muted-foreground'>
+                <p className='text-muted-foreground mt-3 text-xs'>
                   模型用量优先从流量包抵扣，耗尽或调用其他模型时再按钱包余额计费。
                 </p>
               </CardContent>
@@ -483,12 +507,6 @@ response = client.chat.completions.create(
           )}
         </div>
       </SectionPageLayout.Content>
-      <PaymentDisplayDialog
-        open={purchaseOpen}
-        onOpenChange={setPurchaseOpen}
-        productName={selectedProduct?.name ?? ''}
-        amount={selectedProduct?.amount ?? ''}
-      />
     </SectionPageLayout>
   )
 }

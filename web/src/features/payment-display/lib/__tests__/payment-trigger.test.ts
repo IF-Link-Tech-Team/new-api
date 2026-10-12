@@ -35,18 +35,18 @@ function trigger(attributes: Record<string, string>): EventTarget {
 }
 
 describe('public home payment trigger', () => {
-  test('reads product details from a composed shadow-DOM event path', () => {
+  test('reads only the stable product id from a composed shadow-DOM event path', () => {
     const selection = paymentSelectionFromEventPath([
       trigger({}),
       trigger({
+        'data-payment-product-id': 'pro',
         'data-payment-product': 'Pro',
         'data-payment-amount': '¥79',
       }),
     ])
 
     assert.deepEqual(selection, {
-      productName: 'Pro',
-      amount: '¥79',
+      productId: 'pro',
     })
   })
 
@@ -54,7 +54,10 @@ describe('public home payment trigger', () => {
     assert.equal(
       paymentSelectionFromEventPath([
         trigger({ href: '/plans' }),
-        trigger({ 'data-payment-product': 'Pro' }),
+        trigger({
+          'data-payment-product': 'Pro',
+          'data-payment-amount': '¥79',
+        }),
       ]),
       null
     )

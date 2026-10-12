@@ -24,7 +24,7 @@ export interface PurchaseCatalogItem {
   amount: string
 }
 
-type PurchaseCategory = 'package' | 'subscription'
+export type PurchaseCategory = 'package' | 'subscription'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -78,6 +78,27 @@ export function purchaseCatalogFromDocument(
   )
 }
 
+export function purchaseCatalogProductFromDocument(
+  value: unknown,
+  productId: string
+): PurchaseCatalogItem | null {
+  const normalizedProductId = productId.trim()
+  if (!normalizedProductId) {
+    return null
+  }
+
+  for (const category of ['subscription', 'package'] as const) {
+    const product = purchaseCatalogFromDocument(value, category).find(
+      (item) => item.id === normalizedProductId
+    )
+    if (product) {
+      return product
+    }
+  }
+
+  return null
+}
+
 export async function loadPurchaseCatalog(
   category: PurchaseCategory,
   fetcher: typeof fetch = fetch
@@ -95,4 +116,19 @@ export async function loadPurchaseCatalog(
   } catch {
     return []
   }
+}
+
+export async function loadPurchaseCatalogProduct(
+  productId: string,
+  fetcher: typeof fetch = fetch
+): Promise<PurchaseCatalogItem | null> {
+  const response = await fetcher('/purchase-catalog.json', {
+    cache: 'no-store',
+    credentials: 'same-origin',
+  })
+  if (!response.ok) {
+    throw new Error('Purchase catalog request failed')
+  }
+
+  return purchaseCatalogProductFromDocument(await response.json(), productId)
 }
