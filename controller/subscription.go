@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -16,7 +17,43 @@ import (
 // ---- Shared types ----
 
 type SubscriptionPlanDTO struct {
-	Plan model.SubscriptionPlan `json:"plan"`
+	Plan      model.SubscriptionPlan `json:"plan"`
+	ProductID string                 `json:"product_id,omitempty"`
+}
+
+// subscriptionPlanProductID returns the stable public product id used by the
+// landing page. The id is derived from the server-side plan metadata; the
+// checkout endpoint still accepts only the numeric plan id and takes its
+// amount from the database.
+func subscriptionPlanProductID(plan model.SubscriptionPlan) string {
+	value := strings.ToLower(strings.TrimSpace(plan.Title + " " + plan.Subtitle + " " + plan.ModelScope))
+	words := strings.FieldsFunc(value, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	seen := make(map[string]struct{}, len(words))
+	for _, word := range words {
+		seen[word] = struct{}{}
+	}
+	has := func(word string) bool {
+		_, ok := seen[word]
+		return ok
+	}
+	switch {
+	case has("deepseek") && has("flash"):
+		return "deepseek-v4-flash"
+	case has("deepseek") && has("pro"):
+		return "deepseek-v4-pro"
+	case has("lite"):
+		return "lite"
+	case has("max"):
+		return "max"
+	case has("pro"):
+		return "pro"
+	case plan.Id > 0:
+		return strconv.Itoa(plan.Id)
+	default:
+		return ""
+	}
 }
 
 type BillingPreferenceRequest struct {
@@ -41,10 +78,19 @@ func GetSubscriptionPlans(c *gin.Context) {
 		return
 	}
 	result := make([]SubscriptionPlanDTO, 0, len(plans))
+	usedProductIDs := make(map[string]struct{}, len(plans))
 	for _, p := range plans {
 		p.NormalizeDefaults()
+		productID := subscriptionPlanProductID(p)
+		if productID != "" {
+			if _, exists := usedProductIDs[productID]; exists {
+				productID = strconv.Itoa(p.Id)
+			}
+			usedProductIDs[productID] = struct{}{}
+		}
 		result = append(result, SubscriptionPlanDTO{
-			Plan: p,
+			Plan:      p,
+			ProductID: productID,
 		})
 	}
 	common.ApiSuccess(c, result)
@@ -154,10 +200,19 @@ func AdminListSubscriptionPlans(c *gin.Context) {
 		return
 	}
 	result := make([]SubscriptionPlanDTO, 0, len(plans))
+	usedProductIDs := make(map[string]struct{}, len(plans))
 	for _, p := range plans {
 		p.NormalizeDefaults()
+		productID := subscriptionPlanProductID(p)
+		if productID != "" {
+			if _, exists := usedProductIDs[productID]; exists {
+				productID = strconv.Itoa(p.Id)
+			}
+			usedProductIDs[productID] = struct{}{}
+		}
 		result = append(result, SubscriptionPlanDTO{
-			Plan: p,
+			Plan:      p,
+			ProductID: productID,
 		})
 	}
 	common.ApiSuccess(c, result)

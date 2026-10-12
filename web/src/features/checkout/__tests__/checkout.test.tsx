@@ -60,6 +60,9 @@ const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { loadPurchaseCatalogProduct } =
   await import('@/features/payment-display/lib/purchase-catalog')
+const { getPublicPlans, paySubscriptionAlipay } =
+  await import('@/features/subscriptions/api')
+const { api } = await import('@/lib/api')
 const { Checkout } = await import('../index')
 
 const i18n = createInstance()
@@ -73,6 +76,7 @@ await i18n.use(initReactI18next).init({
         'Alipay QR code': '支付宝支付二维码',
         'Alipay QR code pending': '支付宝支付二维码待接入',
         'Amount Due (RMB)': '应付金额（人民币）',
+        Pay: '支付',
         Payment: '支付',
         'Product Name': '商品名称',
         'Review your payment details': '请核对商品与金额',
@@ -87,11 +91,13 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
 const originalFetch = globalThis.fetch
+const originalAdapter = api.defaults.adapter
 let root: ReturnType<typeof createRoot> | null = null
 let host: HTMLDivElement | null = null
 
 afterEach(async () => {
   globalThis.fetch = originalFetch
+  api.defaults.adapter = originalAdapter
   if (root) {
     await act(async () => root?.unmount())
   }
@@ -105,7 +111,7 @@ afterAll(() => {
   domWindow.close()
 })
 
-test('renders trusted catalog details without creating an order', async () => {
+test('renders server-priced checkout details without creating an order', async () => {
   const requests: string[] = []
   globalThis.fetch = async (input) => {
     requests.push(String(input))
@@ -126,12 +132,48 @@ test('renders trusted catalog details without creating an order', async () => {
     } as Response
   }
 
+  api.defaults.adapter = async (config) => {
+    requests.push(`${String(config.method).toUpperCase()} ${config.url}`)
+    return {
+      data: {
+        success: true,
+        data: [
+          {
+            product_id: 'pro',
+            plan: {
+              id: 2,
+              title: 'Pro',
+              subtitle: '',
+              price_amount: 79,
+              currency: 'CNY',
+              duration_unit: 'month',
+              duration_value: 1,
+              quota_reset_period: 'monthly',
+              enabled: true,
+              sort_order: 1,
+              max_purchase_per_user: 0,
+              total_amount: 1000000,
+            },
+          },
+        ],
+      },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }
+  }
+
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   })
   await queryClient.prefetchQuery({
     queryKey: ['purchase-catalog-product', 'pro'],
     queryFn: () => loadPurchaseCatalogProduct('pro'),
+  })
+  await queryClient.prefetchQuery({
+    queryKey: ['subscription-plans', 'checkout'],
+    queryFn: async () => (await getPublicPlans()).data ?? [],
   })
 
   host = document.createElement('div')
@@ -149,8 +191,46 @@ test('renders trusted catalog details without creating an order', async () => {
 
   const text = document.body.textContent ?? ''
   assert.equal(text.includes('Pro'), true)
-  assert.equal(text.includes('¥79/ 月'), true)
+  assert.equal(text.includes('¥79.00'), true)
   assert.equal(text.includes('支付宝支付二维码待接入'), true)
-  assert.equal(text.includes('支付宝支付接入中，当前暂无法完成在线付款'), true)
-  assert.deepEqual(requests, ['/purchase-catalog.json'])
+  assert.equal(text.includes('支付接入中，当前暂无法完成在线付款'), false)
+  assert.equal(text.includes('支付'), true)
+  assert.deepEqual(requests, [
+    '/purchase-catalog.json',
+    'GET /api/subscription/plans',
+  ])
+})
+
+test('starts Alipay page payment with only the trusted plan id', async () => {
+  let request: { url?: string; method?: string; data?: unknown } | undefined
+  api.defaults.adapter = async (config) => {
+    request = {
+      url: config.url,
+      method: config.method,
+      data:
+        typeof config.data === 'string' ? JSON.parse(config.data) : config.data,
+    }
+    return {
+      data: {
+        success: true,
+        data: {
+          pay_url: 'https://openapi.alipay.com/gateway.do?form=trusted',
+          trade_no: 'SUB-ALI-test',
+        },
+      },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }
+  }
+
+  const response = await paySubscriptionAlipay({ plan_id: 2 })
+
+  assert.equal(response.data?.pay_url?.includes('alipay.com'), true)
+  assert.deepEqual(request, {
+    url: '/api/subscription/alipay/pay',
+    method: 'post',
+    data: { plan_id: 2 },
+  })
 })

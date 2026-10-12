@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -38,7 +39,7 @@ func SubscriptionRequestAlipayPay(c *gin.Context) {
 	if !isAlipayTopUpEnabled() {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "支付宝支付尚未启用,请管理员先配置 Alipay 凭据",
+			"message": "支付宝支付尚未启用,请管理员先配置 AppID / 商户 PID / 应用私钥 / 支付宝公钥",
 		})
 		return
 	}
@@ -70,6 +71,10 @@ func SubscriptionRequestAlipayPay(c *gin.Context) {
 	}
 	if plan.PriceAmount < 0.01 {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "套餐金额过低"})
+		return
+	}
+	if strings.ToUpper(strings.TrimSpace(plan.Currency)) != "CNY" {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "支付宝电脑网站支付仅支持人民币套餐"})
 		return
 	}
 

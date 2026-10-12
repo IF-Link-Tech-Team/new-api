@@ -141,6 +141,13 @@ export async function paySubscriptionStripe(
   return res.data
 }
 
+export async function paySubscriptionAlipay(
+  data: SubscriptionPayRequest
+): Promise<SubscriptionPayResponse> {
+  const res = await api.post('/api/subscription/alipay/pay', data)
+  return res.data
+}
+
 export async function paySubscriptionCreem(
   data: SubscriptionPayRequest
 ): Promise<SubscriptionPayResponse> {

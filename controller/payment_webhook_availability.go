@@ -116,12 +116,14 @@ func isAlipayTopUpEnabled() bool {
 		return false
 	}
 	return strings.TrimSpace(setting.AlipayAppID) != "" &&
+		strings.TrimSpace(setting.AlipaySellerID) != "" &&
 		strings.TrimSpace(setting.AlipayPrivateKey) != "" &&
 		strings.TrimSpace(setting.AlipayPublicKey) != ""
 }
 
 func isAlipayWebhookConfigured() bool {
 	return strings.TrimSpace(setting.AlipayAppID) != "" &&
+		strings.TrimSpace(setting.AlipaySellerID) != "" &&
 		strings.TrimSpace(setting.AlipayPublicKey) != ""
 }
 

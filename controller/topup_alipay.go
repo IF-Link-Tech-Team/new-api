@@ -39,7 +39,7 @@ func RequestAlipayPay(c *gin.Context) {
 	if !isAlipayTopUpEnabled() {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
-			"message": "支付宝支付尚未启用,请管理员先在 iflink 后台配置 AlipayAppID / 私钥 / 公钥",
+			"message": "支付宝支付尚未启用,请管理员先配置 AppID / 商户 PID / 应用私钥 / 支付宝公钥",
 		})
 		return
 	}
@@ -151,8 +151,10 @@ func RequestAlipayPay(c *gin.Context) {
 // 文档:https://opendocs.alipay.com/support/FAQ/api/notification
 func AlipayNotify(c *gin.Context) {
 	if !isAlipayWebhookEnabled() {
-		// 直接返回 success 让支付宝停止重试
-		c.String(http.StatusOK, "success")
+		// 未配置完整的支付宝回调验签参数时必须拒绝确认，避免把未验证的通知
+		// 当成成功处理。支付宝会在服务恢复后重试该通知。
+		logger.LogWarn(c.Request.Context(), "Alipay notify rejected because webhook is not configured")
+		c.String(http.StatusServiceUnavailable, "fail")
 		return
 	}
 	bodyBytes, err := io.ReadAll(c.Request.Body)
@@ -164,6 +166,11 @@ func AlipayNotify(c *gin.Context) {
 	params, ok := alipayVerifyNotifyParams(string(bodyBytes))
 	if !ok {
 		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay notify 验签失败 raw=%q", string(bodyBytes)))
+		c.String(http.StatusOK, "fail")
+		return
+	}
+	if err := validateAlipayNotifyIdentity(params); err != nil {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay notify 身份校验失败 error=%q", err.Error()))
 		c.String(http.StatusOK, "fail")
 		return
 	}
@@ -182,6 +189,14 @@ func AlipayNotify(c *gin.Context) {
 	defer UnlockOrder(tradeNo)
 
 	// Try complete subscription order first
+	if subscriptionOrder := model.GetSubscriptionOrderByTradeNo(tradeNo); subscriptionOrder != nil {
+		if subscriptionOrder.PaymentProvider != model.PaymentProviderAlipay ||
+			!alipayNotifyAmountMatches(params, subscriptionOrder.Money) {
+			logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay 订阅订单校验失败 trade_no=%s", tradeNo))
+			c.String(http.StatusOK, "fail")
+			return
+		}
+	}
 	if err := model.CompleteSubscriptionOrder(tradeNo, string(bodyBytes), model.PaymentProviderAlipay, params["trade_status"]); err == nil {
 		logger.LogInfo(c.Request.Context(), fmt.Sprintf("Alipay 订阅订单处理成功 trade_no=%s", tradeNo))
 		c.String(http.StatusOK, "success")
@@ -207,9 +222,8 @@ func AlipayNotify(c *gin.Context) {
 
 	// 校验金额(防止伪造)
 	expectedMoney := topUp.Money
-	paidMoney, _ := strconv.ParseFloat(params["total_amount"], 64)
-	if paidMoney+0.001 < expectedMoney {
-		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay 通知金额不匹配 trade_no=%s expected=%.2f paid=%.2f", tradeNo, expectedMoney, paidMoney))
+	if !alipayNotifyAmountMatches(params, expectedMoney) {
+		logger.LogWarn(c.Request.Context(), fmt.Sprintf("Alipay 通知金额不匹配 trade_no=%s expected=%.2f", tradeNo, expectedMoney))
 		c.String(http.StatusOK, "fail")
 		return
 	}

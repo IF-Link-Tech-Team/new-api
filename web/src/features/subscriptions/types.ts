@@ -51,6 +51,8 @@ export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>
 
 export interface PlanRecord {
   plan: SubscriptionPlan
+  /** Stable product id assigned by the server for public checkout links. */
+  product_id?: string
 }
 
 // ============================================================================
@@ -110,6 +112,9 @@ export interface SubscriptionPayResponse {
     order_id?: string
     token?: string
     token_expires_at?: number | string
+    // Alipay page-pay URL and the server-created pending order number.
+    pay_url?: string
+    trade_no?: string
   }
   url?: string
 }

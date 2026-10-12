@@ -16,16 +16,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { CircleAlert, QrCode } from 'lucide-react'
+import { CircleAlert, Loader2, QrCode } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
 
 interface PaymentDisplayPanelProps {
   productName: string
   amount: string
   qrCodeUrl?: string
   onQrCodeError?: () => void
+  /** Keep the original display-only state for wallet and legacy dialogs. */
+  displayOnly?: boolean
+  onPay?: () => void
+  paying?: boolean
 }
 
 export function PaymentDisplayPanel(props: PaymentDisplayPanelProps) {
@@ -72,14 +77,29 @@ export function PaymentDisplayPanel(props: PaymentDisplayPanelProps) {
         )}
       </div>
 
-      <Alert>
-        <CircleAlert aria-hidden='true' />
-        <AlertDescription>
-          {t(
-            'Alipay payment integration is in progress. Online payment is currently unavailable.'
-          )}
-        </AlertDescription>
-      </Alert>
+      {props.displayOnly !== false ? (
+        <Alert>
+          <CircleAlert aria-hidden='true' />
+          <AlertDescription>
+            {t(
+              'Alipay payment integration is in progress. Online payment is currently unavailable.'
+            )}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {props.onPay ? (
+        <Button
+          className='w-full'
+          onClick={props.onPay}
+          disabled={props.paying}
+        >
+          {props.paying ? (
+            <Loader2 className='animate-spin' aria-hidden='true' />
+          ) : null}
+          {t('Pay')}
+        </Button>
+      ) : null}
     </div>
   )
 }

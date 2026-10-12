@@ -14,6 +14,9 @@ var (
 	// AlipayAppID 支付宝开放平台应用 AppID (16 位数字)
 	AlipayAppID = ""
 
+	// AlipaySellerID 趣搭企业支付宝商户 PID,用于校验异步通知收款方。
+	AlipaySellerID = ""
+
 	// AlipayPrivateKey 应用私钥 (RSA2, PKCS8, PEM 格式), 用于 iflink 签名支付请求
 	AlipayPrivateKey = ""
 

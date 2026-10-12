@@ -83,6 +83,16 @@ func InitOptionMap() {
 	common.OptionMap["Price"] = strconv.FormatFloat(operation_setting.Price, 'f', -1, 64)
 	common.OptionMap["USDExchangeRate"] = strconv.FormatFloat(operation_setting.USDExchangeRate, 'f', -1, 64)
 	common.OptionMap["MinTopUp"] = strconv.Itoa(operation_setting.MinTopUp)
+	common.OptionMap["AlipayAppID"] = setting.AlipayAppID
+	common.OptionMap["AlipaySellerID"] = setting.AlipaySellerID
+	common.OptionMap["AlipayPrivateKey"] = setting.AlipayPrivateKey
+	common.OptionMap["AlipayPublicKey"] = setting.AlipayPublicKey
+	common.OptionMap["AlipaySandbox"] = strconv.FormatBool(setting.AlipaySandbox)
+	common.OptionMap["AlipayGateway"] = setting.AlipayGateway
+	common.OptionMap["AlipayReturnURL"] = setting.AlipayReturnURL
+	common.OptionMap["AlipaySandboxGateway"] = setting.AlipaySandboxGateway
+	common.OptionMap["AlipayMinTopUp"] = strconv.FormatFloat(setting.AlipayMinTopUp, 'f', -1, 64)
+	common.OptionMap["AlipayUnitPrice"] = strconv.FormatFloat(setting.AlipayUnitPrice, 'f', -1, 64)
 	common.OptionMap["StripeMinTopUp"] = strconv.Itoa(setting.StripeMinTopUp)
 	common.OptionMap["StripeApiSecret"] = setting.StripeApiSecret
 	common.OptionMap["StripeWebhookSecret"] = setting.StripeWebhookSecret
@@ -435,6 +445,8 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.StripeApiSecret = value
 	case "AlipayAppID":
 		setting.AlipayAppID = value
+	case "AlipaySellerID":
+		setting.AlipaySellerID = value
 	case "AlipayPrivateKey":
 		setting.AlipayPrivateKey = value
 	case "AlipayPublicKey":
