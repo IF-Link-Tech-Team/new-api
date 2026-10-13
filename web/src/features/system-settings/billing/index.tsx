@@ -73,6 +73,8 @@ const defaultBillingSettings: BillingSettings = {
   'payment_setting.compliance_confirmed_at': 0,
   'payment_setting.compliance_confirmed_by': 0,
   'payment_setting.compliance_confirmed_ip': '',
+  'payment_setting.iflink_pay_secret': '',
+  'payment_setting.iflink_pay_base_url': '',
   StripeApiSecret: '',
   StripeWebhookSecret: '',
   StripePriceId: '',

@@ -39,6 +39,18 @@ export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
   url?: string
 }
 export type StripePaymentResponse = ApiResponse<{ pay_link: string }>
+/**
+ * IFLinkPay 第三方支付页(临时跳转方案)。
+ *
+ * 后端下单后返回已签名的 pay_url,前端整页跳转;
+ * 签名 secret 只在服务端,不下发前端。
+ */
+export type IFLinkPayPaymentResponse = ApiResponse<{
+  pay_url: string
+  trade_no: string
+  amount: number
+  pay_money: number
+}>
 export type AffiliateCodeResponse = ApiResponse<string>
 export type AffiliateTransferResponse = ApiResponse
 export type CreemPaymentResponse = ApiResponse<{ checkout_url: string }>
@@ -122,6 +134,8 @@ export interface WaffoPayMethod {
 export interface TopupInfo {
   /** Whether online topup is enabled */
   enable_online_topup: boolean
+  /** Whether IFLinkPay third-party redirect payment is available */
+  enable_iflinkpay_topup?: boolean
   /** Whether Stripe topup is enabled */
   enable_stripe_topup: boolean
   /** Available payment methods */
@@ -184,6 +198,17 @@ export interface PaymentRequest {
   amount: number
   /** Payment method identifier */
   payment_method: string
+}
+
+/**
+ * IFLinkPay 支付请求参数
+ *
+ * 后端只接受 amount(元, 任意金额最多两位小数),不收 payment_method —— 见
+ * controller/topup_iflinkpay.go 的 TopUpIFLinkPayRequest。
+ */
+export interface IFLinkPayPaymentRequest {
+  /** Topup amount */
+  amount: number
 }
 
 /**

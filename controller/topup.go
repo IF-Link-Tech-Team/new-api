@@ -95,8 +95,30 @@ func GetTopUpInfo(c *gin.Context) {
 		}
 	}
 
+	// 如果启用了 IFLinkPay 支付，添加到支付方法列表
+	enableIFLinkPay := isIFLinkPayTopUpEnabled()
+	if enableIFLinkPay {
+		hasIFLinkPay := false
+		for _, method := range payMethods {
+			if method["type"] == model.PaymentMethodIFLinkPay {
+				hasIFLinkPay = true
+				break
+			}
+		}
+
+		if !hasIFLinkPay {
+			payMethods = append(payMethods, map[string]string{
+				"name":      "IFLink Pay",
+				"type":      model.PaymentMethodIFLinkPay,
+				"color":     "#0EA5E9",
+				"min_topup": "1",
+			})
+		}
+	}
+
 	data := gin.H{
 		"enable_online_topup":              isEpayTopUpEnabled(),
+		"enable_iflinkpay_topup":           enableIFLinkPay,
 		"enable_stripe_topup":              isStripeTopUpEnabled(),
 		"enable_creem_topup":               isCreemTopUpEnabled(),
 		"enable_waffo_topup":               enableWaffo,
