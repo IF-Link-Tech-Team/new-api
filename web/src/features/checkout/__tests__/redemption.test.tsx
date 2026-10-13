@@ -7,19 +7,14 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import assert from 'node:assert/strict'
+import { after as afterAll, afterEach, test } from 'node:test'
 
 import { Window } from 'happy-dom'
-
-const bunTestModule = 'bun:test'
-const { afterAll, afterEach, test } = (await import(bunTestModule)) as {
-  afterAll: typeof import('node:test').after
-  afterEach: typeof import('node:test').afterEach
-  test: typeof import('node:test').test
-}
 
 const domWindow = new Window({ url: 'https://token.iflink.tech/checkout' })
 const domGlobals = [
   'window',
+  'self',
   'document',
   'navigator',
   'HTMLElement',
@@ -153,6 +148,7 @@ test('redeems the selected product even when the payment QR code is unavailable'
     routeTree: rootRoute,
     history: createMemoryHistory({ initialEntries: ['/'] }),
   })
+  await router.load()
   await act(async () => {
     root?.render(
       <QueryClientProvider client={queryClient}>
@@ -163,10 +159,7 @@ test('redeems the selected product even when the payment QR code is unavailable'
     )
   })
 
-  assert.match(
-    document.body.textContent ?? '',
-    /Alipay QR code pending/
-  )
+  assert.match(document.body.textContent ?? '', /Alipay QR code pending/)
 
   const input = document.querySelector(
     'input[aria-label="Redemption code"]'
