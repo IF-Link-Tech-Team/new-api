@@ -87,6 +87,7 @@ export function Home() {
         setPendingProductId(selection.productId)
         return
       }
+
       void navigate({
         to: '/checkout',
         search: { product_id: selection.productId },
@@ -147,7 +148,10 @@ export function Home() {
               if (!open) setPendingProductId(null)
             }}
             onContinue={() => {
-              if (!pendingProductId) return
+              if (!pendingProductId) {
+                return
+              }
+
               void navigate({
                 to: '/sign-in',
                 search: { redirect: buildCheckoutPath(pendingProductId) },

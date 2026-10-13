@@ -34,10 +34,10 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
+import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { formatQuota } from '@/lib/format'
 import { DEFAULT_CURRENCY_CONFIG } from '@/stores/system-config-store'
-import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
 
 import {
   paySubscriptionStripe,
@@ -45,7 +45,6 @@ import {
   paySubscriptionEpay,
   paySubscriptionWaffoPancake,
   paySubscriptionBalance,
-  paySubscriptionAlipay,
 } from '../../api'
 import { formatDuration, formatResetPeriod } from '../../lib'
 import type { PlanRecord } from '../../types'
@@ -63,14 +62,11 @@ interface Props {
   enableCreem?: boolean
   enableWaffoPancake?: boolean
   enableOnlineTopUp?: boolean
-  enableAlipay?: boolean
   epayMethods?: PaymentMethod[]
   purchaseLimit?: number
   purchaseCount?: number
   userQuota?: number
   onPurchaseSuccess?: () => void | Promise<void>
-  amountDueOverride?: number
-  purchaseMode?: 'purchase' | 'upgrade'
   displayOnly?: boolean
 }
 
@@ -91,34 +87,28 @@ export function SubscriptionPurchaseDialog(props: Props) {
   const plan = props.plan?.plan
   if (!plan) return null
 
-  const isV1Product = Boolean(plan.product_type)
-  const hasStripe = !isV1Product && props.enableStripe && !!plan.stripe_price_id
-  const hasCreem = !isV1Product && props.enableCreem && !!plan.creem_product_id
+  const hasStripe = props.enableStripe && !!plan.stripe_price_id
+  const hasCreem = props.enableCreem && !!plan.creem_product_id
   const hasWaffoPancake =
-    !isV1Product && props.enableWaffoPancake && !!plan.waffo_pancake_product_id
+    props.enableWaffoPancake && !!plan.waffo_pancake_product_id
   const hasEpay =
-    !isV1Product &&
-    props.enableOnlineTopUp &&
-    (props.epayMethods || []).length > 0
-  const hasAlipay = props.enableAlipay === true
-  const hasAnyPayment =
-    hasAlipay || hasStripe || hasCreem || hasWaffoPancake || hasEpay
+    props.enableOnlineTopUp && (props.epayMethods || []).length > 0
+  const hasAnyPayment = hasStripe || hasCreem || hasWaffoPancake || hasEpay
   const selectedEpayMethodLabel =
     (props.epayMethods || []).find((m) => m.type === selectedEpayMethod)
       ?.name ||
     selectedEpayMethod ||
     t('Select payment method')
   const totalAmount = Number(plan.total_amount || 0)
-  const amountDue =
-    props.amountDueOverride !== undefined
-      ? props.amountDueOverride
-      : Number(plan.price_amount || 0)
-  const price = amountDue.toFixed(2)
+  const price = Number(plan.price_amount || 0).toFixed(2)
   const quotaPerUnit =
     currency?.quotaPerUnit && currency.quotaPerUnit > 0
       ? currency.quotaPerUnit
       : DEFAULT_CURRENCY_CONFIG.quotaPerUnit
-  const balanceCost = Math.max(0, Math.ceil(amountDue * quotaPerUnit))
+  const balanceCost = Math.max(
+    0,
+    Math.ceil(Number(plan.price_amount || 0) * quotaPerUnit)
+  )
   const userQuota = Math.max(0, Number(props.userQuota || 0))
   const allowBalancePay = plan.allow_balance_pay !== false
   const insufficientBalance = userQuota < balanceCost
@@ -267,29 +257,6 @@ export function SubscriptionPurchaseDialog(props: Props) {
     }
   }
 
-  const handlePayAlipay = async () => {
-    setPaying(true)
-    try {
-      const res = await paySubscriptionAlipay({ plan_id: plan.id })
-      if (res.success && res.data?.pay_url) {
-        if (res.data.trade_no) {
-          sessionStorage.setItem(
-            'cilai_pending_subscription_order',
-            res.data.trade_no
-          )
-        }
-        toast.success(t('Redirecting to payment page...'))
-        window.location.href = res.data.pay_url
-        return
-      }
-      toast.error(res.message || t('Payment request failed'))
-    } catch {
-      toast.error(t('Payment request failed'))
-    } finally {
-      setPaying(false)
-    }
-  }
-
   if (props.displayOnly) {
     return (
       <PaymentDisplayDialog
@@ -308,9 +275,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
       title={
         <>
           <Crown className='h-5 w-5' />
-          {props.purchaseMode === 'upgrade'
-            ? '补差升级'
-            : t('Purchase Subscription')}
+          {t('Purchase Subscription')}
         </>
       }
       contentClassName='max-sm:w-[calc(100vw-1.5rem)] sm:max-w-md'
@@ -351,7 +316,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
             </span>
             <span className='flex items-center gap-1 text-sm'>
               <Package className='h-3.5 w-3.5' />
-              {totalAmount > 0 ? formatQuota(totalAmount) : t('Not configured')}
+              {totalAmount > 0 ? formatQuota(totalAmount) : t('Unlimited')}
             </span>
           </div>
           {plan.upgrade_group && (
@@ -365,10 +330,7 @@ export function SubscriptionPurchaseDialog(props: Props) {
           <Separator />
           <div className='flex items-center justify-between'>
             <span className='text-sm font-medium'>{t('Amount Due')}</span>
-            <span className='text-primary text-lg font-bold'>
-              {plan.currency === 'CNY' ? '¥' : `${plan.currency} `}
-              {price}
-            </span>
+            <span className='text-primary text-lg font-bold'>${price}</span>
           </div>
         </div>
 
@@ -419,15 +381,6 @@ export function SubscriptionPurchaseDialog(props: Props) {
             <p className='text-muted-foreground text-xs'>
               {t('Select payment method')}
             </p>
-            {hasAlipay && (
-              <Button
-                className='w-full whitespace-nowrap'
-                onClick={handlePayAlipay}
-                disabled={paying || limitReached}
-              >
-                支付宝支付
-              </Button>
-            )}
             {(hasStripe || hasCreem || hasWaffoPancake) && (
               <div className='grid grid-cols-2 gap-2 sm:flex'>
                 {hasStripe && (

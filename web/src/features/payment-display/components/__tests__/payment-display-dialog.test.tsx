@@ -74,8 +74,8 @@ await i18n.use(initReactI18next).init({
         'Alipay payment integration is in progress. Online payment is currently unavailable.':
           '支付宝支付接入中，当前暂无法完成在线付款',
         'Alipay QR code': '支付宝收款码',
-        'Alipay QR code pending': '支付宝收款码待补充',
-        'Amount Due': '应付金额',
+        'Alipay QR code pending': '支付宝支付二维码待接入',
+        'Amount Due (RMB)': '应付金额（人民币）',
         Close: '关闭',
         'Product Name': '产品名称',
         'Review your payment details': '请核对商品与金额',
@@ -128,21 +128,18 @@ test('shows product details and the QR placeholder without creating an order', a
         <PaymentDisplayDialog
           open
           onOpenChange={(open) => openChanges.push(open)}
-          productName='月套餐·标准档'
-          amount='¥49.90'
+          productName='Pro'
+          amount='¥79.00'
         />
       </I18nextProvider>
     )
   })
 
   const text = document.body.textContent ?? ''
-  assert.equal(text.includes('月套餐·标准档'), true)
-  assert.equal(text.includes('¥49.90'), true)
-  assert.equal(text.includes('支付宝收款码待补充'), true)
-  assert.equal(
-    text.includes('支付宝支付接入中，当前暂无法完成在线付款'),
-    true
-  )
+  assert.equal(text.includes('Pro'), true)
+  assert.equal(text.includes('¥79.00'), true)
+  assert.equal(text.includes('支付宝支付二维码待接入'), true)
+  assert.equal(text.includes('支付宝支付接入中，当前暂无法完成在线付款'), true)
   assert.deepEqual(requests, ['/payment-display.json'])
 
   const closeButton = [...document.querySelectorAll('button')].find(

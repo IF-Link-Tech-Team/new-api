@@ -2,9 +2,19 @@
 Copyright (C) 2023-2026 QuantumNous
 
 This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
 */
 import { CircleAlert, QrCode } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -20,6 +30,7 @@ interface PaymentDisplayPanelProps {
 
 export function PaymentDisplayPanel(props: PaymentDisplayPanelProps) {
   const { t } = useTranslation()
+
   return (
     <div className='space-y-4'>
       <div className='bg-muted/50 space-y-3 rounded-lg border p-4'>
@@ -27,12 +38,12 @@ export function PaymentDisplayPanel(props: PaymentDisplayPanelProps) {
           <span className='text-muted-foreground text-sm'>
             {t('Product Name')}
           </span>
-          <span className='max-w-[260px] text-right text-sm font-medium break-words'>
+          <span className='max-w-[240px] text-right text-sm font-medium break-words'>
             {props.productName}
           </span>
         </div>
         <div className='flex items-center justify-between gap-4 border-t pt-3'>
-          <span className='text-sm font-medium'>{t('List price')}</span>
+          <span className='text-sm font-medium'>{t('Amount Due (RMB)')}</span>
           <span className='text-primary text-xl font-bold'>{props.amount}</span>
         </div>
       </div>
@@ -49,10 +60,13 @@ export function PaymentDisplayPanel(props: PaymentDisplayPanelProps) {
             onError={props.onQrCodeError}
           />
         ) : (
-          <div className='text-muted-foreground flex flex-col items-center gap-3 text-center'>
+          <div
+            className='text-muted-foreground flex flex-col items-center gap-3 text-center'
+            data-payment-qr-placeholder='true'
+          >
             <QrCode className='h-10 w-10' aria-hidden='true' />
             <span className='text-sm font-medium'>
-              {t('Payment QR code is not available yet')}
+              {t('Alipay QR code pending')}
             </span>
           </div>
         )}
@@ -62,7 +76,7 @@ export function PaymentDisplayPanel(props: PaymentDisplayPanelProps) {
         <CircleAlert aria-hidden='true' />
         <AlertDescription>
           {t(
-            'Online payment is not open yet. You can still redeem a code below.'
+            'Alipay payment integration is in progress. Online payment is currently unavailable.'
           )}
         </AlertDescription>
       </Alert>

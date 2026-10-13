@@ -165,7 +165,7 @@ test('redeems the selected product even when the payment QR code is unavailable'
 
   assert.match(
     document.body.textContent ?? '',
-    /Payment QR code is not available yet/
+    /Alipay QR code pending/
   )
 
   const input = document.querySelector(
