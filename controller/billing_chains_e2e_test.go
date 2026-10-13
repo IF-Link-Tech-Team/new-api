@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -265,6 +266,19 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	require.GreaterOrEqual(t, classFailure.Code, http.StatusBadRequest)
 	walletFailure := call(walletToken.Key, model.ClassroomModelV4GA, "force-upstream-failure")
 	require.GreaterOrEqual(t, walletFailure.Code, http.StatusBadRequest)
+
+	require.Eventually(t, func() bool {
+		var currentEntitlement model.UserSubscription
+		var currentClassroomUser, currentWalletUser model.User
+		if db.First(&currentEntitlement, classroomToken.UserSubscriptionId).Error != nil ||
+			db.First(&currentClassroomUser, classroomUser.Id).Error != nil ||
+			db.First(&currentWalletUser, walletUser.Id).Error != nil {
+			return false
+		}
+		return currentEntitlement.AmountUsed == classUsedBeforeFailure &&
+			currentClassroomUser.Quota == classWalletBeforeFailure &&
+			currentWalletUser.Quota == walletBeforeFailure
+	}, 2*time.Second, 10*time.Millisecond, "asynchronous failure refunds must reach durable balances")
 
 	require.NoError(t, db.First(&entitlement, classroomToken.UserSubscriptionId).Error)
 	require.Equal(t, classUsedBeforeFailure, entitlement.AmountUsed, "failed classroom call must refund its pre-consume")
