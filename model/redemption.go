@@ -248,6 +248,13 @@ func Redeem(key string, userId int) (quota int, err error) {
 		common.SysError("redemption failed: " + err.Error())
 		return 0, ErrRedeemFailed
 	}
+	// Dashboard authentication may already have populated the user's Redis
+	// snapshot before the code is redeemed. Keep that quota snapshot in step
+	// with the committed database credit so the newly funded wallet can be used
+	// immediately by a normal API key.
+	if err := cacheIncrUserQuota(userId, int64(redemption.Quota)); err != nil {
+		common.SysLog("failed to increase user quota cache after redemption: " + err.Error())
+	}
 	RecordLog(userId, LogTypeTopup, fmt.Sprintf("通过兑换码充值 %s，兑换码ID %d", logger.LogQuota(redemption.Quota), redemption.Id))
 	return redemption.Quota, nil
 }
