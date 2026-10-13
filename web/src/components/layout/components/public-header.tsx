@@ -101,7 +101,7 @@ export function PublicHeader(props: PublicHeaderProps) {
   const displaySiteName = customSiteName || systemName
   const baseLinks = dynamicLinks.length > 0 ? dynamicLinks : navLinks
   const links = useMemo<PublicNavLink[]>(() => {
-    const filtered = baseLinks
+    return baseLinks
       .filter((link) => {
         // Never surface upstream New API docs links in the public header
         if (/newapi\.pro/i.test(link.href)) return false
@@ -115,19 +115,6 @@ export function PublicHeader(props: PublicHeaderProps) {
       .map((link) =>
         link.href === '/about' ? { ...link, title: 'About Cilai' } : link
       )
-    const anchorLinks: PublicNavLink[] = [
-      { title: 'Scenario Plans', href: '/#scenario', anchor: true },
-      { title: 'How to Use', href: '/#usage', anchor: true },
-    ]
-    const homeIndex = filtered.findIndex((link) => link.href === '/')
-    if (homeIndex >= 0) {
-      return [
-        ...filtered.slice(0, homeIndex + 1),
-        ...anchorLinks,
-        ...filtered.slice(homeIndex + 1),
-      ]
-    }
-    return [...anchorLinks, ...filtered]
   }, [baseLinks, isAuthenticated])
 
   useEffect(() => {

@@ -167,17 +167,35 @@ function ApiKeysMobileList({
 
             <div className='flex items-center justify-between gap-2 text-xs'>
               <span className='text-muted-foreground'>{t('Quota')}</span>
-              {apiKey.unlimited_quota ? (
-                <UnlimitedQuotaBadge used={apiKey.used_quota} />
-              ) : (
-                <span className='font-medium tabular-nums'>
-                  {formatQuota(apiKey.remain_quota)}
-                  <span className='text-muted-foreground font-normal'>
-                    {' / '}
-                    {formatQuota(total)}
+              {(() => {
+                if (apiKey.user_subscription_id) {
+                  return (
+                    <span className='font-medium tabular-nums'>
+                      {formatQuota(
+                        Number(apiKey.entitlement_amount_remaining || 0)
+                      )}
+                      <span className='text-muted-foreground font-normal'>
+                        {' / '}
+                        {formatQuota(
+                          Number(apiKey.entitlement_amount_total || 0)
+                        )}
+                      </span>
+                    </span>
+                  )
+                }
+                if (apiKey.unlimited_quota) {
+                  return <UnlimitedQuotaBadge used={apiKey.used_quota} />
+                }
+                return (
+                  <span className='font-medium tabular-nums'>
+                    {formatQuota(apiKey.remain_quota)}
+                    <span className='text-muted-foreground font-normal'>
+                      {' / '}
+                      {formatQuota(total)}
+                    </span>
                   </span>
-                </span>
-              )}
+                )
+              })()}
             </div>
           </div>
         )

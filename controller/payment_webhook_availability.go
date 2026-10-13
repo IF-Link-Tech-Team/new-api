@@ -109,6 +109,28 @@ func isEpayWebhookEnabled() bool {
 	return isEpayTopUpEnabled()
 }
 
+// ===== 支付宝原生集成 (MVP: 与 Waffo 同模式, 凭据到位即启用) =====
+
+func isAlipayTopUpEnabled() bool {
+	if !isPaymentComplianceConfirmed() {
+		return false
+	}
+	return strings.TrimSpace(setting.AlipayAppID) != "" &&
+		strings.TrimSpace(setting.AlipayPrivateKey) != "" &&
+		strings.TrimSpace(setting.AlipayPublicKey) != "" &&
+		strings.TrimSpace(setting.AlipaySellerID) != ""
+}
+
+func isAlipayWebhookConfigured() bool {
+	return strings.TrimSpace(setting.AlipayAppID) != "" &&
+		strings.TrimSpace(setting.AlipayPublicKey) != "" &&
+		strings.TrimSpace(setting.AlipaySellerID) != ""
+}
+
+func isAlipayWebhookEnabled() bool {
+	return isAlipayTopUpEnabled() && isAlipayWebhookConfigured()
+}
+
 // ===== IFLinkPay (临时跳转第三方支付页, 凭据到位即启用) =====
 
 func isIFLinkPayTopUpEnabled() bool {

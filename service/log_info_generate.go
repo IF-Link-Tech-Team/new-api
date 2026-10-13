@@ -160,6 +160,15 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other map[string]interf
 	if relayInfo.BillingSource != "" {
 		other["billing_source"] = relayInfo.BillingSource
 	}
+	if relayInfo.ProductType != "" {
+		other["product_type"] = relayInfo.ProductType
+	}
+	if relayInfo.ProductBillingMultiplier > 0 {
+		other["billing_multiplier"] = relayInfo.ProductBillingMultiplier
+	}
+	if relayInfo.ProductPriceVersion != "" {
+		other["price_version"] = relayInfo.ProductPriceVersion
+	}
 	if relayInfo.UserSetting.BillingPreference != "" {
 		other["billing_preference"] = relayInfo.UserSetting.BillingPreference
 	}

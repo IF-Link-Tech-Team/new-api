@@ -618,7 +618,7 @@ export function SubscriptionPlansCard({
                           setPurchaseOpen(true)
                         }}
                       >
-                        {t('Subscribe Now')}
+                        {t('Buy Now')}
                       </Button>
                     )}
                   </CardContent>
@@ -635,6 +635,7 @@ export function SubscriptionPlansCard({
 
       <SubscriptionPurchaseDialog
         open={purchaseOpen}
+        displayOnly
         onOpenChange={(open) => {
           setPurchaseOpen(open)
           if (!open) {

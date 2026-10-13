@@ -181,12 +181,23 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	selectionPolicy, policyErr := service.ResolveChannelSelectionPolicy(c, relayInfo.OriginModelName)
+	if policyErr != nil {
+		newAPIError = types.NewErrorWithStatusCode(
+			policyErr,
+			types.ErrorCodeGetChannelFailed,
+			http.StatusServiceUnavailable,
+			types.ErrOptionWithSkipRetry(),
+		)
+		return
+	}
 	retryParam := &service.RetryParam{
 		Ctx:         c,
 		TokenGroup:  relayInfo.TokenGroup,
 		ModelName:   relayInfo.OriginModelName,
 		RequestPath: c.Request.URL.Path,
 		Retry:       common.GetPointer(0),
+		Policy:      selectionPolicy,
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
@@ -333,6 +344,12 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		return false
+	}
+	productType := common.GetContextKeyString(c, constant.ContextKeyTokenProductType)
+	if model.UsesVersionedProductPricing(productType) &&
+		common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion) != "" &&
+		!common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
 		return false
 	}
 	if types.IsChannelError(openaiErr) {
@@ -504,6 +521,11 @@ func RelayTask(c *gin.Context) {
 		respondTaskError(c, taskErr)
 		return
 	}
+	selectionPolicy, policyErr := service.ResolveChannelSelectionPolicy(c, relayInfo.OriginModelName)
+	if policyErr != nil {
+		respondTaskError(c, service.TaskErrorWrapperLocal(policyErr, "product_route_policy_failed", http.StatusServiceUnavailable))
+		return
+	}
 
 	var result *relay.TaskSubmitResult
 	var taskErr *taskdto.TaskError
@@ -519,12 +541,17 @@ func RelayTask(c *gin.Context) {
 		ModelName:   relayInfo.OriginModelName,
 		RequestPath: c.Request.URL.Path,
 		Retry:       common.GetPointer(0),
+		Policy:      selectionPolicy,
 	}
 
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		var channel *model.Channel
 
 		if lockedCh, ok := relayInfo.LockedChannel.(*model.Channel); ok && lockedCh != nil {
+			if err := service.ValidateChannelAgainstEntitlementPolicy(lockedCh, relayInfo.OriginModelName, selectionPolicy); err != nil {
+				taskErr = service.TaskErrorWrapperLocal(errors.New("locked channel does not satisfy entitlement route policy"), "locked_channel_policy_rejected", http.StatusServiceUnavailable)
+				break
+			}
 			channel = lockedCh
 			if retryParam.GetRetry() > 0 {
 				if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
@@ -624,6 +651,12 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
+		return false
+	}
+	productType := common.GetContextKeyString(c, constant.ContextKeyTokenProductType)
+	if model.UsesVersionedProductPricing(productType) &&
+		common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion) != "" &&
+		!common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
 		return false
 	}
 	if retryTimes <= 0 {

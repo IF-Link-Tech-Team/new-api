@@ -380,6 +380,10 @@ func runResetOnFirstStreamServer(ln net.Listener, expectRetry bool) <-chan h2Ser
 					return
 				}
 				if !expectRetry {
+					// Give the client read loop time to observe RST_STREAM before
+					// closing the TCP socket. An immediate close is surfaced as
+					// WSAECONNRESET on Windows and masks the retry error under test.
+					time.Sleep(25 * time.Millisecond)
 					break attempts
 				}
 				continue
@@ -399,6 +403,12 @@ func runGoAwayAfterFirstRequestServer(ln net.Listener) <-chan h2ServerResult {
 	go func() {
 		res := h2ServerResult{}
 		defer func() { resCh <- res }()
+		var retiredConn net.Conn
+		defer func() {
+			if retiredConn != nil {
+				retiredConn.Close()
+			}
+		}()
 
 		for attempt := 0; attempt < 2; attempt++ {
 			conn, framer, err := acceptH2TestConnection(ln)
@@ -417,11 +427,15 @@ func runGoAwayAfterFirstRequestServer(ln net.Listener) <-chan h2ServerResult {
 
 			if attempt == 0 {
 				err = framer.WriteGoAway(0, http2.ErrCodeNo, nil)
-				conn.Close()
 				if err != nil {
+					conn.Close()
 					res.err = err
 					return
 				}
+				// Keep the retired connection open while accepting the retry.
+				// Closing it immediately can surface as WSAECONNRESET on Windows
+				// before the transport processes the graceful GOAWAY frame.
+				retiredConn = conn
 				continue
 			}
 

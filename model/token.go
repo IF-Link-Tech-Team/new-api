@@ -12,24 +12,103 @@ import (
 )
 
 type Token struct {
-	Id                 int            `json:"id"`
-	UserId             int            `json:"user_id" gorm:"index"`
-	Key                string         `json:"key" gorm:"type:varchar(128);uniqueIndex"`
-	Status             int            `json:"status" gorm:"default:1"`
-	Name               string         `json:"name" gorm:"index" `
-	CreatedTime        int64          `json:"created_time" gorm:"bigint"`
-	AccessedTime       int64          `json:"accessed_time" gorm:"bigint"`
-	ExpiredTime        int64          `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
-	RemainQuota        int            `json:"remain_quota" gorm:"default:0"`
-	UnlimitedQuota     bool           `json:"unlimited_quota"`
-	ModelLimitsEnabled bool           `json:"model_limits_enabled"`
-	ModelLimits        string         `json:"model_limits" gorm:"type:text"`
-	AllowIps           *string        `json:"allow_ips" gorm:"default:''"`
-	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
-	Group              string         `json:"group" gorm:"default:''"`
-	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
-	AutoGroups         string         `json:"-" gorm:"type:text"`
+	Id                 int     `json:"id"`
+	UserId             int     `json:"user_id" gorm:"index"`
+	Key                string  `json:"key" gorm:"type:varchar(128);uniqueIndex"`
+	Status             int     `json:"status" gorm:"default:1"`
+	Name               string  `json:"name" gorm:"index" `
+	CreatedTime        int64   `json:"created_time" gorm:"bigint"`
+	AccessedTime       int64   `json:"accessed_time" gorm:"bigint"`
+	ExpiredTime        int64   `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
+	RemainQuota        int     `json:"remain_quota" gorm:"default:0"`
+	UnlimitedQuota     bool    `json:"unlimited_quota"`
+	ModelLimitsEnabled bool    `json:"model_limits_enabled"`
+	ModelLimits        string  `json:"model_limits" gorm:"type:text"`
+	AllowIps           *string `json:"allow_ips" gorm:"default:''"`
+	UsedQuota          int     `json:"used_quota" gorm:"default:0"` // used quota
+	Group              string  `json:"group" gorm:"default:''"`
+	CrossGroupRetry    bool    `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
+	AutoGroups         string  `json:"-" gorm:"type:text"`
+	// UserSubscriptionId 把 token 强绑定到一份具体的 UserSubscription。
+	// > 0 时,调用只会从该订阅扣费,失败不回退钱包、不能串其他订阅;
+	// 套餐到期/耗尽后,token 调用被拒绝。
+	// == 0 时,沿用旧的 BillingPreference 选择路径(兼容)。
+	UserSubscriptionId int `json:"user_subscription_id" gorm:"default:0;index"`
+	// Nullable unique sentinel: wallet tokens keep NULL (multiple wallet keys
+	// are valid), while every entitlement token carries subscription:<id>.
+	// This is the database-level one-key-per-entitlement guard.
+	EntitlementKeyLock *string        `json:"-" gorm:"type:varchar(64);index:idx_tokens_entitlement_key_lock"`
+	EntitlementType    string         `json:"entitlement_type" gorm:"type:varchar(32);default:'wallet';index"`
+	ProductType        string         `json:"product_type" gorm:"type:varchar(32);default:'wallet';index"`
+	BillingMultiplier  float64        `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
+	PriceVersion       string         `json:"price_version" gorm:"type:varchar(64);default:''"`
+	AllowedChannels    string         `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost    string         `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed    bool           `json:"fallback_allowed"`
 	DeletedAt          gorm.DeletedAt `gorm:"index"`
+}
+
+func (token *Token) BeforeCreate(tx *gorm.DB) error {
+	return token.syncEntitlementKeyLock(tx)
+}
+
+func (token *Token) BeforeSave(tx *gorm.DB) error {
+	return token.syncEntitlementKeyLock(tx)
+}
+
+func (token *Token) syncEntitlementKeyLock(tx *gorm.DB) error {
+	if token.UserSubscriptionId > 0 {
+		lock := fmt.Sprintf("subscription:%d", token.UserSubscriptionId)
+		token.EntitlementKeyLock = &lock
+		if tx != nil {
+			var count int64
+			query := tx.Model(&Token{}).Where("entitlement_key_lock = ?", lock)
+			if token.Id > 0 {
+				query = query.Where("id <> ?", token.Id)
+			}
+			if err := query.Count(&count).Error; err != nil {
+				return err
+			}
+			if count > 0 {
+				return fmt.Errorf("subscription %d already has an entitlement key", token.UserSubscriptionId)
+			}
+		}
+	} else {
+		token.EntitlementKeyLock = nil
+	}
+	if token.UserSubscriptionId == 0 {
+		if strings.TrimSpace(token.EntitlementType) == "" {
+			token.EntitlementType = ProductTypeWallet
+		}
+		if strings.TrimSpace(token.ProductType) == "" {
+			token.ProductType = ProductTypeWallet
+		}
+		if token.BillingMultiplier <= 0 {
+			token.BillingMultiplier = 1
+		}
+	}
+	return nil
+}
+
+// EnsureEntitlementKeyUniqueIndex installs the database boundary for the
+// one-entitlement/one-active-key invariant. The nullable sentinel keeps
+// legacy and wallet tokens unrestricted while entitlement tokens are unique.
+func EnsureEntitlementKeyUniqueIndex() error {
+	if DB == nil {
+		return errors.New("database is nil")
+	}
+	const indexName = "idx_tokens_entitlement_key_lock_unique"
+	if DB.Migrator().HasIndex(&Token{}, indexName) {
+		return nil
+	}
+	var statement string
+	switch {
+	case common.UsingMainDatabase(common.DatabaseTypePostgreSQL), common.UsingMainDatabase(common.DatabaseTypeSQLite):
+		statement = `CREATE UNIQUE INDEX IF NOT EXISTS idx_tokens_entitlement_key_lock_unique ON tokens (entitlement_key_lock) WHERE entitlement_key_lock IS NOT NULL`
+	default:
+		statement = `CREATE UNIQUE INDEX idx_tokens_entitlement_key_lock_unique ON tokens (entitlement_key_lock)`
+	}
+	return DB.Exec(statement).Error
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -108,6 +187,56 @@ func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
 	var err error
 	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(num).Offset(startIdx).Find(&tokens).Error
 	return tokens, err
+}
+
+// RotateBoundTokenKey changes only the credential material. The token row,
+// subscription binding, quota pool, expiry, model scope, and pricing snapshot
+// remain unchanged.
+func RotateBoundTokenKey(id int, userId int) (string, error) {
+	if id <= 0 || userId <= 0 {
+		return "", errors.New("invalid token id or user id")
+	}
+	var rotatedKey string
+	var oldKey string
+	var rotatedToken Token
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var token Token
+		if err := lockForUpdate(tx).Where("id = ? AND user_id = ?", id, userId).First(&token).Error; err != nil {
+			return err
+		}
+		if token.UserSubscriptionId <= 0 {
+			return errors.New("only entitlement-bound keys can be rotated here")
+		}
+		oldKey = token.Key
+		var binding SubscriptionKeyBinding
+		if err := tx.Where("token_id = ? AND user_subscription_id = ?", token.Id, token.UserSubscriptionId).First(&binding).Error; err != nil {
+			return errors.New("entitlement key binding is missing")
+		}
+		key, err := common.GenerateKey()
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&Token{}).Where("id = ? AND user_id = ?", id, userId).Update("key", key).Error; err != nil {
+			return err
+		}
+		token.Key = key
+		rotatedToken = token
+		rotatedKey = key
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if common.RedisEnabled {
+		if err := cacheDeleteToken(oldKey); err != nil {
+			return "", fmt.Errorf("key rotated but old credential cache invalidation failed: %w", err)
+		}
+		if err := cacheSetToken(rotatedToken); err != nil {
+			_ = cacheDeleteToken(rotatedKey)
+			return "", fmt.Errorf("key rotated but new credential cache update failed: %w", err)
+		}
+	}
+	return rotatedKey, err
 }
 
 // sanitizeLikePattern 校验并清洗用户输入的 LIKE 搜索模式。
@@ -223,6 +352,15 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	}
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
+		if token.UserSubscriptionId > 0 {
+			var binding SubscriptionKeyBinding
+			if bindingErr := DB.Where("token_id = ? AND user_subscription_id = ?", token.Id, token.UserSubscriptionId).First(&binding).Error; bindingErr != nil {
+				// A token pointing at an entitlement without the authoritative
+				// binding is not a valid credential, even if it was inserted by a
+				// direct SQL/import path that bypassed ORM hooks.
+				return token, ErrTokenInvalid
+			}
+		}
 		if token.Status == common.TokenStatusExhausted ||
 			token.Status == common.TokenStatusExpired ||
 			token.Status != common.TokenStatusEnabled {
@@ -317,7 +455,8 @@ func (token *Token) Insert() error {
 // Update Make sure your token's fields is completed, because this will update non-zero values
 func (token *Token) Update() (err error) {
 	err = DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
+		"user_subscription_id").Updates(token).Error
 	if shouldUpdateRedis(true, err) {
 		if cacheErr := cacheSetToken(*token); cacheErr != nil {
 			common.SysLog("failed to update token cache: " + cacheErr.Error())

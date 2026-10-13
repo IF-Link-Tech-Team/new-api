@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -16,7 +18,100 @@ type RetryParam struct {
 	ModelName    string
 	RequestPath  string
 	Retry        *int
+	Policy       *model.ChannelSelectionPolicy
 	resetNextTry bool
+}
+
+// ValidateChannelAgainstEntitlementPolicy is the single boundary check used
+// after channel lookup (including locked-channel and retry paths). Selection
+// caches may be stale, so callers must invoke this immediately before relay.
+func ValidateChannelAgainstEntitlementPolicy(channel *model.Channel, modelName string, policy *model.ChannelSelectionPolicy) error {
+	if policy == nil {
+		return nil
+	}
+	if channel == nil || !model.ChannelSatisfiesPolicy(channel, modelName, policy) {
+		channelID := 0
+		if channel != nil {
+			channelID = channel.Id
+		}
+		return fmt.Errorf("channel %d violates entitlement route policy for model %s", channelID, modelName)
+	}
+	return nil
+}
+
+func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.ChannelSelectionPolicy, error) {
+	if ctx == nil {
+		return nil, nil
+	}
+	productType := common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)
+	if productType == model.ProductTypeWallet {
+		configured, err := model.HasProductPriceConfiguration(productType, modelName)
+		if err != nil {
+			return nil, fmt.Errorf("cannot inspect wallet product pricing: %w", err)
+		}
+		// Wallet product pricing is opt-in. Existing installations that have no
+		// wallet price row must retain the legacy global pricing/routing path.
+		// Once any row exists, however, disabled or future-only rows fail closed.
+		if !configured {
+			return nil, nil
+		}
+		price, err := model.GetCurrentProductPriceSnapshot(productType, modelName)
+		if err != nil {
+			return nil, fmt.Errorf("product price is disabled or not yet effective: %w", err)
+		}
+		var channelIds []int
+		if err := common.UnmarshalJsonStr(price.AllowedChannels, &channelIds); err != nil {
+			return nil, err
+		}
+		var maxCost model.PriceComponents
+		if err := common.UnmarshalJsonStr(price.MaxUpstreamCost, &maxCost); err != nil {
+			return nil, err
+		}
+		common.SetContextKey(ctx, constant.ContextKeyTokenBillingMultiplier, price.BillingMultiplier)
+		common.SetContextKey(ctx, constant.ContextKeyTokenPriceVersion, price.PriceVersion)
+		common.SetContextKey(ctx, constant.ContextKeyTokenAllowedChannels, price.AllowedChannels)
+		common.SetContextKey(ctx, constant.ContextKeyTokenMaxUpstreamCost, price.MaxUpstreamCost)
+		common.SetContextKey(ctx, constant.ContextKeyTokenFallbackAllowed, price.FallbackAllowed)
+		allowed := make(map[int]struct{}, len(channelIds))
+		for _, channelId := range channelIds {
+			allowed[channelId] = struct{}{}
+		}
+		return &model.ChannelSelectionPolicy{
+			AllowedChannelIds: allowed,
+			MaxUpstreamCost:   maxCost,
+			RequireCost:       true,
+		}, nil
+	}
+	if !model.RequiresStrictV1RoutePolicy(productType) {
+		return nil, nil
+	}
+	allowedChannels := common.GetContextKeyString(ctx, constant.ContextKeyTokenAllowedChannels)
+	maxUpstreamCost := common.GetContextKeyString(ctx, constant.ContextKeyTokenMaxUpstreamCost)
+	if strings.TrimSpace(allowedChannels) == "" || strings.TrimSpace(maxUpstreamCost) == "" {
+		return nil, errors.New("product route policy is not configured")
+	}
+	policySnapshot, err := model.ParseProductRoutePolicy(
+		allowedChannels,
+		maxUpstreamCost,
+		common.GetContextKeyBool(ctx, constant.ContextKeyTokenFallbackAllowed),
+	)
+	if err != nil {
+		return nil, err
+	}
+	channelIds := policySnapshot.AllowedChannels[modelName]
+	maxCost, ok := policySnapshot.MaxUpstreamCost[modelName]
+	if len(channelIds) == 0 || !ok {
+		return nil, fmt.Errorf("model %s has no compliant product route", modelName)
+	}
+	allowed := make(map[int]struct{}, len(channelIds))
+	for _, channelId := range channelIds {
+		allowed[channelId] = struct{}{}
+	}
+	return &model.ChannelSelectionPolicy{
+		AllowedChannelIds: allowed,
+		MaxUpstreamCost:   maxCost,
+		RequireCost:       true,
+	}, nil
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -115,7 +210,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannelWithPolicy(autoGroup, param.ModelName, priorityRetry, param.RequestPath, param.Policy)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -153,7 +248,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath)
+		channel, err = model.GetRandomSatisfiedChannelWithPolicy(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, param.Policy)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

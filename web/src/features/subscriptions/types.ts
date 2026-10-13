@@ -34,6 +34,8 @@ export const subscriptionPlanSchema = z.object({
   quota_reset_period: z.enum(['never', 'daily', 'weekly', 'monthly', 'custom']),
   quota_reset_custom_seconds: z.number().optional(),
   enabled: z.boolean(),
+  listed: z.boolean().optional().default(true),
+  redemption_enabled: z.boolean().optional().default(true),
   sort_order: z.number(),
   allow_balance_pay: z.boolean().optional().default(true),
   allow_wallet_overflow: z.boolean().optional().default(true),
@@ -45,12 +47,22 @@ export const subscriptionPlanSchema = z.object({
   stripe_price_id: z.string().optional(),
   creem_product_id: z.string().optional(),
   waffo_pancake_product_id: z.string().optional(),
+  product_type: z.string().optional(),
+  product_code: z.string().optional(),
+  product_family: z.string().optional(),
+  product_tier: z.number().optional(),
+  billing_multiplier: z.number().optional(),
+  price_version: z.string().optional(),
+  model_scope: z.string().optional(),
+  course_eligible: z.boolean().optional(),
+  fallback_allowed: z.boolean().optional(),
 })
 
 export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>
 
 export interface PlanRecord {
   plan: SubscriptionPlan
+  product_id: string
 }
 
 // ============================================================================
@@ -68,12 +80,28 @@ export const userSubscriptionSchema = z.object({
   amount_total: z.number(),
   amount_used: z.number(),
   next_reset_time: z.number().optional(),
+  model_scope: z.string().optional(),
+  product_type: z.string().optional(),
+  product_code: z.string().optional(),
+  product_family: z.string().optional(),
+  product_tier: z.number().optional(),
+  billing_multiplier: z.number().optional(),
+  price_version: z.string().optional(),
+  period_id: z.string().optional(),
+  price_amount_snapshot: z.number().optional(),
+  currency_snapshot: z.string().optional(),
+  course_eligible: z.boolean().optional(),
 })
 
 export type UserSubscription = z.infer<typeof userSubscriptionSchema>
 
 export interface UserSubscriptionRecord {
   subscription: UserSubscription
+  plan_title?: string
+  plan_subtitle?: string
+  plan_price_amount?: number
+  plan_currency?: string
+  plan_category?: string
 }
 
 // ============================================================================
@@ -95,6 +123,19 @@ export interface SubscriptionPayRequest {
   payment_method?: string
 }
 
+export interface ProductRedemptionResult {
+  redemption_id: number
+  plan_id: number
+  product_type: string
+  product_code: string
+  product_family: string
+  user_subscription_id: number
+  token_id: number
+  expires_at: number
+  amount_total: number
+  idempotent: boolean
+}
+
 export interface SubscriptionPayResponse {
   success: boolean
   message?: string
@@ -110,8 +151,30 @@ export interface SubscriptionPayResponse {
     order_id?: string
     token?: string
     token_expires_at?: number | string
+    pay_url?: string
+    trade_no?: string
   }
   url?: string
+}
+
+export interface SubscriptionOrderStatus {
+  trade_no: string
+  status: string
+  provisioning_status: string
+  provisioning_error?: string
+  order_type: 'purchase' | 'upgrade' | string
+  product_type: string
+  product_code: string
+  product_family: string
+  source_tier: number
+  target_tier: number
+  plan_title: string
+  money: number
+  currency: string
+  payment_method: string
+  user_subscription_id?: number
+  create_time: number
+  complete_time: number
 }
 
 export interface CreateUserSubscriptionRequest {

@@ -112,9 +112,13 @@ func SyncChannelCache(frequency int) {
 }
 
 func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+	return GetRandomSatisfiedChannelWithPolicy(group, model, retry, requestPath, nil)
+}
+
+func GetRandomSatisfiedChannelWithPolicy(group string, model string, retry int, requestPath string, policy *ChannelSelectionPolicy) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, requestPath)
+		return GetChannelWithPolicy(group, model, retry, requestPath, policy)
 	}
 
 	channelSyncLock.RLock()
@@ -127,6 +131,16 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+	}
+	if policy != nil {
+		filtered := make([]int, 0, len(channels))
+		for _, channelId := range channels {
+			channel, ok := channelsIDM[channelId]
+			if ok && ChannelSatisfiesPolicy(channel, model, policy) {
+				filtered = append(filtered, channelId)
+			}
+		}
+		channels = filtered
 	}
 
 	if len(channels) == 0 {

@@ -24,7 +24,7 @@ import useDialogState from '@/hooks/use-dialog'
 
 import { fetchTokenKey, fetchTokenKeysBatch } from '../api'
 import { ERROR_MESSAGES } from '../constants'
-import { type ApiKey, type ApiKeysDialogType } from '../types'
+import type { ApiKey, ApiKeysDialogType } from '../types'
 
 type ApiKeysContextType = {
   open: ApiKeysDialogType | null
@@ -38,6 +38,7 @@ type ApiKeysContextType = {
   resolveRealKey: (id: number) => Promise<string | null>
   resolveRealKeysBatch: (ids: number[]) => Promise<Record<number, string>>
   resolvedKeys: Record<number, string>
+  cacheResolvedKey: (id: number, key: string) => void
   loadingKeys: Record<number, boolean>
   copiedKeyId: number | null
   markKeyCopied: (id: number) => void
@@ -71,6 +72,11 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
 
   const triggerRefresh = useCallback(() => {
     setRefreshTrigger((prev) => prev + 1)
+  }, [])
+
+  const cacheResolvedKey = useCallback((id: number, key: string) => {
+    const fullKey = key.startsWith('sk-') ? key : `sk-${key}`
+    setResolvedKeys((prev) => ({ ...prev, [id]: fullKey }))
   }, [])
 
   const resolveRealKey = useCallback(
@@ -168,6 +174,7 @@ export function ApiKeysProvider({ children }: { children: React.ReactNode }) {
         resolveRealKey,
         resolveRealKeysBatch,
         resolvedKeys,
+        cacheResolvedKey,
         loadingKeys,
         copiedKeyId,
         markKeyCopied,

@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,18 +12,30 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
 func TestMain(m *testing.M) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	postgresDSN := strings.TrimSpace(os.Getenv("CILAI_TEST_POSTGRES_DSN"))
+	var db *gorm.DB
+	var err error
+	if postgresDSN != "" {
+		db, err = gorm.Open(postgres.Open(postgresDSN), &gorm.Config{})
+	} else {
+		db, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	}
 	if err != nil {
 		panic("failed to open test db: " + err.Error())
 	}
 	DB = db
 	LOG_DB = db
 
-	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	if postgresDSN != "" {
+		common.SetDatabaseTypes(common.DatabaseTypePostgreSQL, common.DatabaseTypePostgreSQL)
+	} else {
+		common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	}
 	common.RedisEnabled = false
 	common.BatchUpdateEnabled = false
 	common.LogConsumeEnabled = true
@@ -32,7 +45,17 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("failed to get sql.DB: " + err.Error())
 	}
-	sqlDB.SetMaxOpenConns(1)
+	if postgresDSN != "" {
+		sqlDB.SetMaxOpenConns(20)
+	} else {
+		sqlDB.SetMaxOpenConns(1)
+	}
+	if os.Getenv("CILAI_TEST_FULL_MIGRATION") == "1" {
+		if err := migrateDB(); err != nil {
+			panic("failed to migrate production snapshot: " + err.Error())
+		}
+		os.Exit(m.Run())
+	}
 
 	if err := db.AutoMigrate(
 		&Task{},
@@ -52,6 +75,14 @@ func TestMain(m *testing.M) {
 		&SubscriptionPlan{},
 		&SubscriptionOrder{},
 		&UserSubscription{},
+		&SubscriptionPreConsumeRecord{},
+		&ProductPrice{},
+		&Redemption{},
+		&ProductRedemptionClaim{},
+		&SubscriptionKeyBinding{},
+		&CourseEntitlement{},
+		&MonthlySubscriptionCycle{},
+		&CilaiV1MigrationState{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
 		&SystemInstance{},
@@ -74,6 +105,12 @@ func truncateTables(t *testing.T) {
 		DB.Exec("DELETE FROM passkey_credentials")
 		DB.Exec("DELETE FROM two_fa_backup_codes")
 		DB.Exec("DELETE FROM two_fas")
+		DB.Exec("DELETE FROM subscription_key_bindings")
+		DB.Exec("DELETE FROM course_entitlements")
+		DB.Exec("DELETE FROM monthly_subscription_cycles")
+		DB.Exec("DELETE FROM product_prices")
+		DB.Exec("DELETE FROM product_redemption_claims")
+		DB.Exec("DELETE FROM redemptions")
 		DB.Exec("DELETE FROM tokens")
 		DB.Exec("DELETE FROM user_oauth_bindings")
 		DB.Exec("DELETE FROM users")
@@ -85,9 +122,11 @@ func truncateTables(t *testing.T) {
 		DB.Exec("DELETE FROM subscription_orders")
 		DB.Exec("DELETE FROM subscription_plans")
 		DB.Exec("DELETE FROM user_subscriptions")
+		DB.Exec("DELETE FROM subscription_pre_consume_records")
 		DB.Exec("DELETE FROM perf_metrics")
 		DB.Exec("DELETE FROM system_instances")
 		DB.Exec("DELETE FROM system_task_locks")
+		DB.Exec("DELETE FROM cilai_v1_migration_states")
 		DB.Exec("DELETE FROM system_tasks")
 	})
 }

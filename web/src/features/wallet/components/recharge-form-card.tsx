@@ -81,6 +81,7 @@ interface RechargeFormCardProps {
   waffoMinTopup?: number
   onWaffoMethodSelect?: (method: WaffoPayMethod, index: number) => void
   enableWaffoPancakeTopup?: boolean
+  displayPendingAlipay?: boolean
 }
 
 export function RechargeFormCard({
@@ -111,6 +112,7 @@ export function RechargeFormCard({
   waffoMinTopup,
   onWaffoMethodSelect,
   enableWaffoPancakeTopup,
+  displayPendingAlipay = false,
 }: RechargeFormCardProps) {
   const { t } = useTranslation()
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
@@ -133,14 +135,29 @@ export function RechargeFormCard({
   }
 
   const hasConfigurableTopup =
+    displayPendingAlipay ||
     topupInfo?.enable_online_topup ||
     topupInfo?.enable_stripe_topup ||
     topupInfo?.enable_iflinkpay_topup ||
     enableWaffoTopup ||
     enableWaffoPancakeTopup
   const hasAnyTopup = hasConfigurableTopup || enableCreemTopup
-  const hasStandardPaymentMethods =
-    Array.isArray(topupInfo?.pay_methods) && topupInfo.pay_methods.length > 0
+  const configuredPaymentMethods = topupInfo?.pay_methods || []
+  const hasConfiguredAlipay = configuredPaymentMethods.some(
+    (method) => method.type === 'alipay'
+  )
+  const standardPaymentMethods: PaymentMethod[] =
+    displayPendingAlipay && !hasConfiguredAlipay
+      ? [
+          {
+            name: t('Alipay integration in progress'),
+            type: 'alipay',
+            display_only: true,
+          },
+          ...configuredPaymentMethods,
+        ]
+      : configuredPaymentMethods
+  const hasStandardPaymentMethods = standardPaymentMethods.length > 0
   const hasWaffoPaymentMethods =
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
   const minTopup = getMinTopupAmount(topupInfo)
@@ -322,7 +339,7 @@ export function RechargeFormCard({
                 </Label>
                 {hasStandardPaymentMethods ? (
                   <div className='grid grid-cols-2 gap-1.5 sm:gap-3 lg:grid-cols-3'>
-                    {topupInfo?.pay_methods?.map((method) => {
+                    {standardPaymentMethods.map((method) => {
                       const minTopup = Math.max(
                         method.min_topup || 0,
                         getMinTopupAmount(topupInfo)
