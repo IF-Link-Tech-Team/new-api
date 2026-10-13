@@ -41,6 +41,16 @@ func subscriptionPlanProductID(plan model.SubscriptionPlan) string {
 		return ok
 	}
 	switch {
+	case has("deepseek") && has("pro"):
+		return "deepseek-v4-pro"
+	case has("deepseek") && has("flash"):
+		return "deepseek-v4-flash"
+	case has("glm"):
+		return "glm-general"
+	case has("kimi"):
+		return "kimi-code"
+	case has("qwen"):
+		return "qwen-general"
 	case has("lite"):
 		return "lite"
 	case has("max"):
