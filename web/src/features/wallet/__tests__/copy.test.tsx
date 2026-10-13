@@ -42,8 +42,9 @@ beforeEach(async () => {
 
 it('translates billing history statuses and updates them when the language changes', async () => {
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
-    if (url.includes('/subscription/self/orders'))
-      {return { data: { success: true, data: [] } }}
+    if (url.includes('/subscription/self/orders')) {
+      return { data: { success: true, data: [] } }
+    }
     return {
       data: {
         success: true,

@@ -98,8 +98,9 @@ export function BillingHistoryDialog({
       .then((response) => {
         if (!active) return
         requireServerSuccess(response)
-        if (!Array.isArray(response.data))
-          {throw new Error('Invalid subscription order response')}
+        if (!Array.isArray(response.data)) {
+          throw new Error('Invalid subscription order response')
+        }
         setSubscriptionOrders(response.data)
       })
       .catch((error: unknown) => {

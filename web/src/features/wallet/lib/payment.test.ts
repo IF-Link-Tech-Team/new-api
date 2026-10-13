@@ -21,6 +21,7 @@ import { describe, expect, test } from 'vitest'
 import { PAYMENT_TYPES } from '../constants'
 import {
   dispatchSelectedPayment,
+  isIFLinkPayPayment,
   isStripePayment,
   isWaffoPayment,
   isWaffoPancakePayment,
@@ -33,6 +34,13 @@ describe('payment type classification', () => {
     expect(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO_PANCAKE)).toBe(true)
     expect(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO)).toBe(false)
     expect(isStripePayment(PAYMENT_TYPES.STRIPE)).toBe(true)
+  })
+
+  test('keeps IFLinkPay on its dedicated redirect flow', () => {
+    expect(isIFLinkPayPayment(PAYMENT_TYPES.IFLINKPAY)).toBe(true)
+    expect(isIFLinkPayPayment(PAYMENT_TYPES.ALIPAY)).toBe(false)
+    expect(isIFLinkPayPayment(PAYMENT_TYPES.STRIPE)).toBe(false)
+    expect(isStripePayment(PAYMENT_TYPES.IFLINKPAY)).toBe(false)
   })
 })
 

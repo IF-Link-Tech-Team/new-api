@@ -150,7 +150,8 @@ export function RechargeFormCard({
         )}
         {topupInfo?.enable_alipay_topup
           ? t('Alipay payment')
-          : t('Alipay integration in progress')} · ¥{topupAmount}
+          : t('Alipay integration in progress')}{' '}
+        · ¥{topupAmount}
       </Button>
 
       {redemptionEnabled && (

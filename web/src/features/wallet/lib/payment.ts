@@ -122,6 +122,16 @@ export function isWaffoPancakePayment(paymentType: string): boolean {
   return paymentType === PAYMENT_TYPES.WAFFO_PANCAKE
 }
 
+/**
+ * Check if payment method is IFLinkPay (third-party redirect page)
+ *
+ * IFLinkPay 是「跳转第三方支付页」通道:走 /api/user/iflinkpay 拿到签名
+ * pay_url 后整页跳转,与支付宝原生通道同模式,必须在支付分发里单独分支。
+ */
+export function isIFLinkPayPayment(paymentType: string): boolean {
+  return paymentType === PAYMENT_TYPES.IFLINKPAY
+}
+
 export interface PaymentProcessors {
   regular: (topupAmount: number, paymentType: string) => Promise<boolean>
   waffo: (topupAmount: number, payMethodIndex: number) => Promise<boolean>

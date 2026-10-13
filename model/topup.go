@@ -43,6 +43,7 @@ const (
 	PaymentMethodCreem        = "creem"
 	PaymentMethodWaffo        = "waffo"
 	PaymentMethodWaffoPancake = "waffo_pancake"
+	PaymentMethodIFLinkPay    = "iflinkpay"
 	PaymentMethodAlipay       = "alipay"
 	PaymentMethodBalance      = "balance"
 )
@@ -53,6 +54,7 @@ const (
 	PaymentProviderCreem        = "creem"
 	PaymentProviderWaffo        = "waffo"
 	PaymentProviderWaffoPancake = "waffo_pancake"
+	PaymentProviderIFLinkPay    = "iflinkpay"
 	PaymentProviderAlipay       = "alipay"
 	PaymentProviderBalance      = "balance"
 )
@@ -123,17 +125,12 @@ func CompleteTopUpPayment(tradeNo string, expectedPaymentProvider string, receip
 		if topUp.Status != common.TopUpStatusPending {
 			return ErrTopUpStatusInvalid
 		}
-		quota64 := decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
-		if quota64 <= 0 || quota64 > int64(common.MaxQuota) {
-			return errors.New("充值额度无效")
+		var err error
+		quotaToAdd, err = common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+		if err != nil || quotaToAdd <= 0 {
+			return ErrInvalidTopUpQuota
 		}
-		quotaToAdd = int(quota64)
-		var user User
-		if err := lockForUpdate(tx).Select("id", "quota").Where("id = ?", topUp.UserId).First(&user).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&User{}).Where("id = ?", topUp.UserId).
-			Update("quota", gorm.Expr("quota + ?", quotaToAdd)).Error; err != nil {
+		if err := creditTopUpQuota(tx, topUp.UserId, quotaToAdd, nil); err != nil {
 			return err
 		}
 		topUp.Status = common.TopUpStatusSuccess
@@ -153,9 +150,7 @@ func CompleteTopUpPayment(tradeNo string, expectedPaymentProvider string, receip
 		return nil, 0, false, err
 	}
 	if credited {
-		if err := cacheIncrUserQuota(completed.UserId, int64(quotaToAdd)); err != nil {
-			common.SysLog("failed to increase user quota cache after atomic topup: " + err.Error())
-		}
+		syncCreditUserQuotaCache(completed.UserId, quotaToAdd, common.LogText("topup"))
 	}
 	return &completed, quotaToAdd, credited, nil
 }
