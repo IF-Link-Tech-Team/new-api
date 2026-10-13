@@ -22,6 +22,7 @@ import { describe, test } from 'node:test'
 import { PAYMENT_TYPES } from '../constants'
 import {
   dispatchSelectedPayment,
+  isIFLinkPayPayment,
   isStripePayment,
   isWaffoPayment,
   isWaffoPancakePayment,
@@ -34,6 +35,13 @@ describe('payment type classification', () => {
     assert.equal(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO_PANCAKE), true)
     assert.equal(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO), false)
     assert.equal(isStripePayment(PAYMENT_TYPES.STRIPE), true)
+  })
+
+  test('keeps IFLinkPay on its dedicated redirect flow', () => {
+    assert.equal(isIFLinkPayPayment(PAYMENT_TYPES.IFLINKPAY), true)
+    assert.equal(isIFLinkPayPayment(PAYMENT_TYPES.ALIPAY), false)
+    assert.equal(isIFLinkPayPayment(PAYMENT_TYPES.STRIPE), false)
+    assert.equal(isStripePayment(PAYMENT_TYPES.IFLINKPAY), false)
   })
 })
 

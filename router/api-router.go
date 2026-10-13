@@ -61,6 +61,10 @@ func SetApiRouter(router *gin.Engine) {
 		// 支付宝原生集成 notify (与 topup notify 共用 handler,内部按 trade_no 自动分支)
 		apiRouter.POST("/topup/alipay/notify", anonymousRequestBodyLimit, controller.AlipayNotify)
 		apiRouter.GET("/topup/alipay/return", controller.AlipayReturn)
+		// IFLinkPay 第三方支付页异步回调(匿名可达, JSON body, 验签+时间戳窗口)
+		apiRouter.POST("/topup/iflinkpay/notify", anonymousRequestBodyLimit, controller.IFLinkPayNotify)
+		// 兼容早期联调中对方按草稿实现的回调路径,与上面同 handler
+		apiRouter.POST("/pay/callback", anonymousRequestBodyLimit, controller.IFLinkPayNotify)
 		apiRouter.POST("/subscription/alipay/notify", anonymousRequestBodyLimit, controller.AlipayNotify)
 		apiRouter.GET("/subscription/alipay/return", controller.SubscriptionAlipayReturn)
 		// :env separates test vs prod URLs so the operator can register each
@@ -109,6 +113,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/pay", middleware.CriticalRateLimit(), controller.RequestEpay)
 				selfRoute.POST("/amount", controller.RequestAmount)
 				selfRoute.POST("/alipay", middleware.CriticalRateLimit(), controller.RequestAlipayPay)
+				selfRoute.POST("/iflinkpay", middleware.CriticalRateLimit(), controller.RequestIFLinkPay)
 				selfRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.RequestStripePay)
 				selfRoute.POST("/stripe/amount", controller.RequestStripeAmount)
 				selfRoute.POST("/creem/pay", middleware.CriticalRateLimit(), controller.RequestCreemPay)

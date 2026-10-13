@@ -28,6 +28,7 @@ import {
   requestPayment,
   requestStripePayment,
   requestAlipayPayment,
+  requestIFLinkPayPayment,
   isApiSuccess,
 } from '../api'
 import {
@@ -35,6 +36,7 @@ import {
   isAlipayPayment,
   isWaffoPayment,
   isWaffoPancakePayment,
+  isIFLinkPayPayment,
   submitPaymentForm,
 } from '../lib'
 import type { AmountRequest, AmountResponse } from '../types'
@@ -64,6 +66,13 @@ export async function requestPaymentAmount(
   paymentType: string,
   calculators: PaymentAmountCalculators = defaultPaymentAmountCalculators
 ): Promise<number> {
+  // IFLinkPay 是人民币 1:1 面值通道且支持任意金额(最多两位小数),
+  // 不能走 /api/user/amount(该接口仅接受 V1 钱包的 ¥10/¥30/¥50 白名单),
+  // 展示金额即实付金额。
+  if (isIFLinkPayPayment(paymentType)) {
+    return topupAmount
+  }
+
   let calculator = calculators.regular
   if (isStripePayment(paymentType)) {
     calculator = calculators.stripe
@@ -115,7 +124,25 @@ export function usePayment() {
 
         const isStripe = isStripePayment(paymentType)
         const isAlipay = isAlipayPayment(paymentType)
+        const isIFLinkPay = isIFLinkPayPayment(paymentType)
         const amount = Math.floor(topupAmount)
+
+        // IFLinkPay 第三方支付页:单独取签名跳转 URL 后整页跳转。
+        // 支持任意金额(最多两位小数),不用 Math.floor 后的整数值。
+        if (isIFLinkPay) {
+          const iflinkpayRes = await requestIFLinkPayPayment({
+            amount: topupAmount,
+          })
+          if (!isApiSuccess(iflinkpayRes) || !iflinkpayRes.data?.pay_url) {
+            toast.error(
+              iflinkpayRes.message || i18next.t('Payment request failed')
+            )
+            return false
+          }
+          toast.success(i18next.t('Redirecting to payment page...'))
+          window.location.href = iflinkpayRes.data.pay_url
+          return true
+        }
 
         // 支付宝原生通道:单独取收银台 URL 后整页跳转
         if (isAlipay) {

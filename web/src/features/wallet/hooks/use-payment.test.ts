@@ -47,4 +47,29 @@ describe('payment amount routing', () => {
     assert.equal(amount, 18.75)
     assert.deepEqual(calls, ['waffo:120'])
   })
+
+  test('returns the face value for IFLinkPay without calling amount calculators', async () => {
+    const calls: string[] = []
+    const amount = await requestPaymentAmount(19.99, PAYMENT_TYPES.IFLINKPAY, {
+      regular: async () => {
+        calls.push('regular')
+        return { success: true, data: '1' }
+      },
+      stripe: async () => {
+        calls.push('stripe')
+        return { success: true, data: '2' }
+      },
+      waffo: async () => {
+        calls.push('waffo')
+        return { success: true, data: '3' }
+      },
+      waffoPancake: async () => {
+        calls.push('pancake')
+        return { success: true, data: '4' }
+      },
+    })
+
+    assert.equal(amount, 19.99)
+    assert.deepEqual(calls, [])
+  })
 })

@@ -41,6 +41,8 @@ import type {
   WaffoPaymentResponse,
   WaffoPancakePaymentRequest,
   WaffoPancakePaymentResponse,
+  IFLinkPayPaymentRequest,
+  IFLinkPayPaymentResponse,
 } from './types'
 
 // ============================================================================
@@ -145,6 +147,21 @@ export async function requestAlipayPayment(
   request: AlipayPaymentRequest
 ): Promise<AlipayPaymentResponse> {
   const res = await api.post('/api/user/alipay', request, {
+    skipBusinessError: true,
+  } as Record<string, unknown>)
+  return res.data
+}
+
+/**
+ * Request IFLinkPay payment
+ *
+ * 返回第三方收银台 pay_url,由调用方整页跳转。
+ * 注意:后端该接口不接收 payment_method,只收 amount(任意金额,最多两位小数)。
+ */
+export async function requestIFLinkPayPayment(
+  request: IFLinkPayPaymentRequest
+): Promise<IFLinkPayPaymentResponse> {
+  const res = await api.post('/api/user/iflinkpay', request, {
     skipBusinessError: true,
   } as Record<string, unknown>)
   return res.data

@@ -159,6 +159,12 @@ const paymentSchema = z.object({
       })
     }
   }),
+  IFLinkPaySecret: z.string(),
+  IFLinkPayBaseURL: z.string().refine((value) => {
+    const trimmed = value.trim()
+    if (!trimmed) return true
+    return /^https?:\/\//.test(trimmed)
+  }, 'Provide a valid URL starting with http:// or https://'),
   WaffoEnabled: z.boolean(),
   WaffoApiKey: z.string(),
   WaffoPrivateKey: z.string(),
@@ -437,6 +443,8 @@ export function PaymentSettingsSection({
       CreemWebhookSecret: values.CreemWebhookSecret.trim(),
       CreemTestMode: values.CreemTestMode,
       CreemProducts: values.CreemProducts.trim(),
+      IFLinkPaySecret: values.IFLinkPaySecret.trim(),
+      IFLinkPayBaseURL: removeTrailingSlash(values.IFLinkPayBaseURL.trim()),
       WaffoEnabled: values.WaffoEnabled,
       WaffoSandbox: values.WaffoSandbox,
       WaffoMerchantId: values.WaffoMerchantId.trim(),
@@ -482,6 +490,10 @@ export function PaymentSettingsSection({
       CreemWebhookSecret: initialRef.current.CreemWebhookSecret.trim(),
       CreemTestMode: initialRef.current.CreemTestMode,
       CreemProducts: initialRef.current.CreemProducts.trim(),
+      IFLinkPaySecret: initialRef.current.IFLinkPaySecret.trim(),
+      IFLinkPayBaseURL: removeTrailingSlash(
+        initialRef.current.IFLinkPayBaseURL.trim()
+      ),
       WaffoEnabled: initialRef.current.WaffoEnabled,
       WaffoSandbox: initialRef.current.WaffoSandbox,
       WaffoMerchantId: initialRef.current.WaffoMerchantId.trim(),
@@ -627,6 +639,24 @@ export function PaymentSettingsSection({
       normalizeJsonForComparison(initial.CreemProducts)
     ) {
       updates.push({ key: 'CreemProducts', value: sanitized.CreemProducts })
+    }
+
+    // IFLinkPaySecret 因后端敏感 key 过滤永不回显,留空表示不修改
+    if (
+      sanitized.IFLinkPaySecret &&
+      sanitized.IFLinkPaySecret !== initial.IFLinkPaySecret
+    ) {
+      updates.push({
+        key: 'payment_setting.iflink_pay_secret',
+        value: sanitized.IFLinkPaySecret,
+      })
+    }
+
+    if (sanitized.IFLinkPayBaseURL !== initial.IFLinkPayBaseURL) {
+      updates.push({
+        key: 'payment_setting.iflink_pay_base_url',
+        value: sanitized.IFLinkPayBaseURL,
+      })
     }
 
     if (sanitized.WaffoEnabled !== initial.WaffoEnabled) {
@@ -877,11 +907,12 @@ export function PaymentSettingsSection({
           />
           <Tabs defaultValue='general' className='min-w-0'>
             <div className='overflow-x-auto pb-1'>
-              <TabsList className='grid min-w-[44rem] grid-cols-6'>
+              <TabsList className='grid min-w-[50rem] grid-cols-7'>
                 <TabsTrigger value='general'>{t('General')}</TabsTrigger>
                 <TabsTrigger value='epay'>Epay</TabsTrigger>
                 <TabsTrigger value='stripe'>{t('Stripe')}</TabsTrigger>
                 <TabsTrigger value='creem'>Creem</TabsTrigger>
+                <TabsTrigger value='iflinkpay'>IFLink Pay</TabsTrigger>
                 <TabsTrigger value='waffo-pancake'>Waffo Pancake</TabsTrigger>
                 <TabsTrigger value='waffo'>Waffo</TabsTrigger>
               </TabsList>
@@ -1601,6 +1632,95 @@ export function PaymentSettingsSection({
                     </FormItem>
                   )}
                 />
+              </div>
+            </TabsContent>
+
+            <TabsContent
+              value='iflinkpay'
+              className={paymentTabContentClassName}
+            >
+              <div className='space-y-4'>
+                <div>
+                  <h3 className='text-lg font-medium'>
+                    {t('IFLink Pay Gateway')}
+                  </h3>
+                  <p className='text-muted-foreground text-sm'>
+                    {t(
+                      'Configuration for IFLink Pay redirect payment integration'
+                    )}
+                  </p>
+                </div>
+
+                <div className='rounded-md bg-blue-50 p-4 text-sm text-blue-900 dark:bg-blue-950 dark:text-blue-100'>
+                  <p className='mb-2 font-medium'>
+                    {t('Webhook Configuration:')}
+                  </p>
+                  <ul className='list-inside list-disc space-y-1'>
+                    <li>
+                      {t('Webhook URL:')}{' '}
+                      <code className='rounded bg-blue-100 px-1 py-0.5 text-xs dark:bg-blue-900'>
+                        {'<ServerAddress>/api/topup/iflinkpay/notify'}
+                      </code>
+                    </li>
+                    <li>
+                      {t(
+                        'The channel is enabled once the signing secret is configured; users are redirected to the payment page after placing an order.'
+                      )}
+                    </li>
+                  </ul>
+                </div>
+
+                <div className='grid gap-6 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='IFLinkPaySecret'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Signing secret')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='password'
+                            placeholder={t('Enter new key to update')}
+                            autoComplete='new-password'
+                            {...field}
+                            onChange={(event) =>
+                              field.onChange(event.target.value)
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t('Leave blank unless rotating the secret')}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='IFLinkPayBaseURL'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Payment page URL')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder='https://www.aha-idea.com/pay/iflink'
+                            {...field}
+                            onChange={(event) =>
+                              field.onChange(event.target.value)
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Base address of the IFLink Pay payment page; leave blank to use the default'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
               </div>
             </TabsContent>
 
