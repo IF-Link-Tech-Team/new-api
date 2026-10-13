@@ -20,20 +20,21 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   ArrowRight,
-  BookOpen,
   Check,
   ChevronDown,
   ChevronUp,
   Circle,
   Copy,
-  CreditCard,
   FileText,
   KeyRound,
   ListChecks,
+  PackageCheck,
   RadioTower,
   ShieldCheck,
   TerminalSquare,
   Timer,
+  UserRoundCheck,
+  Wrench,
   type LucideIcon,
 } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
@@ -41,6 +42,7 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import { CopyButton } from '@/components/copy-button'
 import {
   CardStaggerContainer,
   CardStaggerItem,
@@ -49,6 +51,7 @@ import { Button } from '@/components/ui/button'
 import { IconBadge, type IconBadgeTone } from '@/components/ui/icon-badge'
 import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
 import type { ApiKey } from '@/features/keys/types'
+import { getSelfSubscriptionFull } from '@/features/subscriptions/api'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { getUserModels } from '@/lib/api'
 import { MOTION_TRANSITION } from '@/lib/motion'
@@ -60,6 +63,13 @@ import {
   useApiInfo,
   useDashboardContentVisibility,
 } from '../../hooks/use-status-data'
+import {
+  buildChatCompletionsEndpoint,
+  CLASSROOM_PREFERRED_MODELS,
+  normalizeOpenAIBaseUrl,
+  selectClassroomModel,
+  shouldShowModelSquareNavigation,
+} from '../../lib/classroom-quick-start'
 import { AnnouncementsPanel } from './announcements-panel'
 import { ApiInfoPanel } from './api-info-panel'
 import { FAQPanel } from './faq-panel'
@@ -71,20 +81,20 @@ const SETUP_GUIDE_VISIBILITY_STORAGE_KEY =
   'dashboard_overview_setup_guide_expanded'
 
 const SETUP_GUIDE_CODE_PATTERN = [
-  'const request = await client.responses.create({',
-  "  model: 'gpt-4.1-mini',",
-  "  input: 'Start routing traffic',",
+  'const response = await client.chat.completions.create({',
+  "  model: 'deepseek-v4-flash-ga-260731',",
+  "  messages: [{ role: 'user', content: '你好' }],",
   '})',
   '',
-  'if (request.output_text) {',
-  '  console.log(request.output_text)',
-  '}',
+  'console.log(response.choices[0].message.content)',
 ].join('\n')
 
 type DashboardActionPath =
   | '/keys'
   | '/wallet'
   | '/playground'
+  | '/profile'
+  | '/traffic-packs'
   | '/channels'
   | '/usage-logs'
   | '/pricing'
@@ -106,8 +116,10 @@ interface QuickAction {
 }
 
 interface RequestExample {
+  baseUrl: string
   endpoint: string
   model: string
+  recommendedModels: readonly string[]
   keyName: string
   keyId?: number
   displayKey: string
@@ -140,21 +152,6 @@ function saveSetupGuideExpanded(expanded: boolean): void {
 function getCurrentOrigin(): string {
   if (typeof window === 'undefined') return ''
   return window.location.origin
-}
-
-function normalizeEndpoint(sourceUrl?: string): string {
-  const fallback = `${getCurrentOrigin()}/v1/chat/completions`
-  const trimmed = sourceUrl?.trim()
-  if (!trimmed) return fallback
-
-  const withoutTrailingSlash = trimmed.replace(/\/+$/, '')
-  if (withoutTrailingSlash.endsWith('/v1/chat/completions')) {
-    return withoutTrailingSlash
-  }
-  if (withoutTrailingSlash.endsWith('/v1')) {
-    return `${withoutTrailingSlash}/chat/completions`
-  }
-  return `${withoutTrailingSlash}/v1/chat/completions`
 }
 
 function getPreferredKey(keys: ApiKey[]): ApiKey | null {
@@ -289,8 +286,8 @@ function RequestPreview(props: {
     model: props.example.model,
   })
   const previewLines = previewCurl.split('\n')
-  const handleCopyRequest = async () => {
-    if (!props.example.keyId || isCopying) return
+  const loadFullKey = async (): Promise<string> => {
+    if (!props.example.keyId || isCopying) return ''
 
     setIsCopying(true)
     try {
@@ -298,12 +295,32 @@ function RequestPreview(props: {
       const key = result.success && result.data?.key ? result.data.key : ''
       if (!key) {
         toast.error(result.message || t('Failed to copy to clipboard'))
-        return
+        return ''
       }
+      return `sk-${key}`
+    } finally {
+      setIsCopying(false)
+    }
+  }
 
+  const handleCopyFullKey = async () => {
+    const key = await loadFullKey()
+    if (!key) return
+    const copied = await copyToClipboard(key)
+    if (copied) {
+      toast.success(t('Full API key copied'))
+    } else {
+      toast.error(t('Failed to copy to clipboard'))
+    }
+  }
+
+  const handleCopyRequest = async () => {
+    const key = await loadFullKey()
+    if (!key) return
+    try {
       const realCurl = buildCurlCommand({
         endpoint: props.example.endpoint,
-        apiKey: `sk-${key}`,
+        apiKey: key,
         model: props.example.model,
       })
       const copied = await copyToClipboard(realCurl)
@@ -312,8 +329,8 @@ function RequestPreview(props: {
       } else {
         toast.error(t('Failed to copy to clipboard'))
       }
-    } finally {
-      setIsCopying(false)
+    } catch {
+      toast.error(t('Failed to copy to clipboard'))
     }
   }
 
@@ -384,6 +401,81 @@ function RequestPreview(props: {
               {line}
             </code>
           ))}
+        </div>
+      </div>
+
+      <div className='mb-3 grid gap-2'>
+        <div className='bg-muted/40 flex items-center justify-between gap-3 rounded-xl px-3 py-2'>
+          <span className='min-w-0'>
+            <span className='text-muted-foreground block text-[11px] font-medium tracking-wide uppercase'>
+              {t('API Base URL')}
+            </span>
+            <code
+              className='block truncate text-xs'
+              title={props.example.baseUrl}
+            >
+              {props.example.baseUrl}
+            </code>
+          </span>
+          <CopyButton
+            value={props.example.baseUrl}
+            variant='ghost'
+            size='sm'
+            tooltip={t('Copy API Base URL')}
+            aria-label={t('Copy API Base URL')}
+          />
+        </div>
+
+        {props.example.recommendedModels.map((model, index) => (
+          <div
+            key={model}
+            className='bg-muted/40 flex items-center justify-between gap-3 rounded-xl px-3 py-2'
+          >
+            <span className='min-w-0'>
+              <span className='text-muted-foreground block text-[11px] font-medium tracking-wide uppercase'>
+                {index === 0
+                  ? t('Recommended model ID')
+                  : t('Alternative model ID')}
+              </span>
+              <code className='block truncate text-xs' title={model}>
+                {model}
+              </code>
+            </span>
+            <CopyButton
+              value={model}
+              variant='ghost'
+              size='sm'
+              tooltip={t('Copy model ID')}
+              aria-label={t('Copy model ID')}
+            />
+          </div>
+        ))}
+
+        <div className='bg-muted/40 flex items-center justify-between gap-3 rounded-xl px-3 py-2'>
+          <span className='min-w-0'>
+            <span className='text-muted-foreground block text-[11px] font-medium tracking-wide uppercase'>
+              {t('API Key')}
+            </span>
+            <code className='block truncate text-xs'>
+              {props.example.displayKey}
+            </code>
+          </span>
+          {props.example.ready ? (
+            <Button
+              variant='ghost'
+              size='sm'
+              disabled={isCopying}
+              onClick={handleCopyFullKey}
+              aria-label={t('Copy full API key')}
+            >
+              <Copy data-icon='inline-start' />
+              {t('Copy full key')}
+            </Button>
+          ) : (
+            <Button size='sm' variant='ghost' render={<Link to='/keys' />}>
+              {t('Create API Key')}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -470,8 +562,6 @@ export function OverviewDashboard() {
   >(() => getSavedSetupGuideExpanded())
 
   const requestCount = Number(user?.request_count ?? 0)
-  const remainQuota = Number(user?.quota ?? 0)
-  const usedQuota = Number(user?.used_quota ?? 0)
   const isAdmin = Boolean(user?.role && user.role >= ROLE.ADMIN)
 
   const apiKeysQuery = useQuery({
@@ -492,36 +582,73 @@ export function OverviewDashboard() {
     staleTime: 5 * 60 * 1000,
   })
 
+  const subscriptionsQuery = useQuery({
+    queryKey: ['dashboard', 'overview', 'subscriptions'],
+    queryFn: async () => {
+      const result = await getSelfSubscriptionFull()
+      return result.success ? (result.data?.all_subscriptions ?? []) : []
+    },
+    staleTime: 60 * 1000,
+  })
+
   const preferredKey = useMemo(
     () => getPreferredKey(apiKeysQuery.data ?? []),
     [apiKeysQuery.data]
+  )
+  const hasActiveIfLearn = useMemo(
+    () =>
+      (subscriptionsQuery.data ?? []).some(
+        (item) =>
+          item.subscription.product_type === 'pack_deepseek_classroom' &&
+          item.subscription.status === 'active' &&
+          item.subscription.end_time > Date.now() / 1000
+      ),
+    [subscriptionsQuery.data]
   )
 
   const startSteps = useMemo<StartStep[]>(
     () => [
       {
-        title: t('Create API Key'),
-        description: t('Create a key for your app or service'),
+        title: t('Registration complete'),
+        description: t('Your IF.Link account is ready'),
+        to: '/profile',
+        icon: UserRoundCheck,
+        completed: true,
+      },
+      {
+        title: t('Redeem IF.Learn'),
+        description: t(
+          'Use your classroom code to receive 10,000 compute points'
+        ),
+        to: '/traffic-packs',
+        icon: PackageCheck,
+        completed: hasActiveIfLearn,
+      },
+      {
+        title: t('Get your API Key'),
+        description: t('Create or copy the dedicated key for this classroom'),
         to: '/keys',
         icon: KeyRound,
         completed: Boolean(preferredKey),
       },
       {
-        title: t('Add credits'),
-        description: t('Keep enough balance before production traffic'),
-        to: '/wallet',
-        icon: CreditCard,
-        completed: remainQuota > 0 || usedQuota > 0,
+        title: t('Configure your AI coding tool'),
+        description: t(
+          'Paste the Base URL, full Key, and recommended model ID'
+        ),
+        to: '/keys',
+        icon: Wrench,
+        completed: requestCount > 0,
       },
       {
-        title: t('Send a request'),
-        description: t('Verify routing with Playground or your client'),
+        title: t('Complete your first call'),
+        description: t('Run the ready-to-copy example or use Playground'),
         to: '/playground',
         icon: TerminalSquare,
         completed: requestCount > 0,
       },
     ],
-    [preferredKey, remainQuota, requestCount, t, usedQuota]
+    [hasActiveIfLearn, preferredKey, requestCount, t]
   )
 
   const quickActions = useMemo<QuickAction[]>(
@@ -546,10 +673,22 @@ export function OverviewDashboard() {
         icon: FileText,
       },
       {
-        title: t('Pricing'),
-        description: t('Review model rates before scaling traffic'),
-        to: '/pricing',
-        icon: BookOpen,
+        title: shouldShowModelSquareNavigation(
+          import.meta.env.VITE_SHOW_MODEL_SQUARE_NAV
+        )
+          ? t('Model Square')
+          : t('IF.Learn starter pack'),
+        description: shouldShowModelSquareNavigation(
+          import.meta.env.VITE_SHOW_MODEL_SQUARE_NAV
+        )
+          ? t('Review model rates before scaling traffic')
+          : t('Redeem the classroom pack and get a dedicated API key'),
+        to: shouldShowModelSquareNavigation(
+          import.meta.env.VITE_SHOW_MODEL_SQUARE_NAV
+        )
+          ? '/pricing'
+          : '/traffic-packs',
+        icon: PackageCheck,
       },
     ],
     [t]
@@ -575,8 +714,8 @@ export function OverviewDashboard() {
         tone: 'success',
       },
       {
-        label: t('Model selected'),
-        value: modelsQuery.data?.[0] ?? t('Loading'),
+        label: t('Recommended model'),
+        value: selectClassroomModel(modelsQuery.data ?? []),
         icon: Timer,
         tone: 'chart-4',
       },
@@ -585,14 +724,20 @@ export function OverviewDashboard() {
   )
 
   const requestExample = useMemo<RequestExample>(() => {
-    const endpoint = normalizeEndpoint(apiInfoItems[0]?.url)
-    const model = modelsQuery.data?.[0] ?? 'gpt-4o-mini'
+    const baseUrl = normalizeOpenAIBaseUrl(
+      apiInfoItems[0]?.url,
+      getCurrentOrigin()
+    )
+    const endpoint = buildChatCompletionsEndpoint(baseUrl)
+    const model = selectClassroomModel(modelsQuery.data ?? [])
     const keyName = preferredKey?.name ?? t('No API key yet')
     const ready = Boolean(preferredKey?.id && model)
 
     return {
+      baseUrl,
       endpoint,
       model,
+      recommendedModels: CLASSROOM_PREFERRED_MODELS,
       keyName,
       keyId: preferredKey?.id,
       displayKey: preferredKey
@@ -633,11 +778,11 @@ export function OverviewDashboard() {
                         {t('Get started')}
                       </div>
                       <h3 className='text-xl font-semibold tracking-tight sm:text-2xl'>
-                        {t('Build on your API gateway in minutes')}
+                        {t('Make your first DeepSeek call in minutes')}
                       </h3>
                       <p className='text-muted-foreground max-w-xl text-sm leading-relaxed'>
                         {t(
-                          'A focused home for keys, balance, routing, and service health.'
+                          'Follow the classroom path from redemption to a successful request.'
                         )}
                       </p>
                     </div>
