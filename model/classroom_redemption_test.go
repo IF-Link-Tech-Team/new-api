@@ -94,6 +94,31 @@ func TestClassroomProductPricingAndBatchContract(t *testing.T) {
 	assert.Contains(t, ga.BillingExpression, `cr * 0.10`)
 }
 
+func TestClassroomBootstrapCreatesHiddenPlanAndKeepsRedemptionEnabled(t *testing.T) {
+	oldQuotaPerUnit := common.QuotaPerUnit
+	common.QuotaPerUnit = 500_000
+	t.Cleanup(func() { common.QuotaPerUnit = oldQuotaPerUnit })
+	for _, table := range []string{
+		"product_redemption_claims", "redemptions", "subscription_key_bindings", "tokens",
+		"subscription_orders", "user_subscriptions", "subscription_plans", "product_prices", "abilities", "channels", "logs", "users",
+	} {
+		require.NoError(t, DB.Exec("DELETE FROM "+table).Error)
+	}
+	channel := Channel{
+		Id: 15, Name: "果盒-豆包", Type: 14, Key: "test-key", Status: common.ChannelStatusEnabled,
+		Models: ClassroomModelV41 + "," + ClassroomModelV4GA, Group: "default",
+	}
+	require.NoError(t, DB.Create(&channel).Error)
+
+	result, err := BootstrapClassroomProduct(true, true, false, 0)
+	require.NoError(t, err)
+	var plan SubscriptionPlan
+	require.NoError(t, DB.First(&plan, result.PlanId).Error)
+	require.True(t, plan.Enabled)
+	require.False(t, plan.Listed)
+	require.True(t, plan.RedemptionEnabled)
+}
+
 func TestClassroomProductPricesBothModelsIncludingCacheAndPeakWindows(t *testing.T) {
 	setupClassroomRedemptionTest(t)
 	location, err := time.LoadLocation("Asia/Shanghai")
