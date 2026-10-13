@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -41,13 +42,15 @@ func AdminListProductPrices(c *gin.Context) {
 }
 
 func AdminCreateProductPrice(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
-		return
-	}
 	var req adminCreateProductPriceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiErrorMsg(c, "参数错误")
 		return
+	}
+	if !operation_setting.IsPaymentComplianceConfirmed() && req.Price.ProductType != model.ProductTypePackDeepSeekClassroom {
+		if !requirePaymentCompliance(c) {
+			return
+		}
 	}
 	req.Price.Id = 0
 	if err := req.Price.ValidateV1(); err != nil {
@@ -65,13 +68,22 @@ func AdminCreateProductPrice(c *gin.Context) {
 // price version. Repricing requires a new price_version, while this switch is
 // the fail-closed emergency stop for a model/product combination.
 func AdminSetProductPriceEnabled(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
-		return
-	}
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
 		common.ApiErrorMsg(c, "无效的ID")
 		return
+	}
+	if !operation_setting.IsPaymentComplianceConfirmed() {
+		var price model.ProductPrice
+		if err := model.DB.Where("id = ?", id).First(&price).Error; err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if price.ProductType != model.ProductTypePackDeepSeekClassroom {
+			if !requirePaymentCompliance(c) {
+				return
+			}
+		}
 	}
 	var req adminSetProductPriceEnabledRequest
 	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {

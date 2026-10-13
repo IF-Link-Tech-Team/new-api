@@ -7346,6 +7346,11 @@
     "Wallet models": "钱包可用模型",
     "Wallet balance only": "仅使用钱包余额",
     "This key uses only its bound entitlement quota.": "此 Key 仅使用绑定套餐或流量包的额度。",
-    "View wallet top-ups and product purchase orders": "查看钱包充值及套餐、流量包购买订单"
+    "View wallet top-ups and product purchase orders": "查看钱包充值及套餐、流量包购买订单",
+    "Alipay collection": "支付宝收款",
+    "Alipay integration in progress": "支付宝接入中",
+    "Alipay payment integration is in progress. Online payment is currently unavailable.": "支付宝支付接入中，当前暂无法完成在线付款",
+    "Alipay QR code": "支付宝收款码",
+    "Alipay QR code pending": "支付宝收款码待补充"
   }
 }

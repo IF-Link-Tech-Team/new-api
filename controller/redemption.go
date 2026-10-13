@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"encoding/csv"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,6 +15,95 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+type redeemProductCodeRequest struct {
+	Key       string `json:"key"`
+	ProductID string `json:"product_id"`
+	// PlanId is retained for older clients; new Checkout clients send only the
+	// stable public product_id and never an amount or entitlement definition.
+	PlanId int `json:"plan_id"`
+}
+
+func RedeemProductCode(c *gin.Context) {
+	var req redeemProductCodeRequest
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Key) == "" {
+		common.ApiErrorMsg(c, "请输入兑换码并选择商品")
+		return
+	}
+	expectedPlanID := req.PlanId
+	if strings.TrimSpace(req.ProductID) != "" {
+		plan, err := getSubscriptionPlanByProductID(req.ProductID)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if expectedPlanID > 0 && expectedPlanID != plan.Id {
+			common.ApiErrorMsg(c, "所选商品信息不一致")
+			return
+		}
+		expectedPlanID = plan.Id
+	}
+	if expectedPlanID <= 0 {
+		common.ApiErrorMsg(c, "请选择要领取的商品")
+		return
+	}
+	result, err := model.RedeemProductCode(req.Key, c.GetInt("id"), expectedPlanID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
+}
+
+func CreateProductRedemptionBatch(c *gin.Context) {
+	var req model.ProductRedemptionBatchRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	summary, err := model.CreateProductRedemptionBatch(c.GetInt("id"), req)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "redemption.create", map[string]interface{}{
+		"name": req.Name, "count": req.PrimaryCount + req.ReserveCount, "quota": "product entitlement",
+	})
+	common.ApiSuccess(c, summary)
+}
+
+func ListProductRedemptionBatches(c *gin.Context) {
+	summaries, err := model.ListProductRedemptionBatches()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, summaries)
+}
+
+func ExportUnusedProductRedemptions(c *gin.Context) {
+	batchCode := strings.TrimSpace(c.Param("batch"))
+	if batchCode == "" {
+		common.ApiErrorMsg(c, "批次编号不能为空")
+		return
+	}
+	includeReserve := c.Query("include_reserve") == "true"
+	rows, err := model.GetUnusedProductRedemptions(batchCode, includeReserve)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+url.QueryEscape(batchCode+"-unused.csv"))
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	writer := csv.NewWriter(c.Writer)
+	_ = writer.Write([]string{"batch_code", "code", "reserve", "expires_at"})
+	for _, row := range rows {
+		_ = writer.Write([]string{row.BatchCode, row.Key, strconv.FormatBool(row.IsReserve), strconv.FormatInt(row.ExpiredTime, 10)})
+	}
+	writer.Flush()
+}
 
 func GetAllRedemptions(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
@@ -61,16 +153,25 @@ func GetRedemption(c *gin.Context) {
 }
 
 func AddRedemption(c *gin.Context) {
-	if !operation_setting.IsPaymentComplianceConfirmed() {
-		common.ApiErrorT(c, "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.")
-		return
-	}
-
 	redemption := model.Redemption{}
 	err := c.ShouldBindJSON(&redemption)
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	// Legacy wallet-recharge codes remain payment-compliance gated. Every
+	// plan-bound code uses the product redemption path and never creates a
+	// payment order, regardless of the configured product type.
+	if !operation_setting.IsPaymentComplianceConfirmed() {
+		if redemption.TargetPlanId == 0 {
+			common.ApiErrorT(c, "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.")
+			return
+		}
+		plan, planErr := model.GetSubscriptionPlanById(redemption.TargetPlanId)
+		if planErr != nil || !plan.RedemptionEnabled {
+			common.ApiErrorT(c, "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.")
+			return
+		}
 	}
 	if utf8.RuneCountInString(redemption.Name) == 0 || utf8.RuneCountInString(redemption.Name) > 20 {
 		common.ApiErrorT(c, "Redemption code name length must be between 1-20")

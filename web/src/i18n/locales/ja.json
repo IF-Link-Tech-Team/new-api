@@ -7340,6 +7340,17 @@
     "Wallet models": "Wallet models",
     "Wallet balance only": "Wallet balance only",
     "This key uses only its bound entitlement quota.": "This key uses only its bound entitlement quota.",
-    "View wallet top-ups and product purchase orders": "View wallet top-ups and product purchase orders"
+    "View wallet top-ups and product purchase orders": "View wallet top-ups and product purchase orders",
+    "About Cilai": "关于词来",
+    "How to Use": "使用方式",
+    "Scenario Plans": "场景方案",
+    "Alipay collection": "Alipayお支払い案内",
+    "Alipay integration in progress": "Alipay連携中",
+    "Alipay payment integration is in progress. Online payment is currently unavailable.": "Alipay決済は連携中です。現在、オンライン決済はご利用いただけません。",
+    "Alipay QR code": "Alipay QRコード",
+    "Alipay QR code pending": "Alipay QRコードは未設定です",
+    "Traffic Packs": "Traffic Packs",
+    "Plans": "Plans",
+    "Traffic Pack": "Traffic Pack"
   }
 }

@@ -7343,6 +7343,14 @@
     "Wallet models": "Wallet models",
     "Wallet balance only": "Wallet balance only",
     "This key uses only its bound entitlement quota.": "This key uses only its bound entitlement quota.",
-    "View wallet top-ups and product purchase orders": "View wallet top-ups and product purchase orders"
+    "View wallet top-ups and product purchase orders": "View wallet top-ups and product purchase orders",
+    "About Cilai": "关于词来",
+    "How to Use": "使用方式",
+    "Scenario Plans": "场景方案",
+    "Alipay collection": "支付寶收款",
+    "Alipay integration in progress": "支付寶接入中",
+    "Alipay payment integration is in progress. Online payment is currently unavailable.": "支付寶支付接入中，目前暫時無法完成線上付款。",
+    "Alipay QR code": "支付寶收款碼",
+    "Alipay QR code pending": "支付寶收款碼待補充"
   }
 }

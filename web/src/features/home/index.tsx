@@ -16,13 +16,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useCallback, useEffect, useRef } from 'react'
+import { useNavigate } from '@tanstack/react-router'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
 import { Footer } from '@/components/layout/components/footer'
 import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
+import { LoginRequiredDialog } from '@/features/checkout/components/login-required-dialog'
+import { buildCheckoutPath } from '@/features/checkout/lib/checkout-path'
+import { paymentSelectionFromEventPath } from '@/features/payment-display/lib/payment-trigger'
 import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -31,11 +41,13 @@ import { useHomePageContent } from './hooks'
 
 export function Home() {
   const { i18n, t } = useTranslation()
+  const navigate = useNavigate()
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const { resolvedTheme } = useTheme()
   const { auth } = useAuthStore()
-  const isAuthenticated = !!auth.user
+  const isAuthenticated = !!auth.user && !!auth.accessToken
   const { content, isLoaded, isUrl } = useHomePageContent()
+  const [pendingProductId, setPendingProductId] = useState<string | null>(null)
 
   const syncIframePreferences = useCallback(() => {
     try {
@@ -57,6 +69,31 @@ export function Home() {
       syncIframePreferences()
     }
   }, [isUrl, syncIframePreferences])
+
+  const handleCustomHomeClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const nativeEvent = event.nativeEvent
+      const path =
+        typeof nativeEvent.composedPath === 'function'
+          ? nativeEvent.composedPath()
+          : [event.target]
+      const selection = paymentSelectionFromEventPath(path)
+      if (!selection) {
+        return
+      }
+
+      event.preventDefault()
+      if (!isAuthenticated) {
+        setPendingProductId(selection.productId)
+        return
+      }
+      void navigate({
+        to: '/checkout',
+        search: { product_id: selection.productId },
+      })
+    },
+    [isAuthenticated, navigate]
+  )
 
   if (!isLoaded) {
     return (
@@ -102,6 +139,20 @@ export function Home() {
             htmlVariant='isolated'
             content={content}
             className='custom-home-content'
+            onClick={handleCustomHomeClick}
+          />
+          <LoginRequiredDialog
+            open={pendingProductId !== null}
+            onOpenChange={(open) => {
+              if (!open) setPendingProductId(null)
+            }}
+            onContinue={() => {
+              if (!pendingProductId) return
+              void navigate({
+                to: '/sign-in',
+                search: { redirect: buildCheckoutPath(pendingProductId) },
+              })
+            }}
           />
         </PublicLayout>
       )

@@ -90,15 +90,36 @@ func getPriority(group string, model string, retry int) (int, error) {
 	return priorityToUse, nil
 }
 
-func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
-	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+func getChannelQuery(group string, model string, retry int, eligibleChannelIds []int) (*gorm.DB, error) {
+	base := DB.Model(&Ability{}).Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	if eligibleChannelIds != nil {
+		if len(eligibleChannelIds) == 0 {
+			return DB.Where("1 = 0"), nil
+		}
+		base = base.Where("channel_id IN ?", eligibleChannelIds)
+	}
+	maxPrioritySubQuery := base.Session(&gorm.Session{}).Select("MAX(priority)")
 	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
+	if eligibleChannelIds != nil {
+		channelQuery = channelQuery.Where("channel_id IN ?", eligibleChannelIds)
+	}
 	if retry != 0 {
-		priority, err := getPriority(group, model, retry)
-		if err != nil {
+		var priorities []int
+		priorityQuery := base.Session(&gorm.Session{}).Select("DISTINCT(priority)").Order("priority DESC")
+		if err := priorityQuery.Pluck("priority", &priorities).Error; err != nil {
 			return nil, err
-		} else {
-			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+		}
+		if len(priorities) == 0 {
+			return DB.Where("1 = 0"), nil
+		}
+		priorityIndex := retry
+		if priorityIndex >= len(priorities) {
+			priorityIndex = len(priorities) - 1
+		}
+		priority := priorities[priorityIndex]
+		channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+		if eligibleChannelIds != nil {
+			channelQuery = channelQuery.Where("channel_id IN ?", eligibleChannelIds)
 		}
 	}
 

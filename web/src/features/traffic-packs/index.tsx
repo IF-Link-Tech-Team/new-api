@@ -1,3 +1,4 @@
+import { useNavigate } from '@tanstack/react-router'
 import {
   BookOpenCheck,
   CheckCircle2,
@@ -37,14 +38,11 @@ import {
   getSelfSubscriptionFull,
   getSelfSubscriptionOrders,
 } from '@/features/subscriptions/api'
-import { SubscriptionPurchaseDialog } from '@/features/subscriptions/components/dialogs/subscription-purchase-dialog'
 import type {
   PlanRecord,
   SubscriptionOrderStatus,
   UserSubscriptionRecord,
 } from '@/features/subscriptions/types'
-import { getTopupInfo } from '@/features/wallet/api'
-import type { TopupInfo } from '@/features/wallet/types'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -78,6 +76,21 @@ function productLabel(productType?: string): string {
   }
 }
 
+function modelDisplayName(model: string): string {
+  if (model === 'deepseek-v4-flash-ga-260731') return 'DeepSeek V4 Flash'
+  if (model === 'deepseek-v4-1-flash-260910') return 'DeepSeek V4.1 Flash'
+  return model
+}
+
+function keyProvisioningLabel(
+  isMonthly: boolean,
+  isClassroom: boolean
+): string {
+  if (isMonthly) return '本周期沿用同一专属 Key'
+  if (isClassroom) return '兑换后生成独立专属 Key'
+  return '购买后生成独立专属 Key'
+}
+
 function orderState(order: SubscriptionOrderStatus): {
   label: string
   tone: string
@@ -103,31 +116,27 @@ export function TrafficPacks({
   category?: 'package' | 'subscription'
   title?: string
 }) {
+  const navigate = useNavigate()
   const [plans, setPlans] = useState<PlanRecord[]>([])
   const [subscriptions, setSubscriptions] = useState<UserSubscriptionRecord[]>(
     []
   )
   const [tokens, setTokens] = useState<ApiKey[]>([])
   const [orders, setOrders] = useState<SubscriptionOrderStatus[]>([])
-  const [topupInfo, setTopupInfo] = useState<TopupInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [selectedPlan, setSelectedPlan] = useState<PlanRecord | null>(null)
-  const [purchaseOpen, setPurchaseOpen] = useState(false)
   const [revealedKeys, setRevealedKeys] = useState<Record<number, string>>({})
   const [keyBusy, setKeyBusy] = useState<number | null>(null)
 
   const loadData = useCallback(async () => {
     setError('')
     try {
-      const [planRes, selfRes, tokenRes, orderRes, topupRes] =
-        await Promise.all([
-          getPublicPlans(),
-          getSelfSubscriptionFull(),
-          getApiKeys({ p: 1, size: 100 }),
-          getSelfSubscriptionOrders(),
-          getTopupInfo(),
-        ])
+      const [planRes, selfRes, tokenRes, orderRes] = await Promise.all([
+        getPublicPlans(),
+        getSelfSubscriptionFull(),
+        getApiKeys({ p: 1, size: 100 }),
+        getSelfSubscriptionOrders(),
+      ])
       setPlans(
         (planRes.data || []).filter(
           (item) =>
@@ -141,7 +150,6 @@ export function TrafficPacks({
       )
       setTokens((tokenRes.data?.items || []) as ApiKey[])
       setOrders(orderRes.data || [])
-      setTopupInfo(topupRes.data || null)
     } catch {
       setError('商品与权益数据加载失败，请稍后重试。')
     } finally {
@@ -226,11 +234,6 @@ export function TrafficPacks({
         order.provisioning_status !== 'provisioned')
   )
 
-  const openPurchase = (plan: PlanRecord) => {
-    setSelectedPlan(plan)
-    setPurchaseOpen(true)
-  }
-
   const revealKey = async (tokenId: number) => {
     setKeyBusy(tokenId)
     try {
@@ -275,17 +278,6 @@ export function TrafficPacks({
       toast.error('复制失败，请手动选择')
     }
   }
-
-  const selectedAmountDue = useMemo(() => {
-    if (!selectedPlan || category !== 'subscription' || !activeMonthly) {
-      return undefined
-    }
-    return Math.max(
-      0,
-      selectedPlan.plan.price_amount -
-        Number(activeMonthly.subscription.price_amount_snapshot || 0)
-    )
-  }, [activeMonthly, category, selectedPlan])
 
   return (
     <SectionPageLayout>
@@ -369,6 +361,8 @@ export function TrafficPacks({
                       Math.abs(plan.price_amount - 49.9) < 0.001
                     const isMonthly =
                       plan.product_type === 'monthly_subscription'
+                    const isClassroom =
+                      plan.product_type === 'pack_deepseek_classroom'
                     const currentTier =
                       activeMonthly?.subscription.product_tier || 0
                     const tier = plan.product_tier || 0
@@ -377,17 +371,15 @@ export function TrafficPacks({
                     const lowerTier = isMonthly && currentTier > tier
                     const higherTier =
                       isMonthly && currentTier > 0 && tier > currentTier
-                    const hasPendingFamily = unresolvedOrders.some(
-                      (order) => order.product_family === plan.product_family
-                    )
-                    const disabled = sameTier || lowerTier || hasPendingFamily
+                    const disabled =
+                      !plan.redemption_enabled || sameTier || lowerTier
                     const models = (plan.model_scope || '')
                       .split(',')
                       .map((model) => model.trim())
                       .filter(Boolean)
-                    let purchaseLabel = '立即购买'
-                    if (hasPendingFamily) purchaseLabel = '订单处理中'
-                    else if (sameTier) purchaseLabel = '当前档位'
+                    let purchaseLabel = isClassroom ? '使用兑换码' : '立即购买'
+                    if (!plan.redemption_enabled) purchaseLabel = '兑换暂未开放'
+                    if (sameTier) purchaseLabel = '当前档位'
                     else if (lowerTier) purchaseLabel = '当前周期不可降档'
                     else if (higherTier) {
                       purchaseLabel = `补差升级 ¥${(
@@ -402,12 +394,19 @@ export function TrafficPacks({
                         key={plan.id}
                         className={cn(
                           'relative overflow-hidden',
-                          isRecommended && 'border-primary shadow-sm'
+                          (isRecommended || isClassroom) &&
+                            'border-primary shadow-sm',
+                          !plan.enabled && 'opacity-60'
                         )}
                       >
                         {isRecommended && (
                           <div className='bg-primary text-primary-foreground absolute top-0 right-0 rounded-bl-lg px-3 py-1 text-xs font-medium'>
                             主推
+                          </div>
+                        )}
+                        {isClassroom && (
+                          <div className='bg-primary text-primary-foreground absolute top-0 right-0 rounded-bl-lg px-3 py-1 text-xs font-medium'>
+                            课堂专享 · 限时六折
                           </div>
                         )}
                         <CardHeader>
@@ -429,7 +428,7 @@ export function TrafficPacks({
                               ¥{plan.price_amount.toFixed(1)}
                             </span>
                             <span className='text-muted-foreground ml-1 text-sm'>
-                              / 30 天
+                              / {plan.duration_value} 天
                             </span>
                           </div>
                           <div className='space-y-2 text-sm'>
@@ -441,9 +440,7 @@ export function TrafficPacks({
                             </p>
                             <p className='flex items-center gap-2'>
                               <KeyRound className='h-4 w-4 text-blue-600' />
-                              {isMonthly
-                                ? '本周期沿用同一专属 Key'
-                                : '购买后生成独立专属 Key'}
+                              {keyProvisioningLabel(isMonthly, isClassroom)}
                             </p>
                             {plan.course_eligible && (
                               <p className='flex items-center gap-2'>
@@ -455,14 +452,19 @@ export function TrafficPacks({
                           <div className='flex flex-wrap gap-1.5'>
                             {models.map((model) => (
                               <Badge key={model} variant='secondary'>
-                                {model}
+                                {modelDisplayName(model)}
                               </Badge>
                             ))}
                           </div>
                           <Button
                             className='w-full whitespace-nowrap'
                             disabled={disabled}
-                            onClick={() => openPurchase(item)}
+                            onClick={() =>
+                              void navigate({
+                                to: '/checkout',
+                                search: { product_id: item.product_id },
+                              })
+                            }
                           >
                             {purchaseLabel}
                           </Button>
@@ -588,7 +590,7 @@ export function TrafficPacks({
                     )
                   }
                   return (
-                    <Card key={sub.id}>
+                    <Card key={sub.id} id={`subscription-${sub.id}`}>
                       <CardHeader>
                         <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
                           <div>
@@ -675,18 +677,6 @@ export function TrafficPacks({
             </AlertDescription>
           </Alert>
         </div>
-
-        <SubscriptionPurchaseDialog
-          open={purchaseOpen}
-          onOpenChange={setPurchaseOpen}
-          plan={selectedPlan}
-          enableAlipay={topupInfo?.enable_alipay_topup}
-          amountDueOverride={selectedAmountDue}
-          purchaseMode={
-            selectedAmountDue !== undefined ? 'upgrade' : 'purchase'
-          }
-          onPurchaseSuccess={loadData}
-        />
       </SectionPageLayout.Content>
     </SectionPageLayout>
   )

@@ -20,6 +20,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
+import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
 import { getSelf } from '@/lib/api'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
@@ -46,6 +47,7 @@ export function Wallet(props: WalletProps) {
     useState<PaymentMethod>()
   const [paymentLoading, setPaymentLoading] = useState<string | null>(null)
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
+  const [paymentDisplayOpen, setPaymentDisplayOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [redemptionCode, setRedemptionCode] = useState('')
@@ -114,6 +116,11 @@ export function Wallet(props: WalletProps) {
   // Handle payment method selection
   const handlePaymentMethodSelect = async (method: PaymentMethod) => {
     setSelectedPaymentMethod(method)
+    if (method.type === 'alipay') {
+      setPaymentDisplayOpen(true)
+      return
+    }
+
     setPaymentLoading(method.type)
 
     try {
@@ -218,6 +225,13 @@ export function Wallet(props: WalletProps) {
         processing={processing}
         discountRate={1}
         usdExchangeRate={1}
+      />
+
+      <PaymentDisplayDialog
+        open={paymentDisplayOpen}
+        onOpenChange={setPaymentDisplayOpen}
+        productName={`${t('Wallet')} · ${t('Recharge')}`}
+        amount={`¥${topupAmount.toFixed(2)}`}
       />
 
       <TransferDialog

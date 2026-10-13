@@ -27,7 +27,10 @@ import type {
 import { shouldShowBillingSource } from '../billing-source'
 
 function plan(enabled: boolean): PlanRecord {
-  return { plan: { id: 1, enabled } as SubscriptionPlan }
+  return {
+    product_id: 'test-plan',
+    plan: { id: 1, enabled } as SubscriptionPlan,
+  }
 }
 
 const active: UserSubscriptionRecord[] = [

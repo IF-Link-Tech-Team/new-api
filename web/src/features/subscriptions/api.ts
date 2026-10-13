@@ -31,6 +31,7 @@ import type {
   SubscriptionPayRequest,
   SelfSubscriptionData,
   SubscriptionOrderStatus,
+  ProductRedemptionResult,
 } from './types'
 
 // ============================================================================
@@ -229,6 +230,24 @@ export async function getSelfSubscriptionFull(): Promise<
 
 export async function getPublicPlans(): Promise<ApiResponse<PlanRecord[]>> {
   const res = await api.get('/api/subscription/plans')
+  return res.data
+}
+
+export async function getSubscriptionProduct(
+  productId: string
+): Promise<ApiResponse<PlanRecord>> {
+  const res = await api.get(
+    `/api/subscription/products/${encodeURIComponent(productId)}`
+  )
+  return res.data
+}
+
+export async function redeemProductCode(data: {
+  key: string
+  product_id?: string
+  plan_id?: number
+}): Promise<ApiResponse<ProductRedemptionResult>> {
+  const res = await api.post('/api/subscription/redeem', data)
   return res.data
 }
 

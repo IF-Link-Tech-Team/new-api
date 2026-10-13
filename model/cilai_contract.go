@@ -13,20 +13,22 @@ import (
 )
 
 const (
-	ProductTypeWallet              = "wallet"
-	ProductTypeMonthlySubscription = "monthly_subscription"
-	ProductTypePackDSGLM           = "pack_ds_glm"
-	ProductTypePackQwen            = "pack_qwen"
-	ProductTypePackK3              = "pack_k3"
-	ProductTypeActivationCredit    = "activation_credit"
-	ProductTypeLegacySubscription  = "legacy_subscription"
+	ProductTypeWallet                = "wallet"
+	ProductTypeMonthlySubscription   = "monthly_subscription"
+	ProductTypePackDSGLM             = "pack_ds_glm"
+	ProductTypePackQwen              = "pack_qwen"
+	ProductTypePackK3                = "pack_k3"
+	ProductTypePackDeepSeekClassroom = "pack_deepseek_classroom"
+	ProductTypeActivationCredit      = "activation_credit"
+	ProductTypeLegacySubscription    = "legacy_subscription"
 
-	EntitlementTypeWallet              = ProductTypeWallet
-	EntitlementTypeMonthlySubscription = ProductTypeMonthlySubscription
-	EntitlementTypePackDSGLM           = ProductTypePackDSGLM
-	EntitlementTypePackQwen            = ProductTypePackQwen
-	EntitlementTypePackK3              = ProductTypePackK3
-	EntitlementTypeActivationCredit    = ProductTypeActivationCredit
+	EntitlementTypeWallet                = ProductTypeWallet
+	EntitlementTypeMonthlySubscription   = ProductTypeMonthlySubscription
+	EntitlementTypePackDSGLM             = ProductTypePackDSGLM
+	EntitlementTypePackQwen              = ProductTypePackQwen
+	EntitlementTypePackK3                = ProductTypePackK3
+	EntitlementTypePackDeepSeekClassroom = ProductTypePackDeepSeekClassroom
+	EntitlementTypeActivationCredit      = ProductTypeActivationCredit
 
 	SubscriptionOrderTypePurchase = "purchase"
 	SubscriptionOrderTypeUpgrade  = "upgrade"
@@ -44,11 +46,12 @@ const (
 )
 
 var frozenV1BillingMultipliers = map[string]float64{
-	ProductTypeWallet:              1.00,
-	ProductTypeMonthlySubscription: 0.85,
-	ProductTypePackDSGLM:           0.70,
-	ProductTypePackQwen:            0.75,
-	ProductTypePackK3:              0.95,
+	ProductTypeWallet:                1.00,
+	ProductTypeMonthlySubscription:   0.85,
+	ProductTypePackDSGLM:             0.70,
+	ProductTypePackQwen:              0.75,
+	ProductTypePackK3:                0.95,
+	ProductTypePackDeepSeekClassroom: 0.60,
 }
 
 type PriceComponents struct {
@@ -115,7 +118,7 @@ func IsSubscriptionFundedProduct(productType string) bool {
 
 func RequiresStrictV1RoutePolicy(productType string) bool {
 	switch strings.TrimSpace(productType) {
-	case ProductTypeMonthlySubscription, ProductTypePackDSGLM, ProductTypePackQwen, ProductTypePackK3:
+	case ProductTypeMonthlySubscription, ProductTypePackDSGLM, ProductTypePackQwen, ProductTypePackK3, ProductTypePackDeepSeekClassroom:
 		return true
 	default:
 		return false
@@ -166,8 +169,12 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 	if p.Currency != "CNY" {
 		return errors.New("V1 products must use CNY")
 	}
-	if p.DurationUnit != SubscriptionDurationDay || p.DurationValue != 30 {
-		return errors.New("V1 subscription and pack products must have a fixed 30-day duration")
+	expectedDurationDays := 30
+	if p.ProductType == ProductTypePackDeepSeekClassroom {
+		expectedDurationDays = 10
+	}
+	if p.DurationUnit != SubscriptionDurationDay || p.DurationValue != expectedDurationDays {
+		return fmt.Errorf("%s must have a fixed %d-day duration", p.ProductType, expectedDurationDays)
 	}
 	if strings.TrimSpace(p.ModelScope) == "" {
 		return errors.New("V1 products require an explicit allowed_models list")
@@ -245,6 +252,26 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 			if math.Abs(p.PriceAmount-49.9) > 0.000001 && math.Abs(p.PriceAmount-99.9) > 0.000001 && math.Abs(p.PriceAmount-199.9) > 0.000001 {
 				return errors.New("pack_k3 price must be 49.9, 99.9, or 199.9")
 			}
+		case ProductTypePackDeepSeekClassroom:
+			if math.Abs(p.PriceAmount-5.0) > 0.000001 {
+				return errors.New("pack_deepseek_classroom price must be 5.0")
+			}
+			if p.ProductFamily != "deepseek_classroom" {
+				return errors.New("pack_deepseek_classroom product_family must be deepseek_classroom")
+			}
+			expectedModels := []string{"deepseek-v4-1-flash-260910", "deepseek-v4-flash-ga-260731"}
+			if !sameStringSet(explicitModelIds(p.ModelScope), expectedModels) {
+				return errors.New("pack_deepseek_classroom must allow exactly the two classroom DeepSeek Flash models")
+			}
+			if p.MaxPurchasePerUser != 1 {
+				return errors.New("pack_deepseek_classroom max_purchase_per_user must be 1")
+			}
+			for _, modelName := range expectedModels {
+				channels := policy.AllowedChannels[modelName]
+				if len(channels) != 1 || channels[0] != 15 {
+					return fmt.Errorf("pack_deepseek_classroom model %s must be restricted to channel 15", modelName)
+				}
+			}
 		}
 	}
 	if NormalizeResetPeriod(p.QuotaResetPeriod) != SubscriptionResetNever {
@@ -258,6 +285,22 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 		return fmt.Errorf("V1 total_amount must equal the paid face value (%d quota units)", expectedQuota)
 	}
 	return nil
+}
+
+func sameStringSet(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	values := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		values[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := values[value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // ProductPrice stores versioned, configurable product/model pricing and cost
@@ -333,6 +376,14 @@ func (p *ProductPrice) ValidateV1() error {
 			return errors.New("allowed_channels contains a duplicate channel ID")
 		}
 		seen[channelId] = struct{}{}
+	}
+	if p.ProductType == ProductTypePackDeepSeekClassroom {
+		if p.Model != ClassroomModelV41 && p.Model != ClassroomModelV4GA {
+			return errors.New("classroom product price model is not allowed")
+		}
+		if len(channelIds) != 1 || channelIds[0] != 15 {
+			return errors.New("classroom product prices must be restricted to channel 15")
+		}
 	}
 	var cost PriceComponents
 	if err := common.UnmarshalJsonStr(strings.TrimSpace(p.MaxUpstreamCost), &cost); err != nil || !validPositivePriceComponents(cost) {

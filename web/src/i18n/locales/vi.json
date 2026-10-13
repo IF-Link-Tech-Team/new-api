@@ -7340,6 +7340,17 @@
     "Wallet models": "Wallet models",
     "Wallet balance only": "Wallet balance only",
     "This key uses only its bound entitlement quota.": "This key uses only its bound entitlement quota.",
-    "View wallet top-ups and product purchase orders": "View wallet top-ups and product purchase orders"
+    "View wallet top-ups and product purchase orders": "View wallet top-ups and product purchase orders",
+    "About Cilai": "关于词来",
+    "How to Use": "使用方式",
+    "Scenario Plans": "场景方案",
+    "Alipay collection": "Thu tiền qua Alipay",
+    "Alipay integration in progress": "Đang tích hợp Alipay",
+    "Alipay payment integration is in progress. Online payment is currently unavailable.": "Tính năng thanh toán Alipay đang được tích hợp. Hiện chưa thể thanh toán trực tuyến.",
+    "Alipay QR code": "Mã QR Alipay",
+    "Alipay QR code pending": "Mã QR Alipay sẽ được bổ sung",
+    "Traffic Packs": "Traffic Packs",
+    "Plans": "Plans",
+    "Traffic Pack": "Traffic Pack"
   }
 }
