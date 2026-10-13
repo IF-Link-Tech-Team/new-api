@@ -63,6 +63,8 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/topup/alipay/return", controller.AlipayReturn)
 		// IFLinkPay 第三方支付页异步回调(匿名可达, JSON body, 验签+时间戳窗口)
 		apiRouter.POST("/topup/iflinkpay/notify", anonymousRequestBodyLimit, controller.IFLinkPayNotify)
+		// 兼容早期联调中对方按草稿实现的回调路径,与上面同 handler
+		apiRouter.POST("/pay/callback", anonymousRequestBodyLimit, controller.IFLinkPayNotify)
 		apiRouter.POST("/subscription/alipay/notify", anonymousRequestBodyLimit, controller.AlipayNotify)
 		apiRouter.GET("/subscription/alipay/return", controller.SubscriptionAlipayReturn)
 		// :env separates test vs prod URLs so the operator can register each
