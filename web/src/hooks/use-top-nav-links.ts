@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { shouldShowModelSquareNavigation } from '@/features/dashboard/lib/classroom-quick-start'
 import { useStatus } from '@/hooks/use-status'
 import { parseHeaderNavModulesFromStatus } from '@/lib/nav-modules'
 import { useAuthStore } from '@/stores/auth-store'
@@ -61,6 +62,9 @@ export function useTopNavLinks(): TopNavLink[] {
   const isAuthed = !!auth?.user
 
   const links: TopNavLink[] = []
+  const showModelSquare = shouldShowModelSquareNavigation(
+    import.meta.env.VITE_SHOW_MODEL_SQUARE_NAV
+  )
 
   // Home
   if (modules?.home !== false) {
@@ -74,7 +78,12 @@ export function useTopNavLinks(): TopNavLink[] {
 
   // Pricing
   const pricing = modules?.pricing
-  if (pricing && typeof pricing === 'object' && pricing.enabled) {
+  if (
+    showModelSquare &&
+    pricing &&
+    typeof pricing === 'object' &&
+    pricing.enabled
+  ) {
     const requiresAuth = pricing.requireAuth && !isAuthed
     links.push({ title: t('Model Square'), href: '/pricing', requiresAuth })
   }

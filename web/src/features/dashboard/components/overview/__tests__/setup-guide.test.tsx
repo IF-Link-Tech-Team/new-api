@@ -25,6 +25,7 @@ import {
 } from '@tanstack/react-router'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { api } from '@/lib/api'
@@ -75,6 +76,23 @@ beforeEach(() => {
             },
           },
         }
+      case '/api/subscription/self':
+        return {
+          data: {
+            success: true,
+            data: {
+              all_subscriptions: [
+                {
+                  subscription: {
+                    product_type: 'pack_deepseek_classroom',
+                    status: 'active',
+                    end_time: 4102444800,
+                  },
+                },
+              ],
+            },
+          },
+        }
       case '/api/user/models':
         return { data: { success: true, data: ['gpt-4o-mini'] } }
       case '/api/data/self':
@@ -116,7 +134,7 @@ describe('overview setup guide', () => {
       screen.getAllByRole('heading').map((heading) => heading.textContent)
     ).toEqual(['Overview', 'Usage at a glance'])
     expect(screen.queryByText('Setup guide complete')).not.toBeInTheDocument()
-    expect(screen.queryByText('Setup progress: 3/3')).not.toBeInTheDocument()
+    expect(screen.queryByText('Setup progress: 5/5')).not.toBeInTheDocument()
     for (const name of ['API Keys', 'Channels', 'Usage Logs', 'Pricing']) {
       expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
     }
@@ -141,7 +159,7 @@ describe('overview setup guide', () => {
     ).toBeVisible()
     expect(
       screen.getByRole('heading', {
-        name: 'Build on your API gateway in minutes',
+        name: 'Make your first DeepSeek call in minutes',
       })
     ).toBeVisible()
     await waitFor(() =>
@@ -155,6 +173,24 @@ describe('overview setup guide', () => {
     await user.click(screen.getByRole('button', { name: 'Hide setup guide' }))
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     expect(toggle).toHaveFocus()
+  })
+
+  it('reports a failed key fetch and allows another copy attempt', async () => {
+    const user = userEvent.setup()
+    const keyRequest = vi
+      .spyOn(api, 'post')
+      .mockRejectedValue(new Error('Key temporarily unavailable'))
+    const errorToast = vi.spyOn(toast, 'error')
+    await renderOverview()
+    await user.click(await screen.findByRole('button', { name: 'Setup guide' }))
+    const copyButton = screen.getByRole('button', { name: 'Copy full API key' })
+
+    await user.click(copyButton)
+    await waitFor(() => expect(copyButton).toBeEnabled())
+    await user.click(copyButton)
+    await waitFor(() => expect(keyRequest).toHaveBeenCalledTimes(2))
+    expect(keyRequest).toHaveBeenLastCalledWith('/api/token/1/key')
+    expect(errorToast).toHaveBeenCalled()
   })
 
   it('restores the completed guide preference after remounting', async () => {
@@ -187,7 +223,7 @@ describe('overview setup guide', () => {
     await user.click(
       await screen.findByRole('button', { name: 'Hide setup guide' })
     )
-    expect(screen.getByText('Setup progress: 1/3')).toBeVisible()
+    expect(screen.getByText('Setup progress: 3/5')).toBeVisible()
     expect(
       screen.getByText('Setup guide is collapsed. Expand it anytime.')
     ).toBeVisible()
@@ -210,7 +246,7 @@ describe('overview setup guide', () => {
     })
     window.localStorage.setItem(storageKey, 'collapsed')
     await renderOverview()
-    expect(await screen.findByText('Setup progress: 2/3')).toBeVisible()
+    expect(await screen.findByText('Setup progress: 3/5')).toBeVisible()
 
     act(() => {
       useAuthStore.getState().auth.setUser({
