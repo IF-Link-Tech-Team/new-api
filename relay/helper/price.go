@@ -3,6 +3,7 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -65,6 +66,20 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
+	if model.UsesVersionedProductPricing(info.ProductType) && strings.TrimSpace(info.ProductPriceVersion) != "" {
+		productPrice, err := model.GetProductPriceSnapshot(info.ProductType, info.OriginModelName, info.ProductPriceVersion)
+		if err != nil {
+			return hosttypes.PriceData{}, fmt.Errorf("V1 product price unavailable: %w", err)
+		}
+		if info.ProductBillingMultiplier <= 0 || math.Abs(productPrice.BillingMultiplier-info.ProductBillingMultiplier) > 0.000001 {
+			return hosttypes.PriceData{}, errors.New("V1 product billing multiplier does not match its immutable price version")
+		}
+		groupRatioInfo := HandleGroupRatio(c, info)
+		return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, groupRatioInfo, productPrice.BillingExpression)
+	}
+	if model.RequiresStrictV1RoutePolicy(info.ProductType) {
+		return hosttypes.PriceData{}, errors.New("V1 product price version is required")
+	}
 	if info != nil {
 		if matched := resolveBillingModelName(info.GetOriginModelName()); matched != "" && matched != info.OriginModelName {
 			info.BillingModelName = matched
@@ -77,7 +92,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 
 	// Check if this model uses tiered_expr billing
 	if billing_setting.GetBillingMode(billingModelName) == billing_setting.BillingModeTieredExpr {
-		return modelPriceHelperTiered(c, info, billingModelName, promptTokens, groupRatioInfo)
+		return modelPriceHelperTiered(c, info, billingModelName, promptTokens, groupRatioInfo, "")
 	}
 
 	var preConsumedQuota int
@@ -171,6 +186,11 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		CacheCreation1hRatio: cacheCreationRatio1h,
 		QuotaToPreConsume:    preConsumedQuota,
 	}
+	productMultiplier := info.ProductBillingMultiplier
+	if productMultiplier <= 0 {
+		productMultiplier = 1
+	}
+	priceData.AddOtherRatio("product_billing_multiplier", productMultiplier)
 	if usePrice {
 		for name, ratio := range meta.BillingRatios {
 			priceData.AddOtherRatio(name, ratio)
@@ -195,6 +215,12 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	if usePrice {
 		quotaToPreConsume := priceData.ApplyOtherRatiosToFloat(modelPrice * common.QuotaPerUnit * groupRatioInfo.GroupRatio)
 		quota, err := common.QuotaFromFloatStrict(quotaToPreConsume)
+		if err != nil {
+			return hosttypes.PriceData{}, err
+		}
+		priceData.QuotaToPreConsume = quota
+	} else if productMultiplier != 1 {
+		quota, err := common.QuotaFromFloatStrict(float64(priceData.QuotaToPreConsume) * productMultiplier)
 		if err != nil {
 			return hosttypes.PriceData{}, err
 		}
@@ -274,6 +300,18 @@ func ModelPriceHelperPerCall(c *gin.Context, info *relaycommon.RelayInfo) (hostt
 		Quota:          quota,
 		GroupRatioInfo: groupRatioInfo,
 	}
+	productMultiplier := info.ProductBillingMultiplier
+	if productMultiplier <= 0 {
+		productMultiplier = 1
+	}
+	priceData.AddOtherRatio("product_billing_multiplier", productMultiplier)
+	if productMultiplier != 1 {
+		var err error
+		priceData.Quota, err = common.QuotaFromFloatStrict(float64(priceData.Quota) * productMultiplier)
+		if err != nil {
+			return hosttypes.PriceData{}, err
+		}
+	}
 	return priceData, nil
 }
 
@@ -340,10 +378,14 @@ func resolveBillingModelName(origin string) string {
 	return matched
 }
 
-func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billingModelName string, promptTokens int, groupRatioInfo hosttypes.GroupRatioInfo) (hosttypes.PriceData, error) {
-	exprStr, ok := billing_setting.GetBillingExpr(billingModelName)
-	if !ok {
-		return hosttypes.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", billingModelName)
+func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billingModelName string, promptTokens int, groupRatioInfo hosttypes.GroupRatioInfo, expressionOverride string) (hosttypes.PriceData, error) {
+	exprStr := strings.TrimSpace(expressionOverride)
+	if exprStr == "" {
+		var ok bool
+		exprStr, ok = billing_setting.GetBillingExpr(billingModelName)
+		if !ok {
+			return hosttypes.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", billingModelName)
+		}
 	}
 	exprHash := billingexpr.ExprHashString(exprStr)
 	if info.RelayFormat == types.RelayFormatOpenAIRealtime && billingexpr.UsesFixedPricingByHash(exprStr, exprHash) {
@@ -376,9 +418,12 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	}
 
 	// Expression coefficients are $/1M tokens prices; convert to quota the same way per-call billing does.
-	quotaBeforeGroup := rawCost / 1_000_000 * common.QuotaPerUnit
-	// Scale the reservation, preserving the expression's context-length tier
-	// and leaving actual settlement and fixed request prices unchanged.
+	productMultiplier := info.ProductBillingMultiplier
+	if productMultiplier <= 0 {
+		productMultiplier = 1
+	}
+	quotaBeforeGroup := rawCost / 1_000_000 * common.QuotaPerUnit * productMultiplier
+	// Upstream reservation multiplier only affects pre-consume.
 	if trace.BillingUnit != billingexpr.BillingUnitRequest {
 		quotaBeforeGroup *= preConsumeMultiplier
 	}
@@ -412,6 +457,9 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 		EstimatedFixedPrice:       trace.FixedPrice,
 		QuotaPerUnit:              common.QuotaPerUnit,
 		ExprVersion:               billingexpr.ExprVersion(exprStr),
+		ProductType:               info.ProductType,
+		ProductMultiplier:         productMultiplier,
+		PriceVersion:              info.ProductPriceVersion,
 	}
 	info.TieredBillingSnapshot = snapshot
 	info.BillingRequestInput = &requestInput

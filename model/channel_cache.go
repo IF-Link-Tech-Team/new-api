@@ -120,9 +120,13 @@ func GetRandomSatisfiedChannel(
 	retry int,
 	filters []dto.ChannelFilter,
 ) (*Channel, error) {
+	return GetRandomSatisfiedChannelWithPolicy(group, model, retry, filters, nil)
+}
+
+func GetRandomSatisfiedChannelWithPolicy(group string, model string, retry int, filters []dto.ChannelFilter, policy *ChannelSelectionPolicy) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, filters)
+		return GetChannelWithPolicy(group, model, retry, filters, policy)
 	}
 
 	channelSyncLock.RLock()
@@ -135,6 +139,16 @@ func GetRandomSatisfiedChannel(
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.RoutingMatchModelName(model)
 		channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
+	}
+	if policy != nil {
+		filtered := make([]int, 0, len(channels))
+		for _, channelId := range channels {
+			channel, ok := channelsIDM[channelId]
+			if ok && ChannelSatisfiesPolicy(channel, model, policy) {
+				filtered = append(filtered, channelId)
+			}
+		}
+		channels = filtered
 	}
 
 	if len(channels) == 0 {

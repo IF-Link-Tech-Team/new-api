@@ -9,13 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
-	"io"
-	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
@@ -121,6 +123,7 @@ func (*CreemAdaptor) RequestPay(c *gin.Context, req *CreemPayRequest) {
 		TradeNo:         referenceId,
 		PaymentMethod:   model.PaymentMethodCreem,
 		PaymentProvider: model.PaymentProviderCreem,
+		Currency:        strings.ToUpper(strings.TrimSpace(selectedProduct.Currency)),
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
@@ -311,8 +314,18 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 	// Try complete subscription order first
 	LockOrder(referenceId)
 	defer UnlockOrder(referenceId)
-	if err := model.CompleteSubscriptionOrder(referenceId, common.GetJsonString(event), model.PaymentProviderCreem, ""); err == nil {
-		logger.LogInfo(c.Request.Context(), common.LogText("Creem subscription order processed trade_no=%s creem_order_id=%s", referenceId, event.Object.Order.Id))
+	providerTradeNo := strings.TrimSpace(event.Object.Order.Transaction)
+	if providerTradeNo == "" {
+		providerTradeNo = strings.TrimSpace(event.Object.Order.Id)
+	}
+	receipt := model.PaymentReceipt{
+		Amount:          decimal.NewFromInt(int64(event.Object.Order.AmountPaid)).Div(decimal.NewFromInt(100)),
+		Currency:        event.Object.Order.Currency,
+		ProviderTradeNo: providerTradeNo,
+		ProviderPayload: common.GetJsonString(event),
+	}
+	if err := model.CompleteSubscriptionOrderWithReceipt(referenceId, model.PaymentProviderCreem, "", receipt); err == nil {
+		logger.LogInfo(c.Request.Context(), fmt.Sprintf("Creem 订阅订单处理成功 trade_no=%s creem_order_id=%s", referenceId, event.Object.Order.Id))
 		c.Status(http.StatusOK)
 		return
 	} else if err != nil && !errors.Is(err, model.ErrSubscriptionOrderNotFound) {
@@ -356,11 +369,22 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 		logger.LogWarn(c.Request.Context(), common.LogText("Creem callback customer name is empty trade_no=%s creem_order_id=%s", referenceId, event.Object.Order.Id))
 	}
 
-	err := model.RechargeCreem(referenceId, customerEmail, customerName, c.ClientIP())
+	_, _, credited, err := model.CompleteTopUpPayment(referenceId, model.PaymentProviderCreem, receipt)
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Creem top-up processing failed trade_no=%s creem_order_id=%s client_ip=%s error=%q", referenceId, event.Object.Order.Id, c.ClientIP(), err.Error()))
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
+	}
+	// Preserve the legacy convenience of filling an empty email, but keep
+	// settlement and quota credit inside CompleteTopUpPayment's atomic
+	// contract. This metadata update is deliberately non-financial.
+	if credited && customerEmail != "" {
+		if user, userErr := model.GetUserById(topUp.UserId, false); userErr == nil && user != nil && user.Email == "" {
+			user.Email = customerEmail
+			if userErr = user.Update(false); userErr != nil {
+				logger.LogWarn(c.Request.Context(), fmt.Sprintf("Creem 回填客户邮箱失败 trade_no=%s error=%q", referenceId, userErr.Error()))
+			}
+		}
 	}
 
 	logger.LogInfo(c.Request.Context(), common.LogText("Creem top-up succeeded trade_no=%s creem_order_id=%s quota=%d money=%.2f client_ip=%s", referenceId, event.Object.Order.Id, topUp.Amount, topUp.Money, c.ClientIP()))

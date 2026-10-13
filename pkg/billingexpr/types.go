@@ -13,7 +13,8 @@ type RequestInput struct {
 	Usage   map[string]any
 	// ImageCount is a validated billing quantity, separate from the frozen
 	// request's n. Settlement can replace it with the actual returned count.
-	ImageCount *int
+	ImageCount     *int
+	EvaluationUnix int64
 }
 
 // TokenParams holds all token dimensions passed into an Expr evaluation.
@@ -80,6 +81,9 @@ type BillingSnapshot struct {
 	ExprVersion               int            `json:"expr_version"`
 	TaskUsageBilling          bool           `json:"task_usage_billing,omitempty"`
 	UsageFacts                map[string]any `json:"usage_facts,omitempty"`
+	ProductType               string         `json:"product_type,omitempty"`
+	ProductMultiplier         float64        `json:"product_multiplier"`
+	PriceVersion              string         `json:"price_version,omitempty"`
 }
 
 // TieredResult holds everything needed after running tiered settlement.

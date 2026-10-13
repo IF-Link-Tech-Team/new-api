@@ -16,9 +16,9 @@ func TestModelScopeMatches(t *testing.T) {
 		{"empty scope matches everything", "", "any-model", true},
 		{"blank scope matches everything", "  ", "any-model", true},
 		{"exact entry matches", "deepseek-v4-flash,deepseek-v4-pro", "deepseek-v4-pro", true},
-		{"prefix entry matches dated variant", "deepseek-v4-flash,deepseek-v4-pro", "deepseek-v4-pro-202606", true},
+		{"prefix entry does not authorize a new model", "deepseek-v4-flash,deepseek-v4-pro", "deepseek-v4-pro-202606", false},
 		{"unrelated model rejected", "deepseek-v4-flash,deepseek-v4-pro", "glm-5.2", false},
-		{"prefix without separator still matches", "deepseek-v4", "deepseek-v4-flash", true},
+		{"series prefix does not authorize a model", "deepseek-v4", "deepseek-v4-flash", false},
 		{"whitespace entries tolerated", " glm-5 , kimi-k2.7-code ", "kimi-k2.7-code", true},
 		{"no entry matches empty model", "deepseek-v4", "", false},
 	}

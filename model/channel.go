@@ -50,6 +50,9 @@ type Channel struct {
 	ParamOverride     *string `json:"param_override" gorm:"type:text"`
 	HeaderOverride    *string `json:"header_override" gorm:"type:text"`
 	Remark            *string `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
+	// UpstreamCosts is an exact-model JSON map of actual settlement price
+	// components. It is configuration/ledger data, never an inferred discount.
+	UpstreamCosts string `json:"upstream_costs" gorm:"type:text"`
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
@@ -60,6 +63,45 @@ type Channel struct {
 }
 
 const ChannelStatusReasonAllKeysDisabled = "All keys are disabled"
+
+type ChannelSelectionPolicy struct {
+	AllowedChannelIds map[int]struct{}
+	MaxUpstreamCost   PriceComponents
+	RequireCost       bool
+}
+
+func (channel *Channel) GetUpstreamCost(modelName string) (PriceComponents, bool) {
+	if channel == nil || strings.TrimSpace(channel.UpstreamCosts) == "" {
+		return PriceComponents{}, false
+	}
+	costs := map[string]PriceComponents{}
+	if err := common.UnmarshalJsonStr(channel.UpstreamCosts, &costs); err != nil {
+		return PriceComponents{}, false
+	}
+	cost, ok := costs[modelName]
+	return cost, ok && validPositivePriceComponents(cost)
+}
+
+func ChannelSatisfiesPolicy(channel *Channel, modelName string, policy *ChannelSelectionPolicy) bool {
+	if channel == nil {
+		return false
+	}
+	if policy == nil {
+		return true
+	}
+	if _, ok := policy.AllowedChannelIds[channel.Id]; !ok {
+		return false
+	}
+	if !policy.RequireCost {
+		return true
+	}
+	cost, ok := channel.GetUpstreamCost(modelName)
+	if !ok {
+		return false
+	}
+	cap := policy.MaxUpstreamCost
+	return cost.Input <= cap.Input && cost.CachedInput <= cap.CachedInput && cost.Output <= cap.Output
+}
 
 type ChannelInfo struct {
 	IsMultiKey             bool                  `json:"is_multi_key"`                        // 是否多Key模式

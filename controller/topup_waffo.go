@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/thanhpk/randstr"
 	waffo "github.com/waffo-com/waffo-go"
 	"github.com/waffo-com/waffo-go/config"
@@ -219,6 +220,7 @@ func RequestWaffoPay(c *gin.Context) {
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		amount = max(int64(float64(req.Amount)/common.QuotaPerUnit), 1)
 	}
+	currency := getWaffoCurrency()
 
 	// 创建本地订单
 	topUp := &model.TopUp{
@@ -228,6 +230,7 @@ func RequestWaffoPay(c *gin.Context) {
 		TradeNo:         merchantOrderId,
 		PaymentMethod:   model.PaymentMethodWaffo,
 		PaymentProvider: model.PaymentProviderWaffo,
+		Currency:        currency,
 		CreateTime:      time.Now().Unix(),
 		Status:          common.TopUpStatusPending,
 	}
@@ -256,7 +259,6 @@ func RequestWaffoPay(c *gin.Context) {
 		returnUrl = setting.WaffoReturnUrl
 	}
 
-	currency := getWaffoCurrency()
 	goodsInfo := buildWaffoTopUpGoodsInfo(req.Amount)
 	createParams := &order.CreateOrderParams{
 		PaymentRequestID: paymentRequestId,
@@ -411,8 +413,33 @@ func handleWaffoPayment(c *gin.Context, wh *core.WebhookHandler, result *core.Pa
 	LockOrder(merchantOrderId)
 	defer UnlockOrder(merchantOrderId)
 
-	if err := model.RechargeWaffo(merchantOrderId, c.ClientIP()); err != nil {
-		logger.LogError(c.Request.Context(), common.LogText("Waffo top-up processing failed trade_no=%s client_ip=%s error=%q", merchantOrderId, c.ClientIP(), err.Error()))
+	amount, amountErr := decimal.NewFromString(strings.TrimSpace(result.OrderAmount))
+	if amountErr != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 回调金额无效 trade_no=%s order_amount=%q error=%q", merchantOrderId, result.OrderAmount, amountErr.Error()))
+		sendWaffoWebhookResponse(c, wh, false, "invalid amount")
+		return
+	}
+	currency := strings.ToUpper(strings.TrimSpace(result.OrderCurrency))
+	if currency == "" {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 回调币种缺失 trade_no=%s", merchantOrderId))
+		sendWaffoWebhookResponse(c, wh, false, "invalid currency")
+		return
+	}
+	providerTradeNo := strings.TrimSpace(result.AcquiringOrderID)
+	if providerTradeNo == "" {
+		providerTradeNo = strings.TrimSpace(result.PaymentRequestID)
+	}
+	if providerTradeNo == "" {
+		providerTradeNo = merchantOrderId
+	}
+	receipt := model.PaymentReceipt{
+		Amount:          amount,
+		Currency:        currency,
+		ProviderTradeNo: providerTradeNo,
+		ProviderPayload: common.GetJsonString(result),
+	}
+	if _, _, _, err := model.CompleteTopUpPayment(merchantOrderId, model.PaymentProviderWaffo, receipt); err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("Waffo 充值处理失败 trade_no=%s client_ip=%s error=%q", merchantOrderId, c.ClientIP(), err.Error()))
 		sendWaffoWebhookResponse(c, wh, false, err.Error())
 		return
 	}

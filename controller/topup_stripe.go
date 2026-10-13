@@ -287,18 +287,38 @@ func fulfillOrder(ctx context.Context, event stripe.Event, referenceId string, c
 		"currency":     strings.ToUpper(event.GetObjectValue("currency")),
 		"event_type":   string(event.Type),
 	}
-	if err := model.CompleteSubscriptionOrder(referenceId, common.GetJsonString(payload), model.PaymentProviderStripe, ""); err == nil {
-		logger.LogInfo(ctx, common.LogText("Stripe subscription order processed trade_no=%s event_type=%s client_ip=%s", referenceId, string(event.Type), callerIp))
+	amountMinor, parseErr := decimal.NewFromString(event.GetObjectValue("amount_total"))
+	if parseErr != nil {
+		logger.LogError(ctx, fmt.Sprintf("Stripe 回调金额无效 trade_no=%s amount_total=%q event_type=%s client_ip=%s", referenceId, event.GetObjectValue("amount_total"), string(event.Type), callerIp))
+		return
+	}
+	providerTradeNo := strings.TrimSpace(event.GetObjectValue("payment_intent"))
+	if providerTradeNo == "" {
+		providerTradeNo = strings.TrimSpace(event.GetObjectValue("id"))
+	}
+	receipt := model.PaymentReceipt{
+		Amount:          amountMinor.Div(decimal.NewFromInt(100)),
+		Currency:        strings.ToUpper(event.GetObjectValue("currency")),
+		ProviderTradeNo: providerTradeNo,
+		ProviderPayload: common.GetJsonString(payload),
+	}
+	if err := model.CompleteSubscriptionOrderWithReceipt(referenceId, model.PaymentProviderStripe, "", receipt); err == nil {
+		logger.LogInfo(ctx, fmt.Sprintf("Stripe 订阅订单处理成功 trade_no=%s event_type=%s client_ip=%s", referenceId, string(event.Type), callerIp))
 		return
 	} else if err != nil && !errors.Is(err, model.ErrSubscriptionOrderNotFound) {
 		logger.LogError(ctx, common.LogText("Stripe subscription order processing failed trade_no=%s event_type=%s client_ip=%s error=%q", referenceId, string(event.Type), callerIp, err.Error()))
 		return
 	}
 
-	err := model.Recharge(referenceId, customerId, callerIp)
+	completedTopUp, _, credited, err := model.CompleteTopUpPayment(referenceId, model.PaymentProviderStripe, receipt)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("Stripe top-up processing failed trade_no=%s event_type=%s client_ip=%s error=%q", referenceId, string(event.Type), callerIp, err.Error()))
 		return
+	}
+	if credited && customerId != "" && completedTopUp != nil {
+		if updateErr := model.DB.Model(&model.User{}).Where("id = ?", completedTopUp.UserId).Update("stripe_customer", customerId).Error; updateErr != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("Stripe 回填 customer_id 失败 trade_no=%s error=%q", referenceId, updateErr.Error()))
+		}
 	}
 
 	total, _ := strconv.ParseFloat(event.GetObjectValue("amount_total"), 64)

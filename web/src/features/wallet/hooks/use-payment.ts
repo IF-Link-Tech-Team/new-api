@@ -30,10 +30,12 @@ import {
   requestPayment,
   requestStripePayment,
   requestIFLinkPayPayment,
+  requestAlipayPayment,
   isApiSuccess,
 } from '../api'
 import {
   isStripePayment,
+  isAlipayPayment,
   isWaffoPayment,
   isWaffoPancakePayment,
   isIFLinkPayPayment,
@@ -140,6 +142,17 @@ export function usePayment() {
           }
           toast.success(i18next.t('Redirecting to payment page...'))
           window.location.href = iflinkpayRes.data.pay_url
+          return true
+        }
+
+        if (isAlipayPayment(paymentType)) {
+          const alipayRes = await requestAlipayPayment({ amount })
+          if (!isApiSuccess(alipayRes) || !alipayRes.data?.pay_url) {
+            handleServerError(alipayRes, i18next.t('Payment request failed'))
+            return false
+          }
+          toast.success(i18next.t('Redirecting to payment page...'))
+          window.location.href = alipayRes.data.pay_url
           return true
         }
 

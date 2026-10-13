@@ -51,6 +51,18 @@ export type IFLinkPayPaymentResponse = ApiResponse<{
   amount: number
   pay_money: number
 }>
+/**
+ * 支付宝原生支付(电脑网站支付)。
+ *
+ * 与 Stripe 不同,支付宝不返回 pay_link 而是返回收银台 pay_url,
+ * 前端直接整页跳转即可(不能用表单 POST,签名已在 URL 里)。
+ */
+export type AlipayPaymentResponse = ApiResponse<{
+  pay_url: string
+  trade_no: string
+  amount: number
+  is_mobile?: boolean
+}>
 export type AffiliateCodeResponse = ApiResponse<string>
 export type AffiliateTransferResponse = ApiResponse
 export type CreemPaymentResponse = ApiResponse<{ checkout_url: string }>
@@ -112,6 +124,8 @@ export interface PaymentMethod {
   min_topup?: number
   /** Optional react-icons component name or safe icon URL */
   icon?: string
+  /** Opens the pending-payment information dialog without creating an order. */
+  display_only?: boolean
 }
 
 /**
@@ -136,6 +150,8 @@ export interface TopupInfo {
   enable_online_topup: boolean
   /** Whether IFLinkPay third-party redirect payment is available */
   enable_iflinkpay_topup?: boolean
+  /** Whether native Alipay page-pay is available */
+  enable_alipay_topup?: boolean
   /** Whether Stripe topup is enabled */
   enable_stripe_topup: boolean
   /** Available payment methods */
@@ -207,6 +223,15 @@ export interface PaymentRequest {
  * controller/topup_iflinkpay.go 的 TopUpIFLinkPayRequest。
  */
 export interface IFLinkPayPaymentRequest {
+  amount: number
+}
+/**
+ * 支付宝原生支付请求参数
+ *
+ * 后端只接受 amount(元),不收 payment_method —— 见
+ * controller/topup_alipay.go 的 TopUpAlipayPayRequest。
+ */
+export interface AlipayPaymentRequest {
   /** Topup amount */
   amount: number
 }

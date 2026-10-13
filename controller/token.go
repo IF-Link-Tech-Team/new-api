@@ -41,7 +41,17 @@ type tokenRequest struct {
 
 type tokenResponse struct {
 	*model.Token
-	AutoGroups []string `json:"auto_groups"`
+	AutoGroups                 []string `json:"auto_groups"`
+	EntitlementName            string   `json:"entitlement_name,omitempty"`
+	EntitlementProductCode     string   `json:"entitlement_product_code,omitempty"`
+	EntitlementTier            int      `json:"entitlement_tier,omitempty"`
+	EntitlementStatus          string   `json:"entitlement_status,omitempty"`
+	EntitlementAmountTotal     int64    `json:"entitlement_amount_total,omitempty"`
+	EntitlementAmountUsed      int64    `json:"entitlement_amount_used,omitempty"`
+	EntitlementAmountRemaining int64    `json:"entitlement_amount_remaining,omitempty"`
+	EntitlementStartTime       int64    `json:"entitlement_start_time,omitempty"`
+	EntitlementEndTime         int64    `json:"entitlement_end_time,omitempty"`
+	CourseEligible             bool     `json:"course_eligible,omitempty"`
 }
 
 func maxTokenQuota() int {
@@ -68,7 +78,29 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	if len(autoGroups) == 0 {
 		autoGroups = nil
 	}
-	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
+	response := &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
+	if token.UserSubscriptionId > 0 {
+		var sub model.UserSubscription
+		if err := model.DB.Where("id = ? AND user_id = ?", token.UserSubscriptionId, token.UserId).First(&sub).Error; err == nil {
+			response.EntitlementProductCode = sub.ProductCode
+			response.EntitlementTier = sub.ProductTier
+			response.EntitlementStatus = sub.Status
+			response.EntitlementAmountTotal = sub.AmountTotal
+			response.EntitlementAmountUsed = sub.AmountUsed
+			response.EntitlementAmountRemaining = max(int64(0), sub.AmountTotal-sub.AmountUsed)
+			response.EntitlementStartTime = sub.StartTime
+			response.EntitlementEndTime = sub.EndTime
+			response.CourseEligible = sub.CourseEligible
+			var plan model.SubscriptionPlan
+			if err := model.DB.Select("title").Where("id = ?", sub.PlanId).First(&plan).Error; err == nil {
+				response.EntitlementName = plan.Title
+			}
+		}
+	} else if token.ProductType == model.ProductTypeWallet || token.ProductType == "" {
+		response.EntitlementName = "按量余额"
+		response.EntitlementStatus = "active"
+	}
+	return response
 }
 
 func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
@@ -362,6 +394,12 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		// User-created keys are always wallet-only. Subscription bindings are
+		// created exclusively by the atomic provisioning transaction.
+		UserSubscriptionId: 0,
+		EntitlementType:    model.ProductTypeWallet,
+		ProductType:        model.ProductTypeWallet,
+		BillingMultiplier:  1,
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
 	err = cleanToken.Insert()
@@ -383,6 +421,10 @@ func DeleteToken(c *gin.Context) {
 	token, err := model.GetTokenByIds(id, userId)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if token.UserSubscriptionId > 0 {
+		common.ApiErrorMsg(c, "权益专属 Key 不能删除，请使用安全轮换")
 		return
 	}
 	params := tokenAuditParams(c)
@@ -444,6 +486,10 @@ func UpdateToken(c *gin.Context) {
 			common.ApiErrorT(c, "Token quota is exhausted and cannot be enabled. Please modify the remaining quota or set it to unlimited")
 			return
 		}
+	}
+	if cleanToken.UserSubscriptionId > 0 && statusOnly == "" {
+		common.ApiErrorMsg(c, "权益专属 Key 的额度、期限、模型与路由不可修改")
+		return
 	}
 	if statusOnly != "" {
 		cleanToken.Status = token.Status
@@ -527,6 +573,17 @@ func DeleteTokenBatch(c *gin.Context) {
 		return
 	}
 	userId := c.GetInt("id")
+	var boundCount int64
+	if err := model.DB.Model(&model.Token{}).
+		Where("user_id = ? AND id IN ? AND user_subscription_id > 0", userId, tokenBatch.Ids).
+		Count(&boundCount).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if boundCount > 0 {
+		common.ApiErrorMsg(c, "批量删除中包含权益专属 Key；专属 Key 只能安全轮换，不能删除")
+		return
+	}
 	count, err := model.BatchDeleteTokens(tokenBatch.Ids, userId)
 	if err != nil {
 		common.ApiError(c, err)
@@ -539,6 +596,20 @@ func DeleteTokenBatch(c *gin.Context) {
 		"message": "",
 		"data":    count,
 	})
+}
+
+func RotateEntitlementToken(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	key, err := model.RotateBoundTokenKey(id, c.GetInt("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"key": key})
 }
 
 func GetTokenKeysBatch(c *gin.Context) {

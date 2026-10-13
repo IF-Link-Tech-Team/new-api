@@ -27,6 +27,7 @@ import {
   Copy,
   Link,
   Loader2,
+  RefreshCw,
 } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -54,7 +55,7 @@ import { encodeChannelConnectionInfo } from '@/lib/channel-connection-info'
 import { copyToClipboard } from '@/lib/copy-to-clipboard'
 import { handleServerError } from '@/lib/handle-server-error'
 
-import { updateApiKeyStatus } from '../api'
+import { rotateEntitlementToken, updateApiKeyStatus } from '../api'
 import { API_KEY_STATUS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
 import { apiKeySchema } from '../types'
 import { useApiKeys } from './api-keys-provider'
@@ -87,6 +88,7 @@ export function DataTableRowActions<TData>({
     triggerRefresh,
     setResolvedKey,
     resolveRealKey,
+    cacheResolvedKey,
     loadingKeys,
   } = useApiKeys()
   const isEnabled = apiKey.status === API_KEY_STATUS.ENABLED
@@ -165,6 +167,22 @@ export function DataTableRowActions<TData>({
     }
   }
 
+  const handleRotate = async () => {
+    if (!window.confirm('轮换后旧 Key 会立即失效，是否继续？')) return
+    try {
+      const result = await rotateEntitlementToken(apiKey.id)
+      if (!result.success || !result.data?.key) {
+        toast.error(result.message || 'Key 轮换失败')
+        return
+      }
+      cacheResolvedKey(apiKey.id, result.data.key)
+      triggerRefresh()
+      toast.success('权益专属 Key 已安全轮换')
+    } catch {
+      toast.error('Key 轮换失败')
+    }
+  }
+
   let statusIcon = <Power className='size-4' />
   if (isTogglingStatus) {
     statusIcon = <Loader2 className='size-4 animate-spin' />
@@ -206,6 +224,7 @@ export function DataTableRowActions<TData>({
                 setCurrentRow(apiKey)
                 setOpen('update')
               }}
+              disabled={Boolean(apiKey.user_subscription_id)}
               aria-label={t('Edit')}
             />
           }
@@ -288,18 +307,29 @@ export function DataTableRowActions<TData>({
           </DropdownMenuSub>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onClick={() => {
-            setCurrentRow(apiKey)
-            setOpen('delete')
-          }}
-          className='text-destructive focus:text-destructive'
-        >
-          {t('Delete')}
-          <DropdownMenuShortcut>
-            <Trash2 size={16} />
-          </DropdownMenuShortcut>
-        </DropdownMenuItem>
+        {Boolean(apiKey.user_subscription_id) && (
+          <DropdownMenuItem onClick={() => void handleRotate()}>
+            安全轮换 Key
+            <DropdownMenuShortcut>
+              <RefreshCw size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
+        {Boolean(apiKey.user_subscription_id) && <DropdownMenuSeparator />}
+        {!apiKey.user_subscription_id && (
+          <DropdownMenuItem
+            onClick={() => {
+              setCurrentRow(apiKey)
+              setOpen('delete')
+            }}
+            className='text-destructive focus:text-destructive'
+          >
+            {t('Delete')}
+            <DropdownMenuShortcut>
+              <Trash2 size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
       </DataTableRowActionMenu>
     </div>
   )

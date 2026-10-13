@@ -44,6 +44,7 @@ const (
 	PaymentMethodWaffo        = "waffo"
 	PaymentMethodWaffoPancake = "waffo_pancake"
 	PaymentMethodIFLinkPay    = "iflinkpay"
+	PaymentMethodAlipay       = "alipay"
 	PaymentMethodBalance      = "balance"
 )
 
@@ -54,6 +55,7 @@ const (
 	PaymentProviderWaffo        = "waffo"
 	PaymentProviderWaffoPancake = "waffo_pancake"
 	PaymentProviderIFLinkPay    = "iflinkpay"
+	PaymentProviderAlipay       = "alipay"
 	PaymentProviderBalance      = "balance"
 )
 

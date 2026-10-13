@@ -525,3 +525,23 @@ it('keeps mobile quota readable and opens complete model and IP restrictions by 
   expect(within(details).getByText('192.0.2.1')).toBeVisible()
   expect(within(details).getByText('2001:db8::1')).toBeVisible()
 })
+
+it('shows bound entitlement balance even when the token quota itself is unlimited', async () => {
+  renderQuota({
+    ...key,
+    unlimited_quota: true,
+    user_subscription_id: 12,
+    entitlement_amount_used: 500000,
+    entitlement_amount_remaining: 1500000,
+    entitlement_amount_total: 2000000,
+  })
+  const button = screen.getByRole('button', {
+    name: /Remaining 3; Remaining percentage 75%; Used amount 1/,
+  })
+  expect(button).not.toHaveTextContent('Unlimited')
+  expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '75')
+  await userEvent.click(button)
+  expect(await screen.findByRole('dialog')).toHaveTextContent(
+    'This key uses only its bound entitlement quota.'
+  )
+})

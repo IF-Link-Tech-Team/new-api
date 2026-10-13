@@ -90,15 +90,36 @@ func getPriority(group string, model string, retry int) (int, error) {
 	return priorityToUse, nil
 }
 
-func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
-	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+func getChannelQuery(group string, model string, retry int, eligibleChannelIds []int) (*gorm.DB, error) {
+	base := DB.Model(&Ability{}).Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	if eligibleChannelIds != nil {
+		if len(eligibleChannelIds) == 0 {
+			return DB.Where("1 = 0"), nil
+		}
+		base = base.Where("channel_id IN ?", eligibleChannelIds)
+	}
+	maxPrioritySubQuery := base.Session(&gorm.Session{}).Select("MAX(priority)")
 	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
+	if eligibleChannelIds != nil {
+		channelQuery = channelQuery.Where("channel_id IN ?", eligibleChannelIds)
+	}
 	if retry != 0 {
-		priority, err := getPriority(group, model, retry)
-		if err != nil {
+		var priorities []int
+		priorityQuery := base.Session(&gorm.Session{}).Select("DISTINCT(priority)").Order("priority DESC")
+		if err := priorityQuery.Pluck("priority", &priorities).Error; err != nil {
 			return nil, err
-		} else {
-			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+		}
+		if len(priorities) == 0 {
+			return DB.Where("1 = 0"), nil
+		}
+		priorityIndex := retry
+		if priorityIndex >= len(priorities) {
+			priorityIndex = len(priorities) - 1
+		}
+		priority := priorities[priorityIndex]
+		channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+		if eligibleChannelIds != nil {
+			channelQuery = channelQuery.Where("channel_id IN ?", eligibleChannelIds)
 		}
 	}
 
@@ -111,6 +132,10 @@ func GetChannel(
 	retry int,
 	filters []dto.ChannelFilter,
 ) (*Channel, error) {
+	return GetChannelWithPolicy(group, model, retry, filters, nil)
+}
+
+func GetChannelWithPolicy(group string, model string, retry int, filters []dto.ChannelFilter, policy *ChannelSelectionPolicy) (*Channel, error) {
 	var abilities []Ability
 	err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).Order("priority DESC, weight DESC").Find(&abilities).Error
 	if err != nil {
@@ -125,6 +150,29 @@ func GetChannel(
 			return nil, err
 		}
 		abilities = filterAbilitiesByConstraints(abilities, model, filters)
+	}
+	if policy != nil && len(abilities) > 0 {
+		channelIds := make([]int, 0, len(abilities))
+		for _, ability := range abilities {
+			channelIds = append(channelIds, ability.ChannelId)
+		}
+		var candidates []*Channel
+		if err := DB.Where("id IN ?", channelIds).Find(&candidates).Error; err != nil {
+			return nil, err
+		}
+		allowed := make(map[int]struct{}, len(candidates))
+		for _, candidate := range candidates {
+			if ChannelSatisfiesPolicy(candidate, model, policy) {
+				allowed[candidate.Id] = struct{}{}
+			}
+		}
+		filtered := make([]Ability, 0, len(abilities))
+		for _, ability := range abilities {
+			if _, ok := allowed[ability.ChannelId]; ok {
+				filtered = append(filtered, ability)
+			}
+		}
+		abilities = filtered
 	}
 	if len(abilities) > 0 {
 		priorities := make([]int64, 0)
@@ -148,6 +196,7 @@ func GetChannel(
 			return ability.Priority == nil && targetPriority == 0 || ability.Priority != nil && *ability.Priority == targetPriority
 		})
 	}
+
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
