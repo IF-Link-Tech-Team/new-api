@@ -148,7 +148,10 @@ export function RechargeFormCard({
         {paymentLoading === 'alipay' && (
           <Loader2 className='mr-2 h-4 w-4 animate-spin' />
         )}
-        {t('Alipay integration in progress')} · ¥{topupAmount}
+        {topupInfo?.enable_alipay_topup
+          ? t('Alipay payment')
+          : t('Alipay integration in progress')}{' '}
+        · ¥{topupAmount}
       </Button>
 
       {redemptionEnabled && (

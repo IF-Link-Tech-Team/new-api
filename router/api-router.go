@@ -69,6 +69,8 @@ func SetApiRouter(router *gin.Engine) {
 		// 支付宝原生集成 notify (与 topup notify 共用 handler,内部按 trade_no 自动分支)
 		apiRouter.POST("/topup/alipay/notify", anonymousRequestBodyLimit, controller.AlipayNotify)
 		apiRouter.GET("/topup/alipay/return", controller.AlipayReturn)
+		// Compatibility callback uses the same signature-verified handler.
+		apiRouter.POST("/pay/callback", anonymousRequestBodyLimit, controller.IFLinkPayNotify)
 		apiRouter.POST("/subscription/alipay/notify", anonymousRequestBodyLimit, controller.AlipayNotify)
 		apiRouter.GET("/subscription/alipay/return", controller.SubscriptionAlipayReturn)
 		// :env separates test vs prod URLs so the operator can register each
