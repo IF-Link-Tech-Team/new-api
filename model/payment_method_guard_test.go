@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -350,6 +351,50 @@ func TestRechargeEpayEnforcesFinalWalletQuotaLimit(t *testing.T) {
 			}
 			assert.Equal(t, tc.wantQuota, getUserQuotaForPaymentGuardTest(t, user.Id))
 			assert.Equal(t, tc.wantStatus, getTopUpStatusForPaymentGuardTest(t, order.TradeNo))
+		})
+	}
+}
+
+func TestCompleteTopUpPaymentPreservesWalletLimitAndCreditsOnce(t *testing.T) {
+	oldQuotaPerUnit := common.QuotaPerUnit
+	common.QuotaPerUnit = 5
+	t.Cleanup(func() { common.QuotaPerUnit = oldQuotaPerUnit })
+	for _, tc := range []struct {
+		name    string
+		initial int
+		blocked bool
+	}{
+		{"normal credit", 7, false},
+		{"exact wallet ceiling", common.MaxWalletQuota - 10, false},
+		{"reject wallet overflow", common.MaxWalletQuota - 9, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			truncateTables(t)
+			useUserCacheMiniRedis(t)
+			user := insertUserForPaymentGuardTest(t, 507, tc.initial)
+			require.NoError(t, populateUserCache(*user))
+			order := createEpayTestOrder(t, user.Id, "ATOMICWALLETLIMIT", PaymentProviderIFLinkPay, common.TopUpStatusPending)
+			receipt := PaymentReceipt{Amount: decimal.NewFromInt(10), Currency: "CNY", ProviderTradeNo: order.TradeNo}
+			_, quota, credited, err := CompleteTopUpPayment(order.TradeNo, PaymentProviderIFLinkPay, receipt)
+			if tc.blocked {
+				require.ErrorIs(t, err, ErrTopUpQuotaLimitExceeded)
+				require.False(t, credited)
+				assert.Zero(t, quota)
+				assert.Equal(t, tc.initial, getUserQuotaForPaymentGuardTest(t, user.Id))
+				assert.Equal(t, common.TopUpStatusPending, getTopUpStatusForPaymentGuardTest(t, order.TradeNo))
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, credited)
+			assert.Equal(t, 10, quota)
+			_, quota, credited, err = CompleteTopUpPayment(order.TradeNo, PaymentProviderIFLinkPay, receipt)
+			require.NoError(t, err)
+			require.False(t, credited)
+			assert.Zero(t, quota)
+			assert.Equal(t, tc.initial+10, getUserQuotaForPaymentGuardTest(t, user.Id))
+			cached, err := GetUserCache(user.Id)
+			require.NoError(t, err)
+			assert.Equal(t, tc.initial+10, cached.Quota)
 		})
 	}
 }

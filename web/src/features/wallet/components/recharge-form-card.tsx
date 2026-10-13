@@ -124,15 +124,18 @@ export function RechargeFormCard({
 
   const handleAmountChange = (value: string) => {
     setLocalAmount(value)
-    const numValue = Number.parseInt(value) || 0
+    // 允许任意金额(最多两位小数), IFLinkPay 通道依赖小数输入;
+    // 仅接受整数的通道(支付宝/epay)仍由各自后端校验拦截。
+    const numValue = Number.parseFloat(value) || 0
     if (numValue >= 0) {
-      onTopupAmountChange(numValue)
+      onTopupAmountChange(Math.round(numValue * 100) / 100)
     }
   }
 
   const hasConfigurableTopup =
     topupInfo?.enable_online_topup ||
     topupInfo?.enable_stripe_topup ||
+    topupInfo?.enable_iflinkpay_topup ||
     enableWaffoTopup ||
     enableWaffoPancakeTopup
   const hasAnyTopup = hasConfigurableTopup || enableCreemTopup

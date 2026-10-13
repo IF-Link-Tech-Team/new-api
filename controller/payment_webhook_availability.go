@@ -108,3 +108,12 @@ func isEpayWebhookConfigured() bool {
 func isEpayWebhookEnabled() bool {
 	return isEpayTopUpEnabled()
 }
+
+// ===== IFLinkPay (临时跳转第三方支付页, 凭据到位即启用) =====
+
+func isIFLinkPayTopUpEnabled() bool {
+	if !isPaymentComplianceConfirmed() {
+		return false
+	}
+	return strings.TrimSpace(operation_setting.GetIFLinkPaySecret()) != ""
+}

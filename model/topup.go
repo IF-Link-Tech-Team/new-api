@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -23,6 +24,18 @@ type TopUp struct {
 	CreateTime      int64   `json:"create_time"`
 	CompleteTime    int64   `json:"complete_time"`
 	Status          string  `json:"status"`
+	Currency        string  `json:"currency" gorm:"type:varchar(8);not null;default:'CNY'"`
+	PaidMoney       float64 `json:"paid_money" gorm:"type:decimal(10,6);not null;default:0"`
+	PaidCurrency    string  `json:"paid_currency" gorm:"type:varchar(8);default:''"`
+	ProviderTradeNo string  `json:"provider_trade_no" gorm:"type:varchar(255);default:'';index"`
+	ProviderPayload string  `json:"provider_payload" gorm:"type:text"`
+}
+
+type PaymentReceipt struct {
+	Amount          decimal.Decimal
+	Currency        string
+	ProviderTradeNo string
+	ProviderPayload string
 }
 
 const (
@@ -30,6 +43,7 @@ const (
 	PaymentMethodCreem        = "creem"
 	PaymentMethodWaffo        = "waffo"
 	PaymentMethodWaffoPancake = "waffo_pancake"
+	PaymentMethodIFLinkPay    = "iflinkpay"
 	PaymentMethodBalance      = "balance"
 )
 
@@ -39,6 +53,7 @@ const (
 	PaymentProviderCreem        = "creem"
 	PaymentProviderWaffo        = "waffo"
 	PaymentProviderWaffoPancake = "waffo_pancake"
+	PaymentProviderIFLinkPay    = "iflinkpay"
 	PaymentProviderBalance      = "balance"
 )
 
@@ -51,6 +66,92 @@ var (
 	ErrTopUpQuotaLimitExceeded  error = common.NewMessage("Top-up quota limit exceeded")
 	ErrWalletQuotaLimitExceeded error = common.NewMessage("Wallet quota limit exceeded")
 )
+
+func validatePaymentReceipt(expectedMoney float64, expectedCurrency string, receipt *PaymentReceipt) error {
+	if receipt == nil {
+		return nil
+	}
+	expectedCurrency = strings.ToUpper(strings.TrimSpace(expectedCurrency))
+	actualCurrency := strings.ToUpper(strings.TrimSpace(receipt.Currency))
+	if expectedCurrency == "" || actualCurrency == "" || actualCurrency != expectedCurrency {
+		return fmt.Errorf("payment currency mismatch: expected %s, got %s", expectedCurrency, actualCurrency)
+	}
+	expected := decimal.NewFromFloat(expectedMoney).Round(2)
+	actual := receipt.Amount.Round(2)
+	if !actual.Equal(expected) {
+		return fmt.Errorf("payment amount mismatch: expected %s, got %s", expected.StringFixed(2), actual.StringFixed(2))
+	}
+	if strings.TrimSpace(receipt.ProviderTradeNo) == "" {
+		return errors.New("provider trade number is required")
+	}
+	return nil
+}
+
+// CompleteTopUpPayment atomically records the provider receipt and credits the
+// wallet. Repeated callbacks validate against the same immutable order and do
+// not credit quota twice.
+func CompleteTopUpPayment(tradeNo string, expectedPaymentProvider string, receipt PaymentReceipt) (*TopUp, int, bool, error) {
+	if strings.TrimSpace(tradeNo) == "" {
+		return nil, 0, false, errors.New("未提供支付单号")
+	}
+	refCol := "`trade_no`"
+	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
+		refCol = `"trade_no"`
+	}
+	var completed TopUp
+	quotaToAdd := 0
+	credited := false
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var topUp TopUp
+		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(&topUp).Error; err != nil {
+			return ErrTopUpNotFound
+		}
+		if expectedPaymentProvider != "" && topUp.PaymentProvider != expectedPaymentProvider {
+			return ErrPaymentMethodMismatch
+		}
+		expectedCurrency := topUp.Currency
+		if strings.TrimSpace(expectedCurrency) == "" {
+			expectedCurrency = "CNY"
+		}
+		if err := validatePaymentReceipt(topUp.Money, expectedCurrency, &receipt); err != nil {
+			return err
+		}
+		if topUp.Status == common.TopUpStatusSuccess {
+			completed = topUp
+			return nil
+		}
+		if topUp.Status != common.TopUpStatusPending {
+			return ErrTopUpStatusInvalid
+		}
+		var err error
+		quotaToAdd, err = common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+		if err != nil || quotaToAdd <= 0 {
+			return ErrInvalidTopUpQuota
+		}
+		if err := creditTopUpQuota(tx, topUp.UserId, quotaToAdd, nil); err != nil {
+			return err
+		}
+		topUp.Status = common.TopUpStatusSuccess
+		topUp.CompleteTime = common.GetTimestamp()
+		topUp.PaidMoney, _ = receipt.Amount.Float64()
+		topUp.PaidCurrency = strings.ToUpper(strings.TrimSpace(receipt.Currency))
+		topUp.ProviderTradeNo = strings.TrimSpace(receipt.ProviderTradeNo)
+		topUp.ProviderPayload = receipt.ProviderPayload
+		if err := tx.Save(&topUp).Error; err != nil {
+			return err
+		}
+		completed = topUp
+		credited = true
+		return nil
+	})
+	if err != nil {
+		return nil, 0, false, err
+	}
+	if credited {
+		syncCreditUserQuotaCache(completed.UserId, quotaToAdd, common.LogText("topup"))
+	}
+	return &completed, quotaToAdd, credited, nil
+}
 
 func (topUp *TopUp) Insert() error {
 	var err error
