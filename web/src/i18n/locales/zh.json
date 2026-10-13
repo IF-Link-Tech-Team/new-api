@@ -3320,6 +3320,7 @@
     "Path:": "路径：",
     "Pay": "支付",
     "Pay with Balance": "使用余额支付",
+    "Pay with IFLinkPay": "使用 IFLinkPay 支付",
     "Pay-as-you-go with real-time usage monitoring": "按量付费，实时监控使用情况",
     "Payment": "支付",
     "Payment aggregator mode — onboard with your own registered company (offshore entity). Built for Enterprise.": "支付聚合模式：使用你自己的注册公司（离岸实体）入驻。面向企业场景构建。",
