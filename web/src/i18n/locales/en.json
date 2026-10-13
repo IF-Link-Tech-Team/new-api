@@ -4566,6 +4566,7 @@
     "Pay {{amount}} <savings>• Save {{saved}}</savings>": "Pay {{amount}} <savings>• Save {{saved}}</savings>",
     "Pay with Balance": "Pay with Balance",
     "Plan name cannot be empty": "Plan name cannot be empty",
+    "Pay with IFLinkPay": "Pay with IFLinkPay",
     "Pay-as-you-go with real-time usage monitoring": "Pay-as-you-go with real-time usage monitoring",
     "Plan price cannot be empty": "Plan price cannot be empty",
     "Payment": "Payment",

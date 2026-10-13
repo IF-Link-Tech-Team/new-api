@@ -194,6 +194,42 @@ func IFLinkPayNotify(c *gin.Context) {
 	LockOrder(req.Order)
 	defer UnlockOrder(req.Order)
 
+	// Subscription purchases share this signed callback endpoint. Detect them
+	// first so a valid subscription callback never falls through to wallet
+	// crediting.
+	if order := model.GetSubscriptionOrderByTradeNo(req.Order); order != nil {
+		if order.PaymentProvider != model.PaymentProviderIFLinkPay {
+			logger.LogWarn(ctx, fmt.Sprintf("IFLinkPay 订阅订单渠道不匹配 order=%s provider=%s", req.Order, order.PaymentProvider))
+			ifLinkPayNotifyReply(c, 1)
+			return
+		}
+		if req.UID != req.Order {
+			logger.LogWarn(ctx, fmt.Sprintf("IFLinkPay 订阅订单外部标识不匹配 order=%s", req.Order))
+			ifLinkPayNotifyReply(c, 1)
+			return
+		}
+		expectedFen := int64(math.Round(order.Money * 100))
+		if req.Amount != expectedFen {
+			logger.LogError(ctx, fmt.Sprintf("IFLinkPay 订阅订单金额不匹配 order=%s expected_fen=%d notify_fen=%d", req.Order, expectedFen, req.Amount))
+			ifLinkPayNotifyReply(c, 1)
+			return
+		}
+		receipt := model.PaymentReceipt{
+			Amount:          decimal.NewFromInt(req.Amount).Div(decimal.NewFromInt(100)),
+			Currency:        "CNY",
+			ProviderTradeNo: req.Order,
+			ProviderPayload: string(bodyBytes),
+		}
+		if err := model.CompleteSubscriptionOrderWithReceipt(req.Order, model.PaymentProviderIFLinkPay, model.PaymentMethodIFLinkPay, receipt); err != nil {
+			logger.LogError(ctx, fmt.Sprintf("IFLinkPay 订阅权益发放失败 order=%s error=%q", req.Order, err.Error()))
+			ifLinkPayNotifyReply(c, 1)
+			return
+		}
+		logger.LogInfo(ctx, fmt.Sprintf("IFLinkPay 订阅支付完成 order=%s user_id=%d amount=%.2f", req.Order, order.UserId, order.Money))
+		ifLinkPayNotifyReply(c, 0)
+		return
+	}
+
 	topUp := model.GetTopUpByTradeNo(req.Order)
 	if topUp == nil || topUp.PaymentProvider != model.PaymentProviderIFLinkPay {
 		logger.LogWarn(ctx, fmt.Sprintf("IFLinkPay 充值订单不存在或渠道不匹配 order=%s", req.Order))
