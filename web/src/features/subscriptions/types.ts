@@ -34,6 +34,8 @@ export const subscriptionPlanSchema = z.object({
   quota_reset_period: z.enum(['never', 'daily', 'weekly', 'monthly', 'custom']),
   quota_reset_custom_seconds: z.number().optional(),
   enabled: z.boolean(),
+  listed: z.boolean().optional().default(true),
+  redemption_enabled: z.boolean().optional().default(true),
   sort_order: z.number(),
   allow_balance_pay: z.boolean().optional().default(true),
   allow_wallet_overflow: z.boolean().optional().default(true),
@@ -60,6 +62,7 @@ export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>
 
 export interface PlanRecord {
   plan: SubscriptionPlan
+  product_id: string
 }
 
 // ============================================================================
@@ -118,6 +121,19 @@ export interface PlanPayload {
 export interface SubscriptionPayRequest {
   plan_id: number
   payment_method?: string
+}
+
+export interface ProductRedemptionResult {
+  redemption_id: number
+  plan_id: number
+  product_type: string
+  product_code: string
+  product_family: string
+  user_subscription_id: number
+  token_id: number
+  expires_at: number
+  amount_total: number
+  idempotent: boolean
 }
 
 export interface SubscriptionPayResponse {

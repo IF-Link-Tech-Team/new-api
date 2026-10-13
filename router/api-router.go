@@ -163,8 +163,10 @@ func SetApiRouter(router *gin.Engine) {
 		subscriptionRoute.Use(middleware.UserAuth())
 		{
 			subscriptionRoute.GET("/plans", controller.GetSubscriptionPlans)
+			subscriptionRoute.GET("/products/:product_id", middleware.DisableCache(), controller.GetSubscriptionProduct)
 			subscriptionRoute.GET("/self", controller.GetSubscriptionSelf)
 			subscriptionRoute.GET("/self/orders", controller.GetSubscriptionSelfOrders)
+			subscriptionRoute.POST("/redeem", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.RedeemProductCode)
 			subscriptionRoute.PUT("/self/preference", controller.UpdateSubscriptionPreference)
 			subscriptionRoute.POST("/balance/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestBalancePay)
 			subscriptionRoute.POST("/epay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestEpay)
@@ -182,6 +184,7 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.PATCH("/plans/:id", controller.AdminUpdateSubscriptionPlanStatus)
 			subscriptionAdminRoute.GET("/product-prices", controller.AdminListProductPrices)
 			subscriptionAdminRoute.POST("/product-prices", controller.AdminCreateProductPrice)
+			subscriptionAdminRoute.POST("/classroom/bootstrap", controller.AdminBootstrapClassroomProduct)
 			subscriptionAdminRoute.PATCH("/product-prices/:id", controller.AdminSetProductPriceEnabled)
 			subscriptionAdminRoute.POST("/bind", controller.AdminBindSubscription)
 			subscriptionAdminRoute.POST("/plans/:id/subscriptions/reset", controller.AdminResetPlanSubscriptions)
@@ -273,6 +276,9 @@ func SetApiRouter(router *gin.Engine) {
 		redemptionRoute := apiRouter.Group("/redemption")
 		redemptionRoute.Use(middleware.AdminAuth())
 		{
+			redemptionRoute.GET("/batches", controller.ListProductRedemptionBatches)
+			redemptionRoute.POST("/batches", controller.CreateProductRedemptionBatch)
+			redemptionRoute.GET("/batches/:batch/unused.csv", controller.ExportUnusedProductRedemptions)
 			redemptionRoute.GET("/", controller.GetAllRedemptions)
 			redemptionRoute.GET("/search", controller.SearchRedemptions)
 			redemptionRoute.GET("/:id", controller.GetRedemption)

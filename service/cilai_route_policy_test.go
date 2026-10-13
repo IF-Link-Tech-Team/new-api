@@ -65,3 +65,14 @@ func TestResolveChannelSelectionPolicySnapshotsCurrentWalletPriceVersion(t *test
 	_, err = ResolveChannelSelectionPolicy(disabledCtx, price.Model)
 	require.ErrorContains(t, err, "disabled or not yet effective")
 }
+
+func TestResolveChannelSelectionPolicyKeepsLegacyWalletWhenCatalogIsAbsent(t *testing.T) {
+	truncate(t)
+	ctx, _ := gin.CreateTestContext(nil)
+	common.SetContextKey(ctx, constant.ContextKeyTokenProductType, model.ProductTypeWallet)
+
+	policy, err := ResolveChannelSelectionPolicy(ctx, "legacy-wallet-model")
+	require.NoError(t, err)
+	require.Nil(t, policy)
+	require.Empty(t, common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceVersion))
+}

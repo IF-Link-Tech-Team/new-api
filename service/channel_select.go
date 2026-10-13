@@ -45,6 +45,16 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 	}
 	productType := common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)
 	if productType == model.ProductTypeWallet {
+		configured, err := model.HasProductPriceConfiguration(productType, modelName)
+		if err != nil {
+			return nil, fmt.Errorf("cannot inspect wallet product pricing: %w", err)
+		}
+		// Wallet product pricing is opt-in. Existing installations that have no
+		// wallet price row must retain the legacy global pricing/routing path.
+		// Once any row exists, however, disabled or future-only rows fail closed.
+		if !configured {
+			return nil, nil
+		}
 		price, err := model.GetCurrentProductPriceSnapshot(productType, modelName)
 		if err != nil {
 			return nil, fmt.Errorf("product price is disabled or not yet effective: %w", err)

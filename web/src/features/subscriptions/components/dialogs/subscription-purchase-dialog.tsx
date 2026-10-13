@@ -37,6 +37,7 @@ import { Separator } from '@/components/ui/separator'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { formatQuota } from '@/lib/format'
 import { DEFAULT_CURRENCY_CONFIG } from '@/stores/system-config-store'
+import { PaymentDisplayDialog } from '@/features/payment-display/components/payment-display-dialog'
 
 import {
   paySubscriptionStripe,
@@ -70,6 +71,7 @@ interface Props {
   onPurchaseSuccess?: () => void | Promise<void>
   amountDueOverride?: number
   purchaseMode?: 'purchase' | 'upgrade'
+  displayOnly?: boolean
 }
 
 export function SubscriptionPurchaseDialog(props: Props) {
@@ -286,6 +288,17 @@ export function SubscriptionPurchaseDialog(props: Props) {
     } finally {
       setPaying(false)
     }
+  }
+
+  if (props.displayOnly) {
+    return (
+      <PaymentDisplayDialog
+        open={props.open}
+        onOpenChange={props.onOpenChange}
+        productName={plan.title}
+        amount={`${plan.currency === 'CNY' ? '¥' : `${plan.currency} `}${price}`}
+      />
+    )
   }
 
   return (

@@ -50,6 +50,12 @@ func TestMain(m *testing.M) {
 	} else {
 		sqlDB.SetMaxOpenConns(1)
 	}
+	if os.Getenv("CILAI_TEST_FULL_MIGRATION") == "1" {
+		if err := migrateDB(); err != nil {
+			panic("failed to migrate production snapshot: " + err.Error())
+		}
+		os.Exit(m.Run())
+	}
 
 	if err := db.AutoMigrate(
 		&Task{},
@@ -71,6 +77,8 @@ func TestMain(m *testing.M) {
 		&UserSubscription{},
 		&SubscriptionPreConsumeRecord{},
 		&ProductPrice{},
+		&Redemption{},
+		&ProductRedemptionClaim{},
 		&SubscriptionKeyBinding{},
 		&CourseEntitlement{},
 		&MonthlySubscriptionCycle{},
@@ -101,6 +109,8 @@ func truncateTables(t *testing.T) {
 		DB.Exec("DELETE FROM course_entitlements")
 		DB.Exec("DELETE FROM monthly_subscription_cycles")
 		DB.Exec("DELETE FROM product_prices")
+		DB.Exec("DELETE FROM product_redemption_claims")
+		DB.Exec("DELETE FROM redemptions")
 		DB.Exec("DELETE FROM tokens")
 		DB.Exec("DELETE FROM user_oauth_bindings")
 		DB.Exec("DELETE FROM users")

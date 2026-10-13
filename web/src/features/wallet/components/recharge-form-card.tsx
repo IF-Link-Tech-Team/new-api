@@ -56,7 +56,6 @@ export function RechargeFormCard({
     [10, 30, 50].includes(item.value)
   )
   const alipay: PaymentMethod = { name: '支付宝', type: 'alipay' }
-  const onlineAvailable = topupInfo?.enable_alipay_topup === true
   const redemptionEnabled = topupInfo?.enable_redemption !== false
 
   if (loading) {
@@ -128,27 +127,19 @@ export function RechargeFormCard({
         </AlertDescription>
       </Alert>
 
-      {onlineAvailable ? (
-        <Button
-          className='w-full whitespace-nowrap'
-          disabled={
-            !frozenPresets.some((item) => item.value === topupAmount) ||
-            !!paymentLoading
-          }
-          onClick={() => onPaymentMethodSelect(alipay)}
-        >
-          {paymentLoading === 'alipay' && (
-            <Loader2 className='mr-2 h-4 w-4 animate-spin' />
-          )}
-          支付宝支付 ¥{topupAmount}
-        </Button>
-      ) : (
-        <Alert>
-          <AlertDescription>
-            在线支付暂不可用。正式商户配置完成后，本页将开放支付宝入口。
-          </AlertDescription>
-        </Alert>
-      )}
+      <Button
+        className='w-full whitespace-nowrap'
+        disabled={
+          !frozenPresets.some((item) => item.value === topupAmount) ||
+          !!paymentLoading
+        }
+        onClick={() => onPaymentMethodSelect(alipay)}
+      >
+        {paymentLoading === 'alipay' && (
+          <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+        )}
+        {t('Alipay integration in progress')} · ¥{topupAmount}
+      </Button>
 
       {redemptionEnabled && (
         <div className='space-y-3 border-t pt-5'>

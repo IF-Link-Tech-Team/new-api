@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -16,7 +17,85 @@ import (
 // ---- Shared types ----
 
 type SubscriptionPlanDTO struct {
-	Plan model.SubscriptionPlan `json:"plan"`
+	Plan      model.SubscriptionPlan `json:"plan"`
+	ProductID string                 `json:"product_id"`
+}
+
+// subscriptionPlanProductID is the stable identifier exposed in Checkout
+// URLs. V1 SKUs use their immutable product_code. The title-based fallback is
+// only for older configured plans that predate product_code.
+func subscriptionPlanProductID(plan model.SubscriptionPlan) string {
+	if productCode := strings.ToLower(strings.TrimSpace(plan.ProductCode)); productCode != "" {
+		return productCode
+	}
+	value := strings.ToLower(strings.TrimSpace(plan.Title + " " + plan.Subtitle + " " + plan.ModelScope))
+	words := strings.FieldsFunc(value, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	seen := make(map[string]struct{}, len(words))
+	for _, word := range words {
+		seen[word] = struct{}{}
+	}
+	has := func(word string) bool {
+		_, ok := seen[word]
+		return ok
+	}
+	switch {
+	case has("lite"):
+		return "lite"
+	case has("max"):
+		return "max"
+	case has("pro"):
+		return "pro"
+	case plan.Id > 0:
+		return strconv.Itoa(plan.Id)
+	default:
+		return ""
+	}
+}
+
+func subscriptionPlanMatchesPublicID(plan model.SubscriptionPlan, productID string) bool {
+	if subscriptionPlanProductID(plan) == productID {
+		return true
+	}
+	switch plan.ProductType {
+	case model.ProductTypeMonthlySubscription:
+		return map[int]string{1: "monthly-starter", 2: "monthly-standard", 3: "monthly-advanced"}[plan.ProductTier] == productID
+	case model.ProductTypePackDSGLM:
+		return productID == "ds-glm-value"
+	case model.ProductTypePackQwen:
+		return productID == "qwen-pack"
+	case model.ProductTypePackK3:
+		return productID == fmt.Sprintf("kimi-k3-%.0f", plan.PriceAmount)
+	default:
+		return false
+	}
+}
+
+func getSubscriptionPlanByProductID(productID string) (*model.SubscriptionPlan, error) {
+	productID = strings.ToLower(strings.TrimSpace(productID))
+	if productID == "" || len(productID) > 120 {
+		return nil, fmt.Errorf("无效的商品编号")
+	}
+	var plans []model.SubscriptionPlan
+	if err := model.DB.Order("id desc").Find(&plans).Error; err != nil {
+		return nil, err
+	}
+	var matched *model.SubscriptionPlan
+	for i := range plans {
+		if !subscriptionPlanMatchesPublicID(plans[i], productID) {
+			continue
+		}
+		if matched != nil {
+			return nil, fmt.Errorf("商品编号配置冲突")
+		}
+		plans[i].NormalizeDefaults()
+		matched = &plans[i]
+	}
+	if matched == nil {
+		return nil, fmt.Errorf("商品不存在")
+	}
+	return matched, nil
 }
 
 type BillingPreferenceRequest struct {
@@ -25,6 +104,27 @@ type BillingPreferenceRequest struct {
 
 type SubscriptionBalancePayRequest struct {
 	PlanId int `json:"plan_id"`
+}
+
+type ClassroomBootstrapRequest struct {
+	Apply       bool  `json:"apply"`
+	Enabled     bool  `json:"enabled"`
+	Listed      bool  `json:"listed"`
+	EffectiveAt int64 `json:"effective_at"`
+}
+
+func AdminBootstrapClassroomProduct(c *gin.Context) {
+	var req ClassroomBootstrapRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	result, err := model.BootstrapClassroomProduct(req.Apply, req.Enabled, req.Listed, req.EffectiveAt)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
 }
 
 type SubscriptionOrderStatusDTO struct {
@@ -50,13 +150,9 @@ type SubscriptionOrderStatusDTO struct {
 // ---- User APIs ----
 
 func GetSubscriptionPlans(c *gin.Context) {
-	if !operation_setting.IsPaymentComplianceConfirmed() {
-		common.ApiSuccess(c, []SubscriptionPlanDTO{})
-		return
-	}
-
 	var plans []model.SubscriptionPlan
-	if err := model.DB.Where("enabled = ?", true).Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
+	query := model.DB.Where("listed = ?", true)
+	if err := query.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -64,10 +160,27 @@ func GetSubscriptionPlans(c *gin.Context) {
 	for _, p := range plans {
 		p.NormalizeDefaults()
 		result = append(result, SubscriptionPlanDTO{
-			Plan: p,
+			Plan:      p,
+			ProductID: subscriptionPlanProductID(p),
 		})
 	}
 	common.ApiSuccess(c, result)
+}
+
+func GetSubscriptionProduct(c *gin.Context) {
+	plan, err := getSubscriptionPlanByProductID(c.Param("product_id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !(plan.RedemptionEnabled || (plan.Listed && plan.Enabled)) {
+		common.ApiErrorMsg(c, "商品当前不可用")
+		return
+	}
+	common.ApiSuccess(c, SubscriptionPlanDTO{
+		Plan:      *plan,
+		ProductID: subscriptionPlanProductID(*plan),
+	})
 }
 
 func GetSubscriptionSelf(c *gin.Context) {
@@ -203,7 +316,8 @@ func AdminListSubscriptionPlans(c *gin.Context) {
 	for _, p := range plans {
 		p.NormalizeDefaults()
 		result = append(result, SubscriptionPlanDTO{
-			Plan: p,
+			Plan:      p,
+			ProductID: subscriptionPlanProductID(p),
 		})
 	}
 	common.ApiSuccess(c, result)
@@ -283,14 +397,15 @@ func ensureUniqueProductCode(planId int, productCode string) error {
 }
 
 func AdminCreateSubscriptionPlan(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
-		return
-	}
-
 	var req AdminUpsertSubscriptionPlanRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiErrorMsg(c, "参数错误")
 		return
+	}
+	if !operation_setting.IsPaymentComplianceConfirmed() && req.Plan.ProductType != model.ProductTypePackDeepSeekClassroom {
+		if !requirePaymentCompliance(c) {
+			return
+		}
 	}
 	req.Plan.Id = 0
 	if strings.TrimSpace(req.Plan.Title) == "" {
@@ -345,10 +460,6 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 }
 
 func AdminUpdateSubscriptionPlan(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
-		return
-	}
-
 	id, _ := strconv.Atoi(c.Param("id"))
 	if id <= 0 {
 		common.ApiErrorMsg(c, "无效的ID")
@@ -358,6 +469,17 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiErrorMsg(c, "参数错误")
 		return
+	}
+	var existingPlan model.SubscriptionPlan
+	if err := model.DB.Where("id = ?", id).First(&existingPlan).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !operation_setting.IsPaymentComplianceConfirmed() &&
+		(existingPlan.ProductType != model.ProductTypePackDeepSeekClassroom || req.Plan.ProductType != model.ProductTypePackDeepSeekClassroom) {
+		if !requirePaymentCompliance(c) {
+			return
+		}
 	}
 	if strings.TrimSpace(req.Plan.Title) == "" {
 		common.ApiErrorMsg(c, "套餐标题不能为空")
@@ -398,11 +520,6 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	var existingPlan model.SubscriptionPlan
-	if err := model.DB.Where("id = ?", id).First(&existingPlan).Error; err != nil {
-		common.ApiError(c, err)
-		return
-	}
 	if existingPlan.ProductCode != "" && existingPlan.ProductCode != req.Plan.ProductCode {
 		common.ApiErrorMsg(c, "product_code 创建后不可修改")
 		return
@@ -415,14 +532,18 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
 		// update plan (allow zero values updates with map)
 		updateMap := map[string]interface{}{
-			"title":                      req.Plan.Title,
-			"subtitle":                   req.Plan.Subtitle,
-			"price_amount":               req.Plan.PriceAmount,
-			"currency":                   req.Plan.Currency,
-			"duration_unit":              req.Plan.DurationUnit,
-			"duration_value":             req.Plan.DurationValue,
-			"custom_seconds":             req.Plan.CustomSeconds,
-			"enabled":                    req.Plan.Enabled,
+			"title":          req.Plan.Title,
+			"subtitle":       req.Plan.Subtitle,
+			"price_amount":   req.Plan.PriceAmount,
+			"currency":       req.Plan.Currency,
+			"duration_unit":  req.Plan.DurationUnit,
+			"duration_value": req.Plan.DurationValue,
+			"custom_seconds": req.Plan.CustomSeconds,
+			"enabled":        req.Plan.Enabled,
+			"listed":         req.Plan.Listed,
+			// The full plan editor predates the independent redemption switch.
+			// Preserve it here; the PATCH status endpoint is authoritative.
+			"redemption_enabled":         existingPlan.RedemptionEnabled,
 			"sort_order":                 req.Plan.SortOrder,
 			"stripe_price_id":            req.Plan.StripePriceId,
 			"creem_product_id":           req.Plan.CreemProductId,
@@ -467,25 +588,48 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 }
 
 type AdminUpdateSubscriptionPlanStatusRequest struct {
-	Enabled *bool `json:"enabled"`
+	Enabled           *bool `json:"enabled"`
+	Listed            *bool `json:"listed"`
+	RedemptionEnabled *bool `json:"redemption_enabled"`
 }
 
 func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
-		return
-	}
-
 	id, _ := strconv.Atoi(c.Param("id"))
 	if id <= 0 {
 		common.ApiErrorMsg(c, "无效的ID")
 		return
 	}
 	var req AdminUpdateSubscriptionPlanStatusRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
+	if err := c.ShouldBindJSON(&req); err != nil || (req.Enabled == nil && req.Listed == nil && req.RedemptionEnabled == nil) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
-	if err := model.DB.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Update("enabled", *req.Enabled).Error; err != nil {
+	var plan model.SubscriptionPlan
+	if err := model.DB.Where("id = ?", id).First(&plan).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// Redemption availability is deliberately independent from paid-sale
+	// availability. When payment compliance is still closed, admins may pause
+	// or resume redemption for any configured product, but may not change the
+	// paid-sale/listing switches for non-classroom products.
+	changesPaidSaleState := req.Enabled != nil || req.Listed != nil
+	if !operation_setting.IsPaymentComplianceConfirmed() && changesPaidSaleState && plan.ProductType != model.ProductTypePackDeepSeekClassroom {
+		if !requirePaymentCompliance(c) {
+			return
+		}
+	}
+	updates := map[string]interface{}{}
+	if req.Enabled != nil {
+		updates["enabled"] = *req.Enabled
+	}
+	if req.Listed != nil {
+		updates["listed"] = *req.Listed
+	}
+	if req.RedemptionEnabled != nil {
+		updates["redemption_enabled"] = *req.RedemptionEnabled
+	}
+	if err := model.DB.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		common.ApiError(c, err)
 		return
 	}

@@ -90,15 +90,36 @@ func getPriority(group string, model string, retry int) (int, error) {
 	return priorityToUse, nil
 }
 
-func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
-	maxPrioritySubQuery := DB.Model(&Ability{}).Select("MAX(priority)").Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+func getChannelQuery(group string, model string, retry int, eligibleChannelIds []int) (*gorm.DB, error) {
+	base := DB.Model(&Ability{}).Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true)
+	if eligibleChannelIds != nil {
+		if len(eligibleChannelIds) == 0 {
+			return DB.Where("1 = 0"), nil
+		}
+		base = base.Where("channel_id IN ?", eligibleChannelIds)
+	}
+	maxPrioritySubQuery := base.Session(&gorm.Session{}).Select("MAX(priority)")
 	channelQuery := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = (?)", group, model, true, maxPrioritySubQuery)
+	if eligibleChannelIds != nil {
+		channelQuery = channelQuery.Where("channel_id IN ?", eligibleChannelIds)
+	}
 	if retry != 0 {
-		priority, err := getPriority(group, model, retry)
-		if err != nil {
+		var priorities []int
+		priorityQuery := base.Session(&gorm.Session{}).Select("DISTINCT(priority)").Order("priority DESC")
+		if err := priorityQuery.Pluck("priority", &priorities).Error; err != nil {
 			return nil, err
-		} else {
-			channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+		}
+		if len(priorities) == 0 {
+			return DB.Where("1 = 0"), nil
+		}
+		priorityIndex := retry
+		if priorityIndex >= len(priorities) {
+			priorityIndex = len(priorities) - 1
+		}
+		priority := priorities[priorityIndex]
+		channelQuery = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priority)
+		if eligibleChannelIds != nil {
+			channelQuery = channelQuery.Where("channel_id IN ?", eligibleChannelIds)
 		}
 	}
 
@@ -111,9 +132,28 @@ func GetChannel(group string, model string, retry int, requestPath string) (*Cha
 
 func GetChannelWithPolicy(group string, model string, retry int, requestPath string, policy *ChannelSelectionPolicy) (*Channel, error) {
 	var abilities []Ability
+	var eligibleChannelIds []int
+	if policy != nil {
+		policyChannelIds := make([]int, 0, len(policy.AllowedChannelIds))
+		for channelId := range policy.AllowedChannelIds {
+			policyChannelIds = append(policyChannelIds, channelId)
+		}
+		var candidates []*Channel
+		if len(policyChannelIds) > 0 {
+			if err := DB.Where("id IN ?", policyChannelIds).Find(&candidates).Error; err != nil {
+				return nil, err
+			}
+		}
+		eligibleChannelIds = make([]int, 0, len(candidates))
+		for _, candidate := range candidates {
+			if candidate.Status == common.ChannelStatusEnabled && ChannelSatisfiesPolicy(candidate, model, policy) {
+				eligibleChannelIds = append(eligibleChannelIds, candidate.Id)
+			}
+		}
+	}
 
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry)
+	channelQuery, err := getChannelQuery(group, model, retry, eligibleChannelIds)
 	if err != nil {
 		return nil, err
 	}
@@ -126,29 +166,6 @@ func GetChannelWithPolicy(group string, model string, retry int, requestPath str
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
-	if policy != nil && len(abilities) > 0 {
-		channelIds := make([]int, 0, len(abilities))
-		for _, ability := range abilities {
-			channelIds = append(channelIds, ability.ChannelId)
-		}
-		var candidates []*Channel
-		if err := DB.Where("id IN ?", channelIds).Find(&candidates).Error; err != nil {
-			return nil, err
-		}
-		allowed := make(map[int]struct{}, len(candidates))
-		for _, candidate := range candidates {
-			if ChannelSatisfiesPolicy(candidate, model, policy) {
-				allowed[candidate.Id] = struct{}{}
-			}
-		}
-		filtered := make([]Ability, 0, len(abilities))
-		for _, ability := range abilities {
-			if _, ok := allowed[ability.ChannelId]; ok {
-				filtered = append(filtered, ability)
-			}
-		}
-		abilities = filtered
-	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one
