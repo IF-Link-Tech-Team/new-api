@@ -131,8 +131,8 @@ func classroomDesiredPlan(enabled bool, listed bool, totalAmount int64) (*Subscr
 	allowBalance := false
 	allowWallet := false
 	plan := &SubscriptionPlan{
-		Title:       "DeepSeek 课堂专享六折包",
-		Subtitle:    "课堂专享 · 限时六折 · 兑换后 10 天有效",
+		Title:       "IF.Learn 启动包",
+		Subtitle:    "¥5 DeepSeek 调用额度 · 10,000 算力点 · 兑换后 10 天有效",
 		PriceAmount: 5, Currency: "CNY", DurationUnit: SubscriptionDurationDay, DurationValue: 10,
 		Enabled: enabled, Listed: listed, RedemptionEnabled: enabled, SortOrder: 1000,
 		AllowBalancePay: &allowBalance, AllowWalletOverflow: &allowWallet,

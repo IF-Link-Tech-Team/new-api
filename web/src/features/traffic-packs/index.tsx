@@ -1,3 +1,21 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
 import { useNavigate } from '@tanstack/react-router'
 import {
   BookOpenCheck,
@@ -12,6 +30,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -32,6 +51,7 @@ import {
   fetchTokenKey,
   rotateEntitlementToken,
 } from '@/features/keys/api'
+import { ensureApiKeyPrefix } from '@/features/keys/lib/api-key'
 import type { ApiKey } from '@/features/keys/types'
 import {
   getPublicPlans,
@@ -43,8 +63,16 @@ import type {
   SubscriptionOrderStatus,
   UserSubscriptionRecord,
 } from '@/features/subscriptions/types'
+import { formatQuotaAsComputePoints } from '@/lib/compute-points'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
+
+import {
+  getProductComputePointsLabel,
+  getProductDisplayName,
+  IF_LEARN_PRODUCT_NAME,
+  isIfLearnPlan,
+} from './lib/product-display'
 
 function formatDate(unix: number): string {
   return new Date(unix * 1000).toLocaleString('zh-CN', {
@@ -54,11 +82,6 @@ function formatDate(unix: number): string {
     hour: '2-digit',
     minute: '2-digit',
   })
-}
-
-function normalizeKey(key: string): string {
-  const value = key.trim()
-  return value && !value.startsWith('sk-') ? `sk-${value}` : value
 }
 
 function productLabel(productType?: string): string {
@@ -71,6 +94,8 @@ function productLabel(productType?: string): string {
       return 'Qwen 专项包'
     case 'pack_k3':
       return 'Kimi K3 专项包'
+    case 'pack_deepseek_classroom':
+      return IF_LEARN_PRODUCT_NAME
     default:
       return '专项流量包'
   }
@@ -116,6 +141,7 @@ export function TrafficPacks({
   category?: 'package' | 'subscription'
   title?: string
 }) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [plans, setPlans] = useState<PlanRecord[]>([])
   const [subscriptions, setSubscriptions] = useState<UserSubscriptionRecord[]>(
@@ -140,7 +166,9 @@ export function TrafficPacks({
       setPlans(
         (planRes.data || []).filter(
           (item) =>
-            item.plan.category === category && Boolean(item.plan.product_type)
+            item.plan.category === category &&
+            Boolean(item.plan.product_type) &&
+            (category !== 'package' || isIfLearnPlan(item.plan))
         )
       )
       setSubscriptions(
@@ -242,7 +270,7 @@ export function TrafficPacks({
       if (!response.success || !key) throw new Error()
       setRevealedKeys((current) => ({
         ...current,
-        [tokenId]: normalizeKey(key),
+        [tokenId]: ensureApiKeyPrefix(key),
       }))
     } catch {
       toast.error('读取 Key 失败，请稍后重试')
@@ -260,7 +288,7 @@ export function TrafficPacks({
       if (!response.success || !key) throw new Error()
       setRevealedKeys((current) => ({
         ...current,
-        [tokenId]: normalizeKey(key),
+        [tokenId]: ensureApiKeyPrefix(key),
       }))
       toast.success('专属 Key 已安全轮换')
     } catch {
@@ -290,7 +318,9 @@ export function TrafficPacks({
                 <p className='font-medium'>
                   {category === 'subscription'
                     ? '月套餐固定 30 天，同周期只保留一个实例与一个 Key'
-                    : '专项包可重复购买，每次购买生成独立额度池与独立 Key'}
+                    : t(
+                        'The IF.Learn starter pack has a separate quota pool and dedicated API key.'
+                      )}
                 </p>
                 <p className='text-muted-foreground mt-1 text-sm'>
                   当前 Key
@@ -329,7 +359,11 @@ export function TrafficPacks({
               <div>
                 <h2 className='text-lg font-semibold'>可购买商品</h2>
                 <p className='text-muted-foreground text-sm'>
-                  价格、模型白名单与倍率均来自后端商品合同。
+                  {category === 'package'
+                    ? t(
+                        'The public catalog only includes the IF.Learn starter pack. Product rules come from the server.'
+                      )
+                    : '套餐价格、周期与权益规则均来自后端配置。'}
                 </p>
               </div>
             </div>
@@ -358,11 +392,11 @@ export function TrafficPacks({
                     const plan = item.plan
                     const isRecommended =
                       plan.product_type === 'monthly_subscription' &&
-                      Math.abs(plan.price_amount - 49.9) < 0.001
+                      Math.abs(plan.price_amount - 79) < 0.001
                     const isMonthly =
                       plan.product_type === 'monthly_subscription'
-                    const isClassroom =
-                      plan.product_type === 'pack_deepseek_classroom'
+                    const isClassroom = isIfLearnPlan(plan)
+                    const computePoints = getProductComputePointsLabel(plan)
                     const currentTier =
                       activeMonthly?.subscription.product_tier || 0
                     const tier = plan.product_tier || 0
@@ -377,11 +411,15 @@ export function TrafficPacks({
                       .split(',')
                       .map((model) => model.trim())
                       .filter(Boolean)
-                    let purchaseLabel = isClassroom ? '使用兑换码' : '立即购买'
-                    if (!plan.redemption_enabled) purchaseLabel = '兑换暂未开放'
-                    if (sameTier) purchaseLabel = '当前档位'
-                    else if (lowerTier) purchaseLabel = '当前周期不可降档'
-                    else if (higherTier) {
+                    let purchaseLabel = '立即购买'
+                    if (!plan.redemption_enabled) {
+                      purchaseLabel = '兑换暂未开放'
+                    }
+                    if (sameTier) {
+                      purchaseLabel = '当前档位'
+                    } else if (lowerTier) {
+                      purchaseLabel = '当前周期不可降档'
+                    } else if (higherTier) {
                       purchaseLabel = `补差升级 ¥${(
                         plan.price_amount -
                         Number(
@@ -406,7 +444,7 @@ export function TrafficPacks({
                         )}
                         {isClassroom && (
                           <div className='bg-primary text-primary-foreground absolute top-0 right-0 rounded-bl-lg px-3 py-1 text-xs font-medium'>
-                            课堂专享 · 限时六折
+                            {t('IF.Learn · DeepSeek')}
                           </div>
                         )}
                         <CardHeader>
@@ -417,7 +455,7 @@ export function TrafficPacks({
                               <Package className='text-primary h-5 w-5' />
                             )}
                             <CardTitle className='text-base'>
-                              {plan.title}
+                              {getProductDisplayName(plan)}
                             </CardTitle>
                           </div>
                           <CardDescription>{plan.subtitle}</CardDescription>
@@ -431,6 +469,16 @@ export function TrafficPacks({
                               / {plan.duration_value} 天
                             </span>
                           </div>
+                          {isClassroom && computePoints ? (
+                            <div className='bg-muted/40 rounded-md border px-3 py-2.5'>
+                              <p className='text-muted-foreground text-xs'>
+                                {t('¥5 DeepSeek call credit')}
+                              </p>
+                              <p className='mt-1 font-semibold tabular-nums'>
+                                {computePoints}
+                              </p>
+                            </div>
+                          ) : null}
                           <div className='space-y-2 text-sm'>
                             <p className='flex items-center gap-2'>
                               <ShieldCheck className='h-4 w-4 text-emerald-600' />
@@ -528,6 +576,7 @@ export function TrafficPacks({
                   )
                   const remainingValue =
                     total > 0 ? faceValue * (remaining / total) : 0
+                  const isPackage = item.plan_category === 'package'
                   const token = tokenBySubscription.get(sub.id)
                   const revealed = token ? revealedKeys[token.id] : ''
                   const isActive =
@@ -595,8 +644,10 @@ export function TrafficPacks({
                         <div className='flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between'>
                           <div>
                             <CardTitle className='text-base'>
-                              {item.plan_title ||
-                                productLabel(sub.product_type)}
+                              {sub.product_type === 'pack_deepseek_classroom'
+                                ? IF_LEARN_PRODUCT_NAME
+                                : item.plan_title ||
+                                  productLabel(sub.product_type)}
                             </CardTitle>
                             <CardDescription>
                               实例 #{sub.id} · {productLabel(sub.product_type)}
@@ -608,15 +659,34 @@ export function TrafficPacks({
                         </div>
                       </CardHeader>
                       <CardContent className='space-y-5'>
-                        <div className='grid grid-cols-1 gap-3 text-sm sm:grid-cols-3'>
+                        <div
+                          className={cn(
+                            'grid grid-cols-1 gap-3 text-sm sm:grid-cols-3',
+                            isPackage && 'lg:grid-cols-4'
+                          )}
+                        >
                           <div>
                             <p className='text-muted-foreground text-xs'>
-                              剩余权益
+                              {isPackage
+                                ? t('Remaining compute points')
+                                : t('Remaining cycle benefit')}
                             </p>
                             <p className='mt-1 font-medium'>
-                              ¥{remainingValue.toFixed(2)}
+                              {isPackage
+                                ? formatQuotaAsComputePoints(remaining)
+                                : `¥${remainingValue.toFixed(2)}`}
                             </p>
                           </div>
+                          {isPackage ? (
+                            <div>
+                              <p className='text-muted-foreground text-xs'>
+                                {t('Total compute points')}
+                              </p>
+                              <p className='mt-1 font-medium'>
+                                {formatQuotaAsComputePoints(total)}
+                              </p>
+                            </div>
+                          ) : null}
                           <div>
                             <p className='text-muted-foreground text-xs'>
                               当前周期
@@ -639,8 +709,14 @@ export function TrafficPacks({
                         <div>
                           <div className='mb-2 flex items-center justify-between text-xs'>
                             <span className='text-muted-foreground'>
-                              已用 {formatQuota(used)} · 剩余{' '}
-                              {formatQuota(remaining)}
+                              {t('Used {{used}} · Remaining {{remaining}}', {
+                                used: isPackage
+                                  ? formatQuotaAsComputePoints(used)
+                                  : formatQuota(used),
+                                remaining: isPackage
+                                  ? formatQuotaAsComputePoints(remaining)
+                                  : formatQuota(remaining),
+                              })}
                             </span>
                             <span>{usage.toFixed(1)}%</span>
                           </div>

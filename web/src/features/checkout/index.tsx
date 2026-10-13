@@ -8,7 +8,7 @@ the Free Software Foundation, either version 3 of the License, or
 */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, Loader2 } from 'lucide-react'
+import { CheckCircle2, Coins, Loader2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -25,6 +25,11 @@ import {
   redeemProductCode,
 } from '@/features/subscriptions/api'
 import type { ProductRedemptionResult } from '@/features/subscriptions/types'
+import {
+  getProductComputePointsLabel,
+  getProductDisplayName,
+  isIfLearnPlan,
+} from '@/features/traffic-packs/lib/product-display'
 
 interface CheckoutProps {
   productId?: string
@@ -48,6 +53,7 @@ export function Checkout({ productId }: CheckoutProps) {
   const [code, setCode] = useState('')
   const [redeeming, setRedeeming] = useState(false)
   const [result, setResult] = useState<ProductRedemptionResult | null>(null)
+  const [redemptionError, setRedemptionError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -60,6 +66,8 @@ export function Checkout({ productId }: CheckoutProps) {
   }, [])
 
   const plan = productQuery.data?.plan
+  const productName = plan ? getProductDisplayName(plan) : ''
+  const computePoints = plan ? getProductComputePointsLabel(plan) : null
   const models = (plan?.model_scope || '')
     .split(',')
     .map((model) => model.trim())
@@ -68,6 +76,7 @@ export function Checkout({ productId }: CheckoutProps) {
   const submitRedemption = async () => {
     if (!productId || !code.trim() || redeeming) return
     setRedeeming(true)
+    setRedemptionError('')
     try {
       const response = await redeemProductCode({
         key: code.trim(),
@@ -88,11 +97,12 @@ export function Checkout({ productId }: CheckoutProps) {
             )
       )
     } catch (error) {
-      toast.error(
+      const message =
         error instanceof Error
           ? error.message
           : t('Redemption failed. Please try again.')
-      )
+      setRedemptionError(message)
+      toast.error(message)
     } finally {
       setRedeeming(false)
     }
@@ -144,13 +154,34 @@ export function Checkout({ productId }: CheckoutProps) {
         {plan ? (
           <div className='space-y-5'>
             <PaymentDisplayPanel
-              productName={plan.title}
+              productName={productName}
               amount={`¥${Number(plan.price_amount).toFixed(2)}`}
               qrCodeUrl={qrCodeUrl || undefined}
               onQrCodeError={() => setQrCodeUrl('')}
             />
 
             <div className='space-y-2 rounded-lg border p-4 text-sm'>
+              {isIfLearnPlan(plan) ? (
+                <div className='bg-muted/35 grid gap-3 rounded-md p-3 sm:grid-cols-2'>
+                  <div>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('DeepSeek call credit')}
+                    </span>
+                    <p className='mt-1 text-lg font-semibold tabular-nums'>
+                      ¥{Number(plan.price_amount).toFixed(2)}
+                    </p>
+                  </div>
+                  <div>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('Compute points')}
+                    </span>
+                    <p className='mt-1 flex items-center gap-2 text-lg font-semibold tabular-nums'>
+                      <Coins className='h-4 w-4' />
+                      {computePoints}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
               <div className='flex justify-between gap-4'>
                 <span className='text-muted-foreground'>{t('Validity')}</span>
                 <span>
@@ -181,11 +212,21 @@ export function Checkout({ productId }: CheckoutProps) {
                     'The code must match this product. A failed attempt will not consume it.'
                   )}
                 </p>
+                {isIfLearnPlan(plan) ? (
+                  <p className='text-muted-foreground mt-1 text-xs'>
+                    {t(
+                      'A valid code grants the product directly. No payment is required before redemption.'
+                    )}
+                  </p>
+                ) : null}
               </div>
               <div className='flex flex-col gap-2 sm:flex-row'>
                 <Input
                   value={code}
-                  onChange={(event) => setCode(event.target.value)}
+                  onChange={(event) => {
+                    setCode(event.target.value)
+                    if (redemptionError) setRedemptionError('')
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') void submitRedemption()
                   }}
@@ -209,6 +250,11 @@ export function Checkout({ productId }: CheckoutProps) {
                 <p className='text-destructive text-sm'>
                   {t('Redemption is currently paused for this product.')}
                 </p>
+              ) : null}
+              {redemptionError ? (
+                <Alert variant='destructive' role='alert'>
+                  <AlertDescription>{redemptionError}</AlertDescription>
+                </Alert>
               ) : null}
             </div>
 
