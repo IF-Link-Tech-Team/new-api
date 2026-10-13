@@ -134,7 +134,7 @@ func classroomDesiredPlan(enabled bool, listed bool, totalAmount int64) (*Subscr
 		Title:       "DeepSeek 课堂专享六折包",
 		Subtitle:    "课堂专享 · 限时六折 · 兑换后 10 天有效",
 		PriceAmount: 5, Currency: "CNY", DurationUnit: SubscriptionDurationDay, DurationValue: 10,
-		Enabled: enabled, Listed: listed, SortOrder: 1000,
+		Enabled: enabled, Listed: listed, RedemptionEnabled: enabled, SortOrder: 1000,
 		AllowBalancePay: &allowBalance, AllowWalletOverflow: &allowWallet,
 		MaxPurchasePerUser: 1, TotalAmount: totalAmount, QuotaResetPeriod: SubscriptionResetNever,
 		ModelScope: ClassroomModelV41 + "," + ClassroomModelV4GA,
@@ -273,6 +273,14 @@ func BootstrapClassroomProduct(apply bool, enabled bool, listed bool, effectiveA
 				return err
 			}
 			result.PlanId = plan.Id
+		}
+		// GORM applies `default:true` to zero-valued bools during INSERT, so a
+		// newly-created hidden/disabled SKU must have its switches enforced with
+		// an explicit map update. This also keeps re-bootstrap behavior exact.
+		if err := tx.Model(&SubscriptionPlan{}).Where("id = ?", result.PlanId).Updates(map[string]interface{}{
+			"enabled": enabled, "listed": listed, "redemption_enabled": enabled,
+		}).Error; err != nil {
+			return err
 		}
 		if !enabled {
 			// Disabling the sale/redemption switch must not invalidate existing
