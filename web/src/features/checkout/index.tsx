@@ -100,16 +100,22 @@ export function Checkout({ productId }: CheckoutProps) {
 
   return (
     <main className='bg-muted/20 min-h-[100dvh] px-4 py-8 sm:py-12'>
-      <section className='bg-background mx-auto w-full max-w-lg rounded-xl border p-5 shadow-sm sm:p-7'>
+      <section
+        className='bg-background mx-auto w-full max-w-lg rounded-xl border p-5 shadow-sm sm:p-7'
+        aria-labelledby='checkout-title'
+      >
         <header className='mb-5 space-y-1'>
-          <h1 className='text-xl font-semibold'>{t('Product Checkout')}</h1>
+          <h1 id='checkout-title' className='text-xl font-semibold'>
+            {t('Product Checkout')}
+          </h1>
           <p className='text-muted-foreground text-sm'>
             {t('Review the product, then use its matching redemption code.')}
           </p>
         </header>
 
         {productQuery.isLoading ? (
-          <div className='space-y-4'>
+          <div className='space-y-4' aria-live='polite'>
+            <span className='sr-only'>{t('Loading...')}</span>
             <Skeleton className='h-24 w-full rounded-lg' />
             <Skeleton className='mx-auto aspect-square w-full max-w-56 rounded-xl' />
           </div>
@@ -217,7 +223,7 @@ export function Checkout({ productId }: CheckoutProps) {
                   </p>
                   <div className='flex flex-wrap gap-2'>
                     {plan.category === 'subscription' ? (
-                      <Button size='sm' render={<Link to='/subscriptions' />}>
+                      <Button size='sm' render={<Link to='/plans' />}>
                         {t('View entitlement and API key')}
                       </Button>
                     ) : (

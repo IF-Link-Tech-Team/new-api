@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+
+import { describe, test } from 'vitest'
 
 import { paymentSelectionFromEventPath } from '../payment-trigger'
 
@@ -30,20 +31,18 @@ function trigger(attributes: Record<string, string>): EventTarget {
 }
 
 describe('public home payment trigger', () => {
-  test('reads product details from a composed shadow-DOM event path', () => {
+  test('reads only the stable product id from a composed shadow-DOM event path', () => {
     const selection = paymentSelectionFromEventPath([
       trigger({}),
       trigger({
-        'data-payment-product-id': 'monthly-standard',
-        'data-payment-product': '月套餐·标准档',
-        'data-payment-amount': '¥49.9',
+        'data-payment-product-id': 'pro',
+        'data-payment-product': 'Pro',
+        'data-payment-amount': '¥79',
       }),
     ])
 
     assert.deepEqual(selection, {
-      productId: 'monthly-standard',
-      productName: '月套餐·标准档',
-      amount: '¥49.9',
+      productId: 'pro',
     })
   })
 
@@ -51,7 +50,10 @@ describe('public home payment trigger', () => {
     assert.equal(
       paymentSelectionFromEventPath([
         trigger({ href: '/plans' }),
-        trigger({ 'data-payment-product': '月套餐·标准档' }),
+        trigger({
+          'data-payment-product': 'Pro',
+          'data-payment-amount': '¥79',
+        }),
       ]),
       null
     )

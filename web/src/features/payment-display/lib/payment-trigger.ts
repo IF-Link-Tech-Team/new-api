@@ -19,8 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 
 export interface PaymentDisplaySelection {
   productId: string
-  productName: string
-  amount: string
 }
 
 interface AttributeReader {
@@ -45,10 +43,8 @@ export function paymentSelectionFromEventPath(
     }
 
     const productId = target.getAttribute('data-payment-product-id')?.trim()
-    const productName = target.getAttribute('data-payment-product')?.trim()
-    const amount = target.getAttribute('data-payment-amount')?.trim()
-    if (productId && productName && amount) {
-      return { productId, productName, amount }
+    if (productId) {
+      return { productId }
     }
   }
 

@@ -234,6 +234,13 @@ export function Wallet(props: WalletProps) {
         amount={`¥${topupAmount.toFixed(2)}`}
       />
 
+      <PaymentDisplayDialog
+        open={paymentDisplayOpen}
+        onOpenChange={setPaymentDisplayOpen}
+        productName={`${t('Wallet')} · ${t('Recharge')}`}
+        amount={`¥${topupAmount.toFixed(2)}`}
+      />
+
       <TransferDialog
         open={transferDialogOpen}
         onOpenChange={setTransferDialogOpen}
