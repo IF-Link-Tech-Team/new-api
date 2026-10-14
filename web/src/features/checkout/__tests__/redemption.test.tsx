@@ -30,13 +30,11 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-const originalFetch = globalThis.fetch
 const originalAdapter = api.defaults.adapter
 let root: ReturnType<typeof createRoot> | null = null
 let host: HTMLDivElement | null = null
 
 afterEach(async () => {
-  globalThis.fetch = originalFetch
   api.defaults.adapter = originalAdapter
   if (root) await act(async () => root?.unmount())
   host?.remove()
@@ -45,10 +43,7 @@ afterEach(async () => {
   document.body.replaceChildren()
 })
 
-test('redeems the selected product even when the payment QR code is unavailable', async () => {
-  globalThis.fetch = async () =>
-    ({ ok: true, json: async () => ({ alipayQrCodeUrl: '' }) }) as Response
-
+test('redeems the selected product when online payment is unavailable', async () => {
   const requests: Array<{ method?: string; url?: string; data?: unknown }> = []
   api.defaults.adapter = async (config) => {
     requests.push({
@@ -57,46 +52,53 @@ test('redeems the selected product even when the payment QR code is unavailable'
       data:
         typeof config.data === 'string' ? JSON.parse(config.data) : config.data,
     })
-    const data =
-      config.method === 'get'
-        ? {
-            success: true,
-            data: {
-              product_id: 'lite',
-              plan: {
-                id: 1,
-                title: 'Lite',
-                subtitle: '课堂测试',
-                price_amount: 19,
-                currency: 'CNY',
-                duration_unit: 'day',
-                duration_value: 30,
-                quota_reset_period: 'never',
-                enabled: true,
-                listed: true,
-                redemption_enabled: true,
-                sort_order: 1,
-                max_purchase_per_user: 1,
-                total_amount: 9_500_000,
-                product_code: 'lite',
-              },
-            },
-          }
-        : {
-            success: true,
-            data: {
-              redemption_id: 10,
-              plan_id: 1,
-              product_type: 'legacy_subscription',
-              product_code: 'lite',
-              product_family: 'lite',
-              user_subscription_id: 20,
-              token_id: 30,
-              expires_at: 1_800_000_000,
-              amount_total: 9_500_000,
-              idempotent: false,
-            },
-          }
+    let data: unknown
+    if (config.url === '/api/user/topup/info') {
+      data = {
+        success: true,
+        data: { enable_iflinkpay_topup: false },
+      }
+    } else if (config.method === 'get') {
+      data = {
+        success: true,
+        data: {
+          product_id: 'lite',
+          plan: {
+            id: 1,
+            title: 'Lite',
+            subtitle: '课堂测试',
+            price_amount: 19,
+            currency: 'CNY',
+            duration_unit: 'day',
+            duration_value: 30,
+            quota_reset_period: 'never',
+            enabled: true,
+            listed: true,
+            redemption_enabled: true,
+            sort_order: 1,
+            max_purchase_per_user: 1,
+            total_amount: 9_500_000,
+            product_code: 'lite',
+          },
+        },
+      }
+    } else {
+      data = {
+        success: true,
+        data: {
+          redemption_id: 10,
+          plan_id: 1,
+          product_type: 'legacy_subscription',
+          product_code: 'lite',
+          product_family: 'lite',
+          user_subscription_id: 20,
+          token_id: 30,
+          expires_at: 1_800_000_000,
+          amount_total: 9_500_000,
+          idempotent: false,
+        },
+      }
+    }
     return { data, status: 200, statusText: 'OK', headers: {}, config }
   }
 
@@ -127,10 +129,7 @@ test('redeems the selected product even when the payment QR code is unavailable'
     )
   })
 
-  assert.match(
-    document.body.textContent ?? '',
-    /Payment QR code is not available yet/
-  )
+  assert.doesNotMatch(document.body.textContent ?? '', /Alipay/)
 
   const input = document.querySelector(
     'input[aria-label="Redemption code"]'
@@ -156,6 +155,7 @@ test('redeems the selected product even when the payment QR code is unavailable'
 
   assert.deepEqual(requests, [
     { method: 'get', url: '/api/subscription/products/lite', data: undefined },
+    { method: 'get', url: '/api/user/topup/info', data: undefined },
     {
       method: 'post',
       url: '/api/subscription/redeem',

@@ -5,7 +5,10 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -64,6 +67,27 @@ func TestIFLinkPaySignChangesWithEveryField(t *testing.T) {
 	assert.NotEqual(t, base, ifLinkPaySign("1", 500, "TU-IFP-ABCDEFGI", 1700000000, "topsecret"))
 	assert.NotEqual(t, base, ifLinkPaySign("1", 500, "TU-IFP-ABCDEFGH", 1700000001, "topsecret"))
 	assert.NotEqual(t, base, ifLinkPaySign("1", 500, "TU-IFP-ABCDEFGH", 1700000000, "wrong"))
+}
+
+func TestNewIFLinkPayTopUpTradeNoIsOpaque(t *testing.T) {
+	first, err := newIFLinkPayTopUpTradeNo()
+	require.NoError(t, err)
+	second, err := newIFLinkPayTopUpTradeNo()
+	require.NoError(t, err)
+
+	pattern := regexp.MustCompile(`^TU-IFP-[0-9a-f]{32}$`)
+	assert.True(t, pattern.MatchString(first))
+	assert.True(t, pattern.MatchString(second))
+	assert.NotEqual(t, first, second)
+}
+
+func TestIFLinkPayWalletUIDCompatibility(t *testing.T) {
+	topUp := &model.TopUp{UserId: 42, TradeNo: "TU-IFP-0123456789abcdef0123456789abcdef"}
+
+	assert.True(t, ifLinkPayWalletUIDMatches(topUp, topUp.TradeNo), "new opaque uid must be accepted")
+	assert.True(t, ifLinkPayWalletUIDMatches(topUp, "42"), "legacy pending order uid must remain accepted")
+	assert.False(t, ifLinkPayWalletUIDMatches(topUp, "43"))
+	assert.False(t, ifLinkPayWalletUIDMatches(nil, topUp.TradeNo))
 }
 
 func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
@@ -133,12 +157,16 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 	amountFen := int64(math.Round(order.Money * 100))
 
 	router := gin.New()
+	router.POST("/api/user/iflinkpay", func(c *gin.Context) {
+		c.Set("id", user.Id)
+		RequestIFLinkPay(c)
+	})
 	router.POST("/api/topup/iflinkpay/notify", IFLinkPayNotify)
-	sendNotify := func(amount int64) (int, string) {
+	sendNotify := func(uid string, order string, amount int64) (int, string) {
 		t.Helper()
 		ts := time.Now().Unix()
 		body := fmt.Sprintf(`{"uid":%q,"amount":%d,"order":%q,"ts":%d,"sign":%q}`,
-			tradeNo, amount, tradeNo, ts, ifLinkPaySign(tradeNo, amount, tradeNo, ts, settings.IFLinkPaySecret))
+			uid, amount, order, ts, ifLinkPaySign(uid, amount, order, ts, settings.IFLinkPaySecret))
 		request := httptest.NewRequest(http.MethodPost, "/api/topup/iflinkpay/notify", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		recorder := httptest.NewRecorder()
@@ -146,13 +174,13 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 		return recorder.Code, recorder.Body.String()
 	}
 
-	status, body := sendNotify(amountFen + 1)
+	status, body := sendNotify(tradeNo, tradeNo, amountFen+1)
 	require.Equal(t, http.StatusOK, status)
 	require.JSONEq(t, `{"code":1}`, body)
 	require.Equal(t, common.TopUpStatusPending, model.GetSubscriptionOrderByTradeNo(tradeNo).Status)
 
 	for range 2 {
-		status, body = sendNotify(amountFen)
+		status, body = sendNotify(tradeNo, tradeNo, amountFen)
 		require.Equal(t, http.StatusOK, status)
 		require.JSONEq(t, `{"code":0}`, body)
 	}
@@ -171,4 +199,58 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 	encoded, err := common.Marshal(completed)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), settings.IFLinkPaySecret)
+
+	// A newly created wallet order must expose only its opaque order reference
+	// to IFLinkPay. Replaying the signed callback must not credit it twice.
+	request := httptest.NewRequest(http.MethodPost, "/api/user/iflinkpay", strings.NewReader(`{"amount":1.25}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var payResponse struct {
+		Success bool `json:"success"`
+		Data    struct {
+			PayURL  string `json:"pay_url"`
+			TradeNo string `json:"trade_no"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payResponse))
+	require.True(t, payResponse.Success)
+	payURL, err := url.Parse(payResponse.Data.PayURL)
+	require.NoError(t, err)
+	require.Equal(t, payResponse.Data.TradeNo, payURL.Query().Get("uid"))
+	require.Equal(t, payResponse.Data.TradeNo, payURL.Query().Get("order"))
+	require.NotEqual(t, strconv.Itoa(user.Id), payURL.Query().Get("uid"))
+
+	for range 2 {
+		status, body = sendNotify(payResponse.Data.TradeNo, payResponse.Data.TradeNo, 125)
+		require.Equal(t, http.StatusOK, status)
+		require.JSONEq(t, `{"code":0}`, body)
+	}
+	newWalletOrder := model.GetTopUpByTradeNo(payResponse.Data.TradeNo)
+	require.NotNil(t, newWalletOrder)
+	require.Equal(t, common.TopUpStatusSuccess, newWalletOrder.Status)
+	var walletUser model.User
+	require.NoError(t, model.DB.First(&walletUser, user.Id).Error)
+	require.Equal(t, 625_000, walletUser.Quota)
+
+	// Pending orders created by the previous release used the numeric local
+	// user ID as uid. They must remain payable after the privacy migration.
+	legacyTradeNo := "TU-IFP-legacy-pending-order"
+	legacyTopUp := model.TopUp{
+		UserId: user.Id, Amount: 2, Money: 2, TradeNo: legacyTradeNo,
+		PaymentMethod: model.PaymentMethodIFLinkPay, PaymentProvider: model.PaymentProviderIFLinkPay,
+		CreateTime: time.Now().Unix(), Status: common.TopUpStatusPending, Currency: "CNY",
+	}
+	require.NoError(t, legacyTopUp.Insert())
+	for range 2 {
+		status, body = sendNotify(strconv.Itoa(user.Id), legacyTradeNo, 200)
+		require.Equal(t, http.StatusOK, status)
+		require.JSONEq(t, `{"code":0}`, body)
+	}
+	legacyCompleted := model.GetTopUpByTradeNo(legacyTradeNo)
+	require.NotNil(t, legacyCompleted)
+	require.Equal(t, common.TopUpStatusSuccess, legacyCompleted.Status)
+	require.NoError(t, model.DB.First(&walletUser, user.Id).Error)
+	require.Equal(t, 1_625_000, walletUser.Quota)
 }

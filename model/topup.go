@@ -125,8 +125,13 @@ func CompleteTopUpPayment(tradeNo string, expectedPaymentProvider string, receip
 		if topUp.Status != common.TopUpStatusPending {
 			return ErrTopUpStatusInvalid
 		}
+		creditAmount := decimal.NewFromInt(topUp.Amount)
+		// IFLinkPay's Money retains the exact amount verified by the receipt.
+		if topUp.PaymentProvider == PaymentProviderIFLinkPay {
+			creditAmount = decimal.NewFromFloat(topUp.Money)
+		}
 		var err error
-		quotaToAdd, err = common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+		quotaToAdd, err = common.WalletQuotaFromDecimalStrict(creditAmount.Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
 		if err != nil || quotaToAdd <= 0 {
 			return ErrInvalidTopUpQuota
 		}

@@ -21,6 +21,8 @@ import { describe, expect, test } from 'vitest'
 import { PAYMENT_TYPES } from '../constants'
 import {
   dispatchSelectedPayment,
+  getAvailablePaymentMethods,
+  getDefaultPaymentType,
   isIFLinkPayPayment,
   isStripePayment,
   isWaffoPayment,
@@ -89,5 +91,34 @@ describe('payment dispatch', () => {
 
     expect(success).toBe(false)
     expect(called).toBe(false)
+  })
+})
+
+describe('payment method availability', () => {
+  const baseInfo = {
+    enable_online_topup: false,
+    enable_alipay_topup: false,
+    enable_iflinkpay_topup: true,
+    enable_stripe_topup: false,
+    pay_methods: [
+      { name: 'IFLinkPay', type: PAYMENT_TYPES.IFLINKPAY },
+      { name: 'Alipay', type: PAYMENT_TYPES.ALIPAY },
+      { name: 'WeChat', type: 'wxpay' },
+      { name: 'Stripe', type: PAYMENT_TYPES.STRIPE },
+    ],
+    min_topup: 1,
+    stripe_min_topup: 1,
+    amount_options: [],
+    discount: {},
+  }
+
+  test('hides configured but disabled gateways', () => {
+    expect(
+      getAvailablePaymentMethods(baseInfo).map((method) => method.type)
+    ).toEqual([PAYMENT_TYPES.IFLINKPAY])
+  })
+
+  test('chooses the first actually enabled method as the default', () => {
+    expect(getDefaultPaymentType(baseInfo)).toBe(PAYMENT_TYPES.IFLINKPAY)
   })
 })

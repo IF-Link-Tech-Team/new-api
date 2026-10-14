@@ -5,16 +5,6 @@ This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
 published by the Free Software Foundation, either version 3 of the
 License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
@@ -23,76 +13,98 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, screen, cleanup } from '@testing-library/react'
-import { createInstance } from 'i18next'
-import { I18nextProvider } from 'react-i18next'
-import { afterEach, expect, test } from 'vitest'
+import { render, screen, cleanup, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
 import { Checkout } from '../index'
 
-const originalFetch = globalThis.fetch
+let queryClient: QueryClient
 const originalAdapter = api.defaults.adapter
-const i18n = createInstance()
-await i18n.init({ lng: 'en', resources: {} })
-
+beforeEach(() => {
+  queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+})
 afterEach(() => {
   cleanup()
-  globalThis.fetch = originalFetch
+  queryClient.clear()
   api.defaults.adapter = originalAdapter
 })
 
-test('loads product price from the backend without creating an order', async () => {
-  const requests: string[] = []
-  globalThis.fetch = async () =>
-    ({ ok: true, json: async () => ({ alipayQrCodeUrl: '' }) }) as Response
+async function renderCheckout(paymentEnabled: boolean) {
+  const requests: Array<{ method?: string; url?: string; data?: unknown }> = []
   api.defaults.adapter = async (config) => {
-    requests.push(`${config.method} ${config.url}`)
-    return {
-      data: {
+    requests.push({ method: config.method, url: config.url, data: config.data })
+    let data: unknown = { success: false, message: 'Payment unavailable' }
+    if (config.url === '/api/user/topup/info') {
+      data = { success: true, data: { enable_iflinkpay_topup: paymentEnabled } }
+    }
+    if (config.url === '/api/subscription/products/pro') {
+      data = {
         success: true,
         data: {
           product_id: 'pro',
           plan: {
-            id: 1,
+            id: 15,
             title: 'Backend Pro',
             price_amount: 79,
+            currency: 'CNY',
             duration_value: 30,
             model_scope: 'deepseek-v4',
             redemption_enabled: false,
           },
         },
-      },
-      status: 200,
-      statusText: 'OK',
-      headers: {},
-      config,
+      }
     }
+    return { data, status: 200, statusText: 'OK', headers: {}, config }
   }
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-  const rootRoute = createRootRoute({
-    component: () => <Checkout productId='pro' />,
-  })
   const router = createRouter({
-    routeTree: rootRoute,
+    routeTree: createRootRoute({
+      component: () => <Checkout productId='pro' />,
+    }),
     history: createMemoryHistory({ initialEntries: ['/'] }),
   })
+  await router.load()
   render(
     <QueryClientProvider client={queryClient}>
-      <I18nextProvider i18n={i18n}>
-        <RouterProvider router={router} />
-      </I18nextProvider>
+      <RouterProvider router={router} />
     </QueryClientProvider>
   )
-  expect(await screen.findByText('Backend Pro')).toBeVisible()
+  await screen.findByText('Backend Pro')
+  return requests
+}
+
+test('reads server-owned product price and redemption state without creating an order', async () => {
+  const requests = await renderCheckout(false)
   expect(screen.getByText('¥79.00')).toBeVisible()
   expect(screen.getByText('deepseek-v4')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Redeem now' })).toBeDisabled()
   expect(
     screen.getByText('Redemption is currently paused for this product.')
   ).toBeVisible()
-  expect(requests).toEqual(['get /api/subscription/products/pro'])
+  expect(
+    screen.queryByRole('button', { name: 'Pay with IFLinkPay' })
+  ).not.toBeInTheDocument()
+  expect(requests.every((request) => request.method === 'get')).toBe(true)
+})
+
+test('only submits the selected backend plan after the enabled IFLinkPay button is clicked', async () => {
+  const user = userEvent.setup()
+  const requests = await renderCheckout(true)
+  const pay = await screen.findByRole('button', { name: 'Pay with IFLinkPay' })
+  expect(requests.every((request) => request.method === 'get')).toBe(true)
+  const toast = vi.spyOn((await import('sonner')).toast, 'error')
+  await user.click(pay)
+  await waitFor(() => expect(toast).toHaveBeenCalled())
+  expect(requests.filter((request) => request.method === 'post')).toEqual([
+    {
+      method: 'post',
+      url: '/api/subscription/iflinkpay/pay',
+      data: JSON.stringify({ plan_id: 15 }),
+    },
+  ])
+  expect(pay).toBeEnabled()
 })

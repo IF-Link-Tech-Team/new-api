@@ -8,8 +8,8 @@ the Free Software Foundation, either version 3 of the License, or
 */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, Coins, Loader2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { CheckCircle2, Coins, CreditCard, Loader2 } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -18,10 +18,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { PaymentDisplayPanel } from '@/features/payment-display/components/payment-display-panel'
-import { loadPaymentDisplayConfig } from '@/features/payment-display/lib/payment-display-config'
 import {
   getSubscriptionProduct,
+  paySubscriptionIFLinkPay,
   redeemProductCode,
 } from '@/features/subscriptions/api'
 import type { ProductRedemptionResult } from '@/features/subscriptions/types'
@@ -30,6 +29,7 @@ import {
   getProductDisplayName,
   isIfLearnPlan,
 } from '@/features/traffic-packs/lib/product-display'
+import { getTopupInfo } from '@/features/wallet/api'
 
 interface CheckoutProps {
   productId?: string
@@ -49,21 +49,16 @@ export function Checkout({ productId }: CheckoutProps) {
     enabled: Boolean(productId),
     retry: false,
   })
-  const [qrCodeUrl, setQrCodeUrl] = useState('')
+  const paymentConfigQuery = useQuery({
+    queryKey: ['topup-info', 'checkout-payment-availability'],
+    queryFn: getTopupInfo,
+    retry: false,
+  })
   const [code, setCode] = useState('')
   const [redeeming, setRedeeming] = useState(false)
+  const [paying, setPaying] = useState(false)
   const [result, setResult] = useState<ProductRedemptionResult | null>(null)
   const [redemptionError, setRedemptionError] = useState('')
-
-  useEffect(() => {
-    let active = true
-    void loadPaymentDisplayConfig().then((config) => {
-      if (active) setQrCodeUrl(config.alipayQrCodeUrl)
-    })
-    return () => {
-      active = false
-    }
-  }, [])
 
   const plan = productQuery.data?.plan
   const productName = plan ? getProductDisplayName(plan) : ''
@@ -72,6 +67,33 @@ export function Checkout({ productId }: CheckoutProps) {
     .split(',')
     .map((model) => model.trim())
     .filter(Boolean)
+  const ifLinkPayEnabled =
+    paymentConfigQuery.data?.success === true &&
+    paymentConfigQuery.data.data?.enable_iflinkpay_topup === true
+
+  const submitPayment = async () => {
+    if (!plan || paying || !ifLinkPayEnabled) return
+    setPaying(true)
+    try {
+      const response = await paySubscriptionIFLinkPay({ plan_id: plan.id })
+      const payURL = response.data?.pay_url
+      if (!response.success || !payURL) {
+        throw new Error(response.message || t('Payment request failed'))
+      }
+      const target = new URL(payURL, window.location.origin)
+      if (target.protocol !== 'https:' && target.protocol !== 'http:') {
+        throw new Error(t('Payment request failed'))
+      }
+      toast.success(t('Redirecting to payment page...'))
+      window.location.href = target.toString()
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : t('Payment request failed')
+      )
+    } finally {
+      setPaying(false)
+    }
+  }
 
   const submitRedemption = async () => {
     if (!productId || !code.trim() || redeeming) return
@@ -106,6 +128,31 @@ export function Checkout({ productId }: CheckoutProps) {
     } finally {
       setRedeeming(false)
     }
+  }
+
+  let paymentAction = (
+    <Alert>
+      <AlertDescription>
+        {t(
+          'Online topup is not enabled. Please use redemption code or contact administrator.'
+        )}
+      </AlertDescription>
+    </Alert>
+  )
+  if (paymentConfigQuery.isLoading) {
+    paymentAction = <Skeleton className='h-11 w-full rounded-md' />
+  } else if (ifLinkPayEnabled) {
+    paymentAction = (
+      <Button
+        className='w-full'
+        size='lg'
+        disabled={paying}
+        onClick={() => void submitPayment()}
+      >
+        {paying ? <Loader2 className='animate-spin' /> : <CreditCard />}
+        {t('Pay with IFLinkPay')}
+      </Button>
+    )
   }
 
   return (
@@ -153,12 +200,26 @@ export function Checkout({ productId }: CheckoutProps) {
 
         {plan ? (
           <div className='space-y-5'>
-            <PaymentDisplayPanel
-              productName={productName}
-              amount={`¥${Number(plan.price_amount).toFixed(2)}`}
-              qrCodeUrl={qrCodeUrl || undefined}
-              onQrCodeError={() => setQrCodeUrl('')}
-            />
+            <div className='bg-muted/50 space-y-3 rounded-lg border p-4'>
+              <div className='flex items-start justify-between gap-4'>
+                <span className='text-muted-foreground text-sm'>
+                  {t('Product Name')}
+                </span>
+                <span className='max-w-[240px] text-right text-sm font-medium break-words'>
+                  {productName}
+                </span>
+              </div>
+              <div className='flex items-center justify-between gap-4 border-t pt-3'>
+                <span className='text-sm font-medium'>
+                  {t('Amount Due (RMB)')}
+                </span>
+                <span className='text-primary text-xl font-bold'>
+                  ¥{Number(plan.price_amount).toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            {paymentAction}
 
             <div className='space-y-2 rounded-lg border p-4 text-sm'>
               {isIfLearnPlan(plan) ? (
