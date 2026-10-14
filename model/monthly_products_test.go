@@ -78,6 +78,27 @@ func TestMonthlyBootstrapCreatesUnifiedTiersAndMixedPriceSnapshots(t *testing.T)
 	require.Equal(t, 0.70, timedDeepSeek.BillingMultiplier)
 	require.Contains(t, timedDeepSeek.BillingExpression, `weekday("Asia/Shanghai")`)
 	params := billingexpr.TokenParams{P: 1_000_000, CR: 1_000_000, CC: 1_000_000, C: 1_000_000, Len: 2_000_000}
+	for _, window := range []struct {
+		hour  int
+		tier  string
+		quota int
+	}{
+		{hour: 10, tier: "peak", quota: 3_514_000},
+		{hour: 22, tier: "offpeak", quota: 1_757_000},
+	} {
+		snapshot := &billingexpr.BillingSnapshot{
+			BillingMode: "tiered_expr", ModelName: timedDeepSeek.Model,
+			ExprString: timedDeepSeek.BillingExpression, ExprHash: billingexpr.ExprHashString(timedDeepSeek.BillingExpression),
+			GroupRatio: 1, QuotaPerUnit: common.QuotaPerUnit,
+			ProductType: timedDeepSeek.ProductType, ProductMultiplier: timedDeepSeek.BillingMultiplier, PriceVersion: timedDeepSeek.PriceVersion,
+		}
+		computed, err := billingexpr.ComputeTieredQuotaWithRequest(snapshot, params, billingexpr.RequestInput{
+			EvaluationUnix: time.Date(2026, 10, 14, window.hour, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*3600)).Unix(),
+		})
+		require.NoError(t, err)
+		require.Equal(t, window.tier, computed.MatchedTier)
+		require.Equal(t, window.quota, computed.ActualQuotaAfterGroup)
+	}
 	for modelName, expectedQuota := range wantQuota {
 		var price ProductPrice
 		require.NoError(t, DB.Where("product_type = ? AND model = ? AND price_version = ?", ProductTypeMonthlySubscription, modelName, MonthlyPriceVersion).First(&price).Error)
