@@ -87,6 +87,10 @@ func TestClassroomRedemptionHTTPConcurrentAccounts(t *testing.T) {
 		Id: 14, Name: "果核-Qwen", Type: 1, Key: "mock-qwen-key", Status: common.ChannelStatusEnabled,
 		Models: model.ClassroomModelQwen, Group: "default",
 	}).Error)
+	require.NoError(t, model.DB.Create(&model.Channel{
+		Id: 1, Name: "seu-tokenhub-01", Type: 1, Key: "mock-tokenhub-key", Status: common.ChannelStatusEnabled,
+		Models: model.ClassroomModelTokenHub, Group: "default",
+	}).Error)
 	bootstrap, err := model.BootstrapClassroomProduct(true, true, true, 0)
 	require.NoError(t, err)
 	summary, err := model.CreateProductRedemptionBatch(1, model.ProductRedemptionBatchRequest{

@@ -144,7 +144,8 @@ func ExpectedV1BillingMultiplier(productType string) (float64, bool) {
 // version to define a different multiplier for one exact model. IF.Learn is
 // the only V1 product with mixed model-level pricing.
 func ExpectedProductPriceBillingMultiplier(productType string, modelName string) (float64, bool) {
-	if strings.TrimSpace(productType) == ProductTypePackDeepSeekClassroom && strings.TrimSpace(modelName) == ClassroomModelQwen {
+	if strings.TrimSpace(productType) == ProductTypePackDeepSeekClassroom &&
+		(strings.TrimSpace(modelName) == ClassroomModelQwen || strings.TrimSpace(modelName) == ClassroomModelTokenHub) {
 		return 1, true
 	}
 	return ExpectedV1BillingMultiplier(productType)
@@ -271,8 +272,10 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 			if p.ProductFamily != "deepseek_classroom" {
 				return errors.New("pack_deepseek_classroom product_family must be deepseek_classroom")
 			}
-			expectedModels := []string{ClassroomModelV41, ClassroomModelV4GA, ClassroomModelQwen}
-			if p.PriceVersion == ClassroomLegacyPriceVersion {
+			expectedModels := []string{ClassroomModelV41, ClassroomModelV4GA, ClassroomModelQwen, ClassroomModelTokenHub}
+			if p.PriceVersion == ClassroomV2PriceVersion {
+				expectedModels = []string{ClassroomModelV41, ClassroomModelV4GA, ClassroomModelQwen}
+			} else if p.PriceVersion == ClassroomLegacyPriceVersion {
 				expectedModels = []string{ClassroomModelV41, ClassroomModelV4GA}
 			}
 			if !sameStringSet(explicitModelIds(p.ModelScope), expectedModels) {
@@ -286,6 +289,8 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 				expectedChannel := 15
 				if modelName == ClassroomModelQwen {
 					expectedChannel = 14
+				} else if modelName == ClassroomModelTokenHub {
+					expectedChannel = 1
 				}
 				if len(channels) != 1 || channels[0] != expectedChannel {
 					return fmt.Errorf("pack_deepseek_classroom model %s must be restricted to channel %d", modelName, expectedChannel)
@@ -397,12 +402,14 @@ func (p *ProductPrice) ValidateV1() error {
 		seen[channelId] = struct{}{}
 	}
 	if p.ProductType == ProductTypePackDeepSeekClassroom {
-		if p.Model != ClassroomModelV41 && p.Model != ClassroomModelV4GA && p.Model != ClassroomModelQwen {
+		if p.Model != ClassroomModelV41 && p.Model != ClassroomModelV4GA && p.Model != ClassroomModelQwen && p.Model != ClassroomModelTokenHub {
 			return errors.New("classroom product price model is not allowed")
 		}
 		expectedChannel := 15
 		if p.Model == ClassroomModelQwen {
 			expectedChannel = 14
+		} else if p.Model == ClassroomModelTokenHub {
+			expectedChannel = 1
 		}
 		if len(channelIds) != 1 || channelIds[0] != expectedChannel {
 			return fmt.Errorf("classroom product price for %s must be restricted to channel %d", p.Model, expectedChannel)

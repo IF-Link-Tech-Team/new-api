@@ -13,11 +13,13 @@ import (
 const (
 	ClassroomProductCode        = "deepseek-classroom-5-20261014"
 	ClassroomLegacyPriceVersion = "deepseek-classroom-20261014-v1"
-	ClassroomPriceVersion       = "iflearn-qwen38-20261014-v2"
+	ClassroomV2PriceVersion     = "iflearn-qwen38-20261014-v2"
+	ClassroomPriceVersion       = "iflearn-tokenhub-flash-20261014-v3"
 	WalletDeepSeekPriceVersion  = "wallet-deepseek-20261014-v1"
 	ClassroomModelV41           = "deepseek-v4-1-flash-260910"
 	ClassroomModelV4GA          = "deepseek-v4-flash-ga-260731"
 	ClassroomModelQwen          = "qwen3.8-flash"
+	ClassroomModelTokenHub      = "deepseek-v4-flash-202605"
 )
 
 type ClassroomBootstrapResult struct {
@@ -26,6 +28,8 @@ type ClassroomBootstrapResult struct {
 	Listed                bool     `json:"listed"`
 	ChannelId             int      `json:"channel_id"`
 	ChannelName           string   `json:"channel_name"`
+	TokenHubChannelId     int      `json:"tokenhub_channel_id"`
+	TokenHubChannelName   string   `json:"tokenhub_channel_name"`
 	PlanId                int      `json:"plan_id"`
 	ProductCode           string   `json:"product_code"`
 	PriceVersion          string   `json:"price_version"`
@@ -79,6 +83,14 @@ func classroomDesiredPrices(enabled bool, effectiveAt int64) ([]ProductPrice, er
 			expression: `tier("base", p * 0.80 + cr * 0.10 + cc * 1.25 + c * 2.70)`,
 			multiplier: 1,
 		},
+		{
+			model: ClassroomModelTokenHub, channelId: 1,
+			official:   PriceComponents{Input: 3, CachedInput: 0.10, Output: 9},
+			selling:    PriceComponents{Input: 3, CachedInput: 0.10, Output: 9},
+			upstream:   PriceComponents{Input: 1.078, CachedInput: 0.0343, Output: 3.234},
+			expression: `weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18)) ? tier("peak", p * 3 + cr * 0.10 + c * 9) : tier("offpeak", p * 1.5 + cr * 0.05 + c * 4.5)`,
+			multiplier: 1,
+		},
 	}
 	prices := make([]ProductPrice, 0, len(definitions))
 	for _, definition := range definitions {
@@ -121,7 +133,7 @@ func walletDeepSeekDesiredPrices(effectiveAt int64) ([]ProductPrice, error) {
 	}
 	walletPrices := make([]ProductPrice, 0, 2)
 	for index := range prices {
-		if prices[index].Model == ClassroomModelQwen {
+		if prices[index].Model != ClassroomModelV41 && prices[index].Model != ClassroomModelV4GA {
 			continue
 		}
 		prices[index].ProductType = ProductTypeWallet
@@ -137,15 +149,16 @@ func walletDeepSeekDesiredPrices(effectiveAt int64) ([]ProductPrice, error) {
 
 func classroomDesiredPlan(enabled bool, listed bool, totalAmount int64) (*SubscriptionPlan, error) {
 	allowed, err := classroomJSON(map[string][]int{
-		ClassroomModelV41: {15}, ClassroomModelV4GA: {15}, ClassroomModelQwen: {14},
+		ClassroomModelV41: {15}, ClassroomModelV4GA: {15}, ClassroomModelQwen: {14}, ClassroomModelTokenHub: {1},
 	})
 	if err != nil {
 		return nil, err
 	}
 	costs, err := classroomJSON(map[string]PriceComponents{
-		ClassroomModelV41:  {Input: 1, CachedInput: 0.02, Output: 4},
-		ClassroomModelV4GA: {Input: 1.5, CachedInput: 0.05, Output: 4.5},
-		ClassroomModelQwen: {Input: 0.64, CachedInput: 0.08, CacheCreation: 1.00, Output: 2.16},
+		ClassroomModelV41:      {Input: 1, CachedInput: 0.02, Output: 4},
+		ClassroomModelV4GA:     {Input: 1.5, CachedInput: 0.05, Output: 4.5},
+		ClassroomModelQwen:     {Input: 0.64, CachedInput: 0.08, CacheCreation: 1.00, Output: 2.16},
+		ClassroomModelTokenHub: {Input: 1.078, CachedInput: 0.0343, Output: 3.234},
 	})
 	if err != nil {
 		return nil, err
@@ -154,12 +167,12 @@ func classroomDesiredPlan(enabled bool, listed bool, totalAmount int64) (*Subscr
 	allowWallet := false
 	plan := &SubscriptionPlan{
 		Title:       "IF.Learn 启动包",
-		Subtitle:    "¥5 三款课堂模型调用额度 · 10,000 算力点 · 兑换后 10 天有效",
+		Subtitle:    "¥5 四款课堂模型共享额度 · 10,000 算力点 · 兑换后 10 天有效",
 		PriceAmount: 5, Currency: "CNY", DurationUnit: SubscriptionDurationDay, DurationValue: 10,
 		Enabled: enabled, Listed: listed, RedemptionEnabled: enabled, SortOrder: 1000,
 		AllowBalancePay: &allowBalance, AllowWalletOverflow: &allowWallet,
 		MaxPurchasePerUser: 1, TotalAmount: totalAmount, QuotaResetPeriod: SubscriptionResetNever,
-		ModelScope: ClassroomModelQwen + "," + ClassroomModelV41 + "," + ClassroomModelV4GA,
+		ModelScope: ClassroomModelQwen + "," + ClassroomModelTokenHub + "," + ClassroomModelV41 + "," + ClassroomModelV4GA,
 		Category:   SubscriptionCategoryPackage, ProductType: ProductTypePackDeepSeekClassroom,
 		ProductCode: ClassroomProductCode, ProductFamily: "deepseek_classroom",
 		BillingMultiplier: 0.60, PriceVersion: ClassroomPriceVersion,
@@ -197,6 +210,24 @@ func classroomLegacySnapshot() (string, string, string, error) {
 	return ClassroomModelV41 + "," + ClassroomModelV4GA, allowed, costs, nil
 }
 
+func classroomV2Snapshot() (string, string, string, error) {
+	allowed, err := classroomJSON(map[string][]int{
+		ClassroomModelV41: {15}, ClassroomModelV4GA: {15}, ClassroomModelQwen: {14},
+	})
+	if err != nil {
+		return "", "", "", err
+	}
+	costs, err := classroomJSON(map[string]PriceComponents{
+		ClassroomModelV41:  {Input: 1, CachedInput: 0.02, Output: 4},
+		ClassroomModelV4GA: {Input: 1.5, CachedInput: 0.05, Output: 4.5},
+		ClassroomModelQwen: {Input: 0.64, CachedInput: 0.08, CacheCreation: 1.00, Output: 2.16},
+	})
+	if err != nil {
+		return "", "", "", err
+	}
+	return ClassroomModelQwen + "," + ClassroomModelV41 + "," + ClassroomModelV4GA, allowed, costs, nil
+}
+
 func validateClassroomSnapshot(version string, scope string, allowed string, costs string, multiplier float64, fallback bool, desired *SubscriptionPlan) error {
 	if desired == nil {
 		return errors.New("classroom desired plan is nil")
@@ -207,6 +238,12 @@ func validateClassroomSnapshot(version string, scope string, allowed string, cos
 	expectedScope, expectedAllowed, expectedCosts := desired.ModelScope, desired.AllowedChannels, desired.MaxUpstreamCost
 	switch strings.TrimSpace(version) {
 	case ClassroomPriceVersion:
+	case ClassroomV2PriceVersion:
+		var err error
+		expectedScope, expectedAllowed, expectedCosts, err = classroomV2Snapshot()
+		if err != nil {
+			return err
+		}
 	case ClassroomLegacyPriceVersion:
 		var err error
 		expectedScope, expectedAllowed, expectedCosts, err = classroomLegacySnapshot()
@@ -297,6 +334,68 @@ func migrateClassroomEntitlementsTx(tx *gorm.DB, planId int, desired *Subscripti
 	return migratedSubscriptions, migratedTokens, nil
 }
 
+func classroomChannelHasGroup(channel *Channel, expected string) bool {
+	if channel == nil {
+		return false
+	}
+	for _, group := range strings.Split(channel.Group, ",") {
+		if strings.TrimSpace(group) == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func validateClassroomChannelModel(channel *Channel, modelName string) error {
+	if channel == nil {
+		return errors.New("classroom channel is nil")
+	}
+	models := map[string]struct{}{}
+	for _, name := range channel.GetModels() {
+		models[strings.TrimSpace(name)] = struct{}{}
+	}
+	if _, ok := models[modelName]; !ok {
+		return fmt.Errorf("channel %d does not expose %s", channel.Id, modelName)
+	}
+	rawMapping := strings.TrimSpace(channel.GetModelMapping())
+	if rawMapping == "" || rawMapping == "{}" {
+		return nil
+	}
+	mapping := map[string]string{}
+	if err := common.UnmarshalJsonStr(rawMapping, &mapping); err != nil {
+		return fmt.Errorf("channel %d has invalid model mapping: %w", channel.Id, err)
+	}
+	if upstream, ok := mapping[modelName]; ok && strings.TrimSpace(upstream) != modelName {
+		return fmt.Errorf("channel %d maps %s to unexpected upstream model %s", channel.Id, modelName, upstream)
+	}
+	return nil
+}
+
+func mergeClassroomChannelUpstreamCostTx(tx *gorm.DB, channel *Channel, modelName string, desired PriceComponents) error {
+	if tx == nil || channel == nil {
+		return errors.New("invalid classroom channel cost update")
+	}
+	costs := map[string]PriceComponents{}
+	if strings.TrimSpace(channel.UpstreamCosts) != "" {
+		if err := common.UnmarshalJsonStr(channel.UpstreamCosts, &costs); err != nil {
+			return err
+		}
+	}
+	if existing, ok := costs[modelName]; ok && samePriceComponents(existing, desired) {
+		return nil
+	}
+	costs[modelName] = desired
+	encoded, err := classroomJSON(costs)
+	if err != nil {
+		return err
+	}
+	if err := tx.Model(&Channel{}).Where("id = ?", channel.Id).Update("upstream_costs", encoded).Error; err != nil {
+		return err
+	}
+	channel.UpstreamCosts = encoded
+	return nil
+}
+
 // BootstrapClassroomProduct validates and optionally applies the frozen
 // classroom SKU. Quota is calculated from the runtime QuotaPerUnit setting;
 // it is never treated as a token count and no CNY conversion is hard-coded.
@@ -334,13 +433,9 @@ func BootstrapClassroomProduct(apply bool, enabled bool, listed bool, effectiveA
 	if deepSeekChannel.Status != common.ChannelStatusEnabled {
 		return nil, errors.New("channel 15 is disabled")
 	}
-	channelModels := map[string]struct{}{}
-	for _, name := range deepSeekChannel.GetModels() {
-		channelModels[strings.TrimSpace(name)] = struct{}{}
-	}
 	for _, name := range []string{ClassroomModelV41, ClassroomModelV4GA} {
-		if _, ok := channelModels[name]; !ok {
-			return nil, fmt.Errorf("channel 15 does not expose %s", name)
+		if err := validateClassroomChannelModel(&deepSeekChannel, name); err != nil {
+			return nil, err
 		}
 	}
 	var qwenChannel Channel
@@ -350,52 +445,48 @@ func BootstrapClassroomProduct(apply bool, enabled bool, listed bool, effectiveA
 	if qwenChannel.Status != common.ChannelStatusEnabled {
 		return nil, errors.New("channel 14 is disabled")
 	}
-	qwenModels := map[string]struct{}{}
-	for _, name := range qwenChannel.GetModels() {
-		qwenModels[strings.TrimSpace(name)] = struct{}{}
+	if err := validateClassroomChannelModel(&qwenChannel, ClassroomModelQwen); err != nil {
+		return nil, err
 	}
-	if _, ok := qwenModels[ClassroomModelQwen]; !ok {
-		return nil, fmt.Errorf("channel 14 does not expose %s", ClassroomModelQwen)
+	var tokenHubChannel Channel
+	if err := DB.Where("id = ?", 1).First(&tokenHubChannel).Error; err != nil {
+		return nil, fmt.Errorf("channel 1 is not configured: %w", err)
+	}
+	if tokenHubChannel.Name != "seu-tokenhub-01" {
+		return nil, fmt.Errorf("channel 1 has unexpected name %q", tokenHubChannel.Name)
+	}
+	if tokenHubChannel.Status != common.ChannelStatusEnabled {
+		return nil, errors.New("channel 1 is disabled")
+	}
+	if !classroomChannelHasGroup(&tokenHubChannel, "default") {
+		return nil, errors.New("channel 1 is not available in the default group")
+	}
+	if err := validateClassroomChannelModel(&tokenHubChannel, ClassroomModelTokenHub); err != nil {
+		return nil, err
 	}
 	result := &ClassroomBootstrapResult{
 		Applied: apply, Enabled: enabled, Listed: listed, ChannelId: deepSeekChannel.Id, ChannelName: deepSeekChannel.Name,
+		TokenHubChannelId: tokenHubChannel.Id, TokenHubChannelName: tokenHubChannel.Name,
 		ProductCode: ClassroomProductCode, PriceVersion: ClassroomPriceVersion,
 		WalletPriceVersion: WalletDeepSeekPriceVersion,
 		TotalAmount:        int64(quota), QuotaPerUnit: common.QuotaPerUnit,
-		Models: []string{ClassroomModelQwen, ClassroomModelV4GA, ClassroomModelV41},
+		Models: []string{ClassroomModelQwen, ClassroomModelTokenHub, ClassroomModelV4GA, ClassroomModelV41},
 	}
 	if !apply {
 		return result, nil
 	}
 
 	err = DB.Transaction(func(tx *gorm.DB) error {
-		costs := map[string]PriceComponents{}
-		if strings.TrimSpace(deepSeekChannel.UpstreamCosts) != "" {
-			if err := common.UnmarshalJsonStr(deepSeekChannel.UpstreamCosts, &costs); err != nil {
-				return err
-			}
-		}
-		costs[ClassroomModelV41] = PriceComponents{Input: 1, CachedInput: 0.02, Output: 4}
-		costs[ClassroomModelV4GA] = PriceComponents{Input: 1.5, CachedInput: 0.05, Output: 4.5}
-		encodedCosts, err := classroomJSON(costs)
-		if err != nil {
+		if err := mergeClassroomChannelUpstreamCostTx(tx, &deepSeekChannel, ClassroomModelV41, PriceComponents{Input: 1, CachedInput: 0.02, Output: 4}); err != nil {
 			return err
 		}
-		if err := tx.Model(&Channel{}).Where("id = ?", 15).Update("upstream_costs", encodedCosts).Error; err != nil {
+		if err := mergeClassroomChannelUpstreamCostTx(tx, &deepSeekChannel, ClassroomModelV4GA, PriceComponents{Input: 1.5, CachedInput: 0.05, Output: 4.5}); err != nil {
 			return err
 		}
-		qwenCosts := map[string]PriceComponents{}
-		if strings.TrimSpace(qwenChannel.UpstreamCosts) != "" {
-			if err := common.UnmarshalJsonStr(qwenChannel.UpstreamCosts, &qwenCosts); err != nil {
-				return err
-			}
-		}
-		qwenCosts[ClassroomModelQwen] = PriceComponents{Input: 0.64, CachedInput: 0.08, CacheCreation: 1.00, Output: 2.16}
-		encodedQwenCosts, err := classroomJSON(qwenCosts)
-		if err != nil {
+		if err := mergeClassroomChannelUpstreamCostTx(tx, &qwenChannel, ClassroomModelQwen, PriceComponents{Input: 0.64, CachedInput: 0.08, CacheCreation: 1.00, Output: 2.16}); err != nil {
 			return err
 		}
-		if err := tx.Model(&Channel{}).Where("id = ?", 14).Update("upstream_costs", encodedQwenCosts).Error; err != nil {
+		if err := mergeClassroomChannelUpstreamCostTx(tx, &tokenHubChannel, ClassroomModelTokenHub, PriceComponents{Input: 1.078, CachedInput: 0.0343, Output: 3.234}); err != nil {
 			return err
 		}
 

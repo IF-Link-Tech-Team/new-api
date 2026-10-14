@@ -88,7 +88,7 @@ func TestModelPriceHelperUsesImmutableModelMultiplierForMixedClassroomPrice(t *t
 	oldGroupRatios := ratio_setting.GroupRatio2JSONString()
 	oldModelRatios := ratio_setting.ModelRatio2JSONString()
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
-	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"qwen3.8-flash":99}`))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"qwen3.8-flash":99,"deepseek-v4-flash-202605":77}`))
 	t.Cleanup(func() {
 		common.QuotaPerUnit = oldQuotaPerUnit
 		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldGroupRatios))
@@ -123,6 +123,31 @@ func TestModelPriceHelperUsesImmutableModelMultiplierForMixedClassroomPrice(t *t
 	require.Equal(t, 535, priceData.QuotaToPreConsume)
 	require.Equal(t, 1.0, info.ProductBillingMultiplier)
 	require.Equal(t, 1.0, info.TieredBillingSnapshot.ProductMultiplier)
+
+	tokenHubPrice := &model.ProductPrice{
+		ProductType: model.ProductTypePackDeepSeekClassroom, Model: model.ClassroomModelTokenHub,
+		PriceVersion:            model.ClassroomPriceVersion,
+		OfficialReferencePrice:  `{"input":3,"cached_input":0.1,"output":9}`,
+		UserSellingPrice:        `{"input":3,"cached_input":0.1,"output":9}`,
+		UpstreamSettlementPrice: `{"input":1.078,"cached_input":0.0343,"output":3.234}`,
+		BillingExpression:       `tier("base", p * 3 + cr * 0.1 + c * 9)`,
+		BillingMultiplier:       1, AllowedChannels: `[1]`,
+		MaxUpstreamCost: `{"input":1.078,"cached_input":0.0343,"output":3.234}`,
+		Enabled:         true,
+	}
+	require.NoError(t, model.DB.Create(tokenHubPrice).Error)
+	tokenHubInfo := &relaycommon.RelayInfo{
+		OriginModelName: model.ClassroomModelTokenHub, UserGroup: "default", UsingGroup: "default",
+		ProductType:              model.ProductTypePackDeepSeekClassroom,
+		ProductBillingMultiplier: 0.60, ProductPriceVersion: model.ClassroomPriceVersion,
+		BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)},
+	}
+	tokenHubData, err := ModelPriceHelper(ctx, tokenHubInfo, 1_000, &types.TokenCountMeta{MaxTokens: 100})
+	require.NoError(t, err)
+	// (1,000*3 + 100*9) / 1M * 500,000 * 1.00 = 1,950; global ModelRatio 77 is ignored.
+	require.Equal(t, 1_950, tokenHubData.QuotaToPreConsume)
+	require.Equal(t, 1.0, tokenHubInfo.ProductBillingMultiplier)
+	require.Equal(t, 1.0, tokenHubInfo.TieredBillingSnapshot.ProductMultiplier)
 }
 
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {

@@ -151,6 +151,10 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 		Id: 14, Name: "IFLinkPay Qwen test channel", Type: 1, Key: "test-qwen", Status: common.ChannelStatusEnabled,
 		Models: model.ClassroomModelQwen, Group: "default",
 	}).Error)
+	require.NoError(t, model.DB.Create(&model.Channel{
+		Id: 1, Name: "seu-tokenhub-01", Type: 1, Key: "test-tokenhub", Status: common.ChannelStatusEnabled,
+		Models: model.ClassroomModelTokenHub, Group: "default",
+	}).Error)
 
 	bootstrap, err := model.BootstrapClassroomProduct(true, true, true, 0)
 	require.NoError(t, err)
