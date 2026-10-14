@@ -120,7 +120,15 @@ func CompleteTopUpPayment(tradeNo string, expectedPaymentProvider string, receip
 		if topUp.Status != common.TopUpStatusPending {
 			return ErrTopUpStatusInvalid
 		}
-		quota64 := decimal.NewFromInt(topUp.Amount).Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
+		creditAmount := decimal.NewFromInt(topUp.Amount)
+		// IFLinkPay accepts amounts with up to two decimal places. TopUp.Amount is
+		// an integer legacy display field, so using it would silently round a
+		// ¥1.25 payment to ¥1 (or ¥2) before crediting. Money is the immutable
+		// amount verified against the signed provider receipt.
+		if topUp.PaymentProvider == PaymentProviderIFLinkPay {
+			creditAmount = decimal.NewFromFloat(topUp.Money)
+		}
+		quota64 := creditAmount.Mul(decimal.NewFromFloat(common.QuotaPerUnit)).IntPart()
 		if quota64 <= 0 || quota64 > int64(common.MaxQuota) {
 			return errors.New("充值额度无效")
 		}

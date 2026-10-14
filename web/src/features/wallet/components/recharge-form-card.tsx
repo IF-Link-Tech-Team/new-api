@@ -43,6 +43,7 @@ import {
   getPaymentIcon,
   getMinTopupAmount,
   calculatePresetPricing,
+  getAvailablePaymentMethods,
 } from '../lib'
 import type {
   PaymentMethod,
@@ -81,7 +82,6 @@ interface RechargeFormCardProps {
   waffoMinTopup?: number
   onWaffoMethodSelect?: (method: WaffoPayMethod, index: number) => void
   enableWaffoPancakeTopup?: boolean
-  displayPendingAlipay?: boolean
 }
 
 export function RechargeFormCard({
@@ -112,7 +112,6 @@ export function RechargeFormCard({
   waffoMinTopup,
   onWaffoMethodSelect,
   enableWaffoPancakeTopup,
-  displayPendingAlipay = false,
 }: RechargeFormCardProps) {
   const { t } = useTranslation()
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
@@ -135,28 +134,14 @@ export function RechargeFormCard({
   }
 
   const hasConfigurableTopup =
-    displayPendingAlipay ||
     topupInfo?.enable_online_topup ||
     topupInfo?.enable_stripe_topup ||
     topupInfo?.enable_iflinkpay_topup ||
     enableWaffoTopup ||
     enableWaffoPancakeTopup
   const hasAnyTopup = hasConfigurableTopup || enableCreemTopup
-  const configuredPaymentMethods = topupInfo?.pay_methods || []
-  const hasConfiguredAlipay = configuredPaymentMethods.some(
-    (method) => method.type === 'alipay'
-  )
   const standardPaymentMethods: PaymentMethod[] =
-    displayPendingAlipay && !hasConfiguredAlipay
-      ? [
-          {
-            name: t('Alipay integration in progress'),
-            type: 'alipay',
-            display_only: true,
-          },
-          ...configuredPaymentMethods,
-        ]
-      : configuredPaymentMethods
+    getAvailablePaymentMethods(topupInfo)
   const hasStandardPaymentMethods = standardPaymentMethods.length > 0
   const hasWaffoPaymentMethods =
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0

@@ -13,6 +13,7 @@ package controller
 
 import (
 	"crypto/md5"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
@@ -32,7 +33,6 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
-	"github.com/thanhpk/randstr"
 )
 
 // ifLinkPayMaxTopUpAmount 单次充值上限(元)
@@ -46,6 +46,24 @@ func ifLinkPaySign(uid string, amountFen int64, order string, ts int64, secret s
 	raw := uid + strconv.FormatInt(amountFen, 10) + order + strconv.FormatInt(ts, 10) + secret
 	sum := md5.Sum([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+func newIFLinkPayTopUpTradeNo() (string, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	return "TU-IFP-" + hex.EncodeToString(random), nil
+}
+
+// New wallet orders use the opaque order reference as IFLinkPay's external
+// uid. Numeric uids remain valid only for callbacks from legacy pending orders
+// created before the privacy migration.
+func ifLinkPayWalletUIDMatches(topUp *model.TopUp, uid string) bool {
+	if topUp == nil {
+		return false
+	}
+	return uid == topUp.TradeNo || uid == strconv.Itoa(topUp.UserId)
 }
 
 type TopUpIFLinkPayRequest struct {
@@ -91,10 +109,15 @@ func RequestIFLinkPay(c *gin.Context) {
 	payMoney, _ := payMoneyDec.Round(2).Float64()
 	amountFen := int64(math.Round(payMoney * 100))
 
-	tradeNo := "TU-IFP-" + randstr.String(8) + "-" + strconv.FormatInt(time.Now().Unix(), 10)
+	tradeNo, err := newIFLinkPayTopUpTradeNo()
+	if err != nil {
+		logger.LogError(c.Request.Context(), fmt.Sprintf("IFLinkPay 充值订单号生成失败 error=%q", err.Error()))
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "创建充值订单失败"})
+		return
+	}
 
-	// Amount 存「展示金额」、Money 存「实付人民币」,与支付宝通道口径一致;
-	// 入账额度 = Amount × QuotaPerUnit(见 CompleteTopUpPayment)。
+	// Amount 是兼容旧表结构的整数展示字段,Money 保存已验签的实付人民币;
+	// IFLinkPay 入账以 Money × QuotaPerUnit 计算,避免小数金额被四舍五入。
 	topUp := &model.TopUp{
 		UserId:          id,
 		Amount:          int64(math.Round(payMoney)),
@@ -115,12 +138,14 @@ func RequestIFLinkPay(c *gin.Context) {
 
 	secret := strings.TrimSpace(operation_setting.GetIFLinkPaySecret())
 	ts := time.Now().Unix()
-	uidStr := strconv.Itoa(id)
+	// The provider contract calls this field uid, but it is an opaque external
+	// transaction reference. Never expose the local database user ID.
+	externalUID := tradeNo
 	returnURL := paymentReturnPath("/wallet")
-	sign := ifLinkPaySign(uidStr, amountFen, tradeNo, ts, secret)
+	sign := ifLinkPaySign(externalUID, amountFen, tradeNo, ts, secret)
 	payURL := fmt.Sprintf("%s?uid=%s&amount=%d&order=%s&ts=%d&sign=%s&return=%s",
 		operation_setting.GetIFLinkPayBaseURL(),
-		url.QueryEscape(uidStr),
+		url.QueryEscape(externalUID),
 		amountFen,
 		url.QueryEscape(tradeNo),
 		ts,
@@ -237,7 +262,7 @@ func IFLinkPayNotify(c *gin.Context) {
 		ifLinkPayNotifyReply(c, 1)
 		return
 	}
-	if strconv.Itoa(topUp.UserId) != req.UID {
+	if !ifLinkPayWalletUIDMatches(topUp, req.UID) {
 		logger.LogWarn(ctx, fmt.Sprintf("IFLinkPay 订单用户不匹配 order=%s order_uid=%d notify_uid=%s", req.Order, topUp.UserId, req.UID))
 		ifLinkPayNotifyReply(c, 1)
 		return
