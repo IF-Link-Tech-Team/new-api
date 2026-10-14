@@ -812,7 +812,7 @@ export function OverviewDashboard() {
                               {t('Get started')}
                             </div>
                             <h3 className='text-xl font-semibold tracking-tight sm:text-2xl'>
-                              {t('Make your first DeepSeek call in minutes')}
+                              {t('Make your first Qwen3.8 Flash call in minutes')}
                             </h3>
                             <p className='text-muted-foreground max-w-xl text-sm leading-relaxed'>
                               {t(

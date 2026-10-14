@@ -169,7 +169,7 @@ describe('overview setup guide', () => {
     ).toBeVisible()
     expect(
       screen.getByRole('heading', {
-        name: 'Make your first DeepSeek call in minutes',
+        name: 'Make your first Qwen3.8 Flash call in minutes',
       })
     ).toBeVisible()
     await waitFor(() =>
