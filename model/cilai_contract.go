@@ -141,9 +141,16 @@ func ExpectedV1BillingMultiplier(productType string) (float64, bool) {
 
 // ExpectedProductPriceBillingMultiplier keeps the plan-level multiplier as a
 // backwards-compatible entitlement default while allowing an immutable price
-// version to define a different multiplier for one exact model. IF.Learn is
-// the only V1 product with mixed model-level pricing.
-func ExpectedProductPriceBillingMultiplier(productType string, modelName string) (float64, bool) {
+// version to define a different multiplier for one exact model. Current
+// IF.Learn and unified monthly versions both use mixed model-level pricing.
+func ExpectedProductPriceBillingMultiplier(productType string, modelName string, priceVersion ...string) (float64, bool) {
+	version := ""
+	if len(priceVersion) > 0 {
+		version = strings.TrimSpace(priceVersion[0])
+	}
+	if strings.TrimSpace(productType) == ProductTypeMonthlySubscription && version == MonthlyPriceVersion {
+		return monthlyModelBillingMultiplier(modelName)
+	}
 	if strings.TrimSpace(productType) == ProductTypePackDeepSeekClassroom && strings.TrimSpace(modelName) == ClassroomModelQwen {
 		return 1, true
 	}
@@ -229,8 +236,16 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 			return fmt.Errorf("max_upstream_cost must explicitly configure positive input/output costs for model %q", modelName)
 		}
 	}
-	if expected, ok := ExpectedV1BillingMultiplier(p.ProductType); ok && math.Abs(p.BillingMultiplier-expected) > 0.000001 {
-		return fmt.Errorf("billing_multiplier for %s must be %.2f", p.ProductType, expected)
+	expectedPlanMultiplier, hasExpectedPlanMultiplier := ExpectedV1BillingMultiplier(p.ProductType)
+	if p.ProductType == ProductTypeMonthlySubscription && p.PriceVersion == MonthlyPriceVersion {
+		// A mixed-model monthly entitlement has no meaningful single discount.
+		// Keep the plan/token snapshot neutral; the exact immutable ProductPrice
+		// row is authoritative and must exist before the product can be enabled.
+		expectedPlanMultiplier = 1
+		hasExpectedPlanMultiplier = true
+	}
+	if hasExpectedPlanMultiplier && math.Abs(p.BillingMultiplier-expectedPlanMultiplier) > 0.000001 {
+		return fmt.Errorf("billing_multiplier for %s must be %.2f", p.ProductType, expectedPlanMultiplier)
 	}
 	if p.AllowWalletOverflow == nil || *p.AllowWalletOverflow {
 		return errors.New("V1 products must disable wallet overflow")
@@ -246,8 +261,12 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 		if expectedPrice == 0 || math.Abs(p.PriceAmount-expectedPrice) > 0.000001 {
 			return errors.New("monthly_subscription tier/price must be 1=19.9, 2=49.9, or 3=99.9")
 		}
-		if p.CourseEligible != (p.ProductTier >= 2) {
-			return errors.New("monthly course eligibility is required for tiers 2/3 and forbidden for tier 1")
+		if p.PriceVersion == MonthlyPriceVersion {
+			if p.CourseEligible {
+				return errors.New("monthly unified tiers cannot attach differentiated course eligibility")
+			}
+		} else if p.CourseEligible != (p.ProductTier >= 2) {
+			return errors.New("legacy monthly course eligibility is required for tiers 2/3 and forbidden for tier 1")
 		}
 	} else if p.Category != SubscriptionCategoryPackage {
 		return errors.New("V1 packs must use package category")
@@ -362,7 +381,7 @@ func (p *ProductPrice) ValidateV1() error {
 	if RequiresStrictV1RoutePolicy(p.ProductType) && p.FallbackAllowed {
 		return errors.New("V1 product prices must fail closed and cannot enable route fallback")
 	}
-	expectedMultiplier, ok := ExpectedProductPriceBillingMultiplier(p.ProductType, p.Model)
+	expectedMultiplier, ok := ExpectedProductPriceBillingMultiplier(p.ProductType, p.Model, p.PriceVersion)
 	if !ok || math.Abs(expectedMultiplier-p.BillingMultiplier) > 0.000001 {
 		return fmt.Errorf("product price billing_multiplier for %s must be %.2f", p.ProductType, expectedMultiplier)
 	}
@@ -511,7 +530,7 @@ func validateV1ProductPriceCatalogTx(tx *gorm.DB, plan *SubscriptionPlan) error 
 		if err := price.ValidateV1(); err != nil {
 			return fmt.Errorf("cannot sell %s: %w", plan.ProductCode, err)
 		}
-		expectedMultiplier, ok := ExpectedProductPriceBillingMultiplier(plan.ProductType, modelName)
+		expectedMultiplier, ok := ExpectedProductPriceBillingMultiplier(plan.ProductType, modelName, plan.PriceVersion)
 		if !ok || math.Abs(price.BillingMultiplier-expectedMultiplier) > 0.000001 {
 			return fmt.Errorf("cannot sell %s: billing multiplier mismatch for model %s", plan.ProductCode, modelName)
 		}

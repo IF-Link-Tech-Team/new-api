@@ -212,6 +212,7 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.GET("/product-prices", controller.AdminListProductPrices)
 			subscriptionAdminRoute.POST("/product-prices", controller.AdminCreateProductPrice)
 			subscriptionAdminRoute.POST("/classroom/bootstrap", controller.AdminBootstrapClassroomProduct)
+			subscriptionAdminRoute.POST("/monthly/bootstrap", controller.AdminBootstrapMonthlyProducts)
 			subscriptionAdminRoute.PATCH("/product-prices/:id", controller.AdminSetProductPriceEnabled)
 			subscriptionAdminRoute.POST("/bind", controller.AdminBindSubscription)
 			subscriptionAdminRoute.POST("/plans/:id/subscriptions/reset", controller.AdminResetPlanSubscriptions)

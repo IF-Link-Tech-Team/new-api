@@ -154,6 +154,13 @@ type ClassroomBootstrapRequest struct {
 	EffectiveAt int64 `json:"effective_at"`
 }
 
+type MonthlyBootstrapRequest struct {
+	Apply       bool  `json:"apply"`
+	Enabled     bool  `json:"enabled"`
+	Listed      bool  `json:"listed"`
+	EffectiveAt int64 `json:"effective_at"`
+}
+
 func AdminBootstrapClassroomProduct(c *gin.Context) {
 	var req ClassroomBootstrapRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -161,6 +168,20 @@ func AdminBootstrapClassroomProduct(c *gin.Context) {
 		return
 	}
 	result, err := model.BootstrapClassroomProduct(req.Apply, req.Enabled, req.Listed, req.EffectiveAt)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, result)
+}
+
+func AdminBootstrapMonthlyProducts(c *gin.Context) {
+	var req MonthlyBootstrapRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorMsg(c, "参数错误")
+		return
+	}
+	result, err := model.BootstrapMonthlyProducts(req.Apply, req.Enabled, req.Listed, req.EffectiveAt)
 	if err != nil {
 		common.ApiError(c, err)
 		return
