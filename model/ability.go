@@ -126,6 +126,35 @@ func getChannelQuery(group string, model string, retry int, eligibleChannelIds [
 	return channelQuery, nil
 }
 
+// getPolicyChannelQuery treats an immutable product channel allowlist as the
+// routing authority. Product keys may intentionally target a reviewed channel
+// that is not exposed through the user's ordinary wallet group; the explicit
+// channel ID and upstream-cost ceiling still fail closed below.
+func getPolicyChannelQuery(model string, retry int, eligibleChannelIds []int) (*gorm.DB, error) {
+	if len(eligibleChannelIds) == 0 {
+		return DB.Where("1 = 0"), nil
+	}
+	base := DB.Model(&Ability{}).
+		Where("model = ? and enabled = ? and channel_id IN ?", model, true, eligibleChannelIds)
+	maxPrioritySubQuery := base.Session(&gorm.Session{}).Select("MAX(priority)")
+	channelQuery := DB.Where("model = ? and enabled = ? and channel_id IN ? and priority = (?)", model, true, eligibleChannelIds, maxPrioritySubQuery)
+	if retry == 0 {
+		return channelQuery, nil
+	}
+	var priorities []int
+	if err := base.Session(&gorm.Session{}).Select("DISTINCT(priority)").Order("priority DESC").Pluck("priority", &priorities).Error; err != nil {
+		return nil, err
+	}
+	if len(priorities) == 0 {
+		return DB.Where("1 = 0"), nil
+	}
+	priorityIndex := retry
+	if priorityIndex >= len(priorities) {
+		priorityIndex = len(priorities) - 1
+	}
+	return DB.Where("model = ? and enabled = ? and channel_id IN ? and priority = ?", model, true, eligibleChannelIds, priorities[priorityIndex]), nil
+}
+
 func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
 	return GetChannelWithPolicy(group, model, retry, requestPath, nil)
 }
@@ -153,7 +182,12 @@ func GetChannelWithPolicy(group string, model string, retry int, requestPath str
 	}
 
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry, eligibleChannelIds)
+	var channelQuery *gorm.DB
+	if policy != nil {
+		channelQuery, err = getPolicyChannelQuery(model, retry, eligibleChannelIds)
+	} else {
+		channelQuery, err = getChannelQuery(group, model, retry, eligibleChannelIds)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +198,20 @@ func GetChannelWithPolicy(group string, model string, retry int, requestPath str
 	}
 	if err != nil {
 		return nil, err
+	}
+	if policy != nil && len(abilities) > 1 {
+		// One channel can have abilities in several groups. Once an immutable
+		// product policy authorizes the channel itself, count it only once.
+		seen := make(map[int]struct{}, len(abilities))
+		unique := abilities[:0]
+		for _, ability := range abilities {
+			if _, ok := seen[ability.ChannelId]; ok {
+				continue
+			}
+			seen[ability.ChannelId] = struct{}{}
+			unique = append(unique, ability)
+		}
+		abilities = unique
 	}
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
 	channel := Channel{}

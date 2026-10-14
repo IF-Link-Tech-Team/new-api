@@ -41,3 +41,44 @@ func TestDatabaseChannelSelectionChoosesHighestPriorityInsidePolicy(t *testing.T
 	require.NotNil(t, selected)
 	require.Equal(t, 15, selected.Id)
 }
+
+func TestProductPolicySelectsReviewedChannelOutsideWalletGroup(t *testing.T) {
+	require.NoError(t, DB.Exec("DELETE FROM abilities").Error)
+	require.NoError(t, DB.Exec("DELETE FROM channels").Error)
+	t.Cleanup(func() {
+		_ = DB.Exec("DELETE FROM abilities").Error
+		_ = DB.Exec("DELETE FROM channels").Error
+	})
+	oldMemoryCache := common.MemoryCacheEnabled
+	t.Cleanup(func() { common.MemoryCacheEnabled = oldMemoryCache })
+
+	const modelName = "qwen3.8-flash"
+	require.NoError(t, DB.Create(&Channel{
+		Id: 14, Name: "reviewed-classroom-qwen", Key: "allowed", Status: common.ChannelStatusEnabled,
+		Models: modelName, Group: "classroom-upstream", UpstreamCosts: `{"qwen3.8-flash":{"input":0.64,"cached_input":0.08,"cache_creation":1,"output":2.16}}`,
+	}).Error)
+	priority := int64(0)
+	require.NoError(t, DB.Create(&Ability{Group: "classroom-upstream", Model: modelName, ChannelId: 14, Enabled: true, Priority: &priority}).Error)
+	policy := &ChannelSelectionPolicy{
+		AllowedChannelIds: map[int]struct{}{14: {}},
+		MaxUpstreamCost:   PriceComponents{Input: 0.64, CachedInput: 0.08, CacheCreation: 1, Output: 2.16},
+		RequireCost:       true,
+	}
+
+	common.MemoryCacheEnabled = false
+	selected, err := GetRandomSatisfiedChannelWithPolicy("default", modelName, 0, "/v1/chat/completions", policy)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, 14, selected.Id)
+
+	common.MemoryCacheEnabled = true
+	InitChannelCache()
+	selected, err = GetRandomSatisfiedChannelWithPolicy("default", modelName, 0, "/v1/chat/completions", policy)
+	require.NoError(t, err)
+	require.NotNil(t, selected)
+	require.Equal(t, 14, selected.Id)
+
+	ordinary, err := GetRandomSatisfiedChannel("default", modelName, 0, "/v1/chat/completions")
+	require.NoError(t, err)
+	require.Nil(t, ordinary, "ordinary wallet routing must not inherit the classroom channel")
+}
