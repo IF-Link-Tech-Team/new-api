@@ -188,6 +188,7 @@ export function TrafficPacks({
   const returnedTradeNo = useMemo(() => {
     const params = new URLSearchParams(window.location.search)
     return (
+      params.get('iflinkpay_return') ||
       params.get('alipay_return') ||
       sessionStorage.getItem('cilai_pending_subscription_order') ||
       ''
@@ -388,7 +389,7 @@ export function TrafficPacks({
                     const plan = item.plan
                     const isRecommended =
                       plan.product_type === 'monthly_subscription' &&
-                      Math.abs(plan.price_amount - 79) < 0.001
+                      plan.product_tier === 2
                     const isMonthly =
                       plan.product_type === 'monthly_subscription'
                     const isClassroom = isIfLearnPlan(plan)
@@ -463,10 +464,12 @@ export function TrafficPacks({
                               / {plan.duration_value} 天
                             </span>
                           </div>
-                          {isClassroom && computePoints ? (
+                          {computePoints ? (
                             <div className='bg-muted/40 rounded-md border px-3 py-2.5'>
                               <p className='text-muted-foreground text-xs'>
-                                {t('¥5 classroom model shared credit')}
+                                {isClassroom
+                                  ? t('¥5 classroom model shared credit')
+                                  : t('Total compute points')}
                               </p>
                               <p className='mt-1 font-semibold tabular-nums'>
                                 {computePoints}
@@ -574,6 +577,8 @@ export function TrafficPacks({
                   const remainingValue =
                     total > 0 ? faceValue * (remaining / total) : 0
                   const isPackage = item.plan_category === 'package'
+                  const showComputePoints =
+                    isPackage || sub.product_type === 'monthly_subscription'
                   const models = parseModelScope(sub.model_scope)
                   const billingMultipliers = item.billing_multipliers || {}
                   const token = tokenBySubscription.get(sub.id)
@@ -661,22 +666,22 @@ export function TrafficPacks({
                         <div
                           className={cn(
                             'grid grid-cols-1 gap-3 text-sm sm:grid-cols-3',
-                            isPackage && 'lg:grid-cols-4'
+                            showComputePoints && 'lg:grid-cols-4'
                           )}
                         >
                           <div>
                             <p className='text-muted-foreground text-xs'>
-                              {isPackage
+                              {showComputePoints
                                 ? t('Remaining compute points')
                                 : t('Remaining cycle benefit')}
                             </p>
                             <p className='mt-1 font-medium'>
-                              {isPackage
+                              {showComputePoints
                                 ? formatQuotaAsComputePoints(remaining)
                                 : `¥${remainingValue.toFixed(2)}`}
                             </p>
                           </div>
-                          {isPackage ? (
+                          {showComputePoints ? (
                             <div>
                               <p className='text-muted-foreground text-xs'>
                                 {t('Total compute points')}
@@ -712,10 +717,10 @@ export function TrafficPacks({
                           <div className='mb-2 flex items-center justify-between text-xs'>
                             <span className='text-muted-foreground'>
                               {t('Used {{used}} · Remaining {{remaining}}', {
-                                used: isPackage
+                                used: showComputePoints
                                   ? formatQuotaAsComputePoints(used)
                                   : formatQuota(used),
-                                remaining: isPackage
+                                remaining: showComputePoints
                                   ? formatQuotaAsComputePoints(remaining)
                                   : formatQuota(remaining),
                               })}
