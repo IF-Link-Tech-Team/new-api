@@ -125,6 +125,11 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	}
 	require.NoError(t, db.Create(&primary).Error)
 	require.NoError(t, db.Create(&forbidden).Error)
+	require.NoError(t, db.Create(&model.Channel{
+		Id: 14, Name: "Qwen 隔离测试", Type: constant.ChannelTypeOpenAI,
+		Key: "mock-channel-14", BaseURL: common.GetPointer(upstream.URL), Status: common.ChannelStatusEnabled,
+		Models: model.ClassroomModelQwen, Group: "default", AutoBan: &autoBanOff,
+	}).Error)
 	for _, modelName := range []string{model.ClassroomModelV4GA, model.ClassroomModelV41} {
 		lowPriority := int64(0)
 		highPriority := int64(100)

@@ -100,7 +100,8 @@ func ChannelSatisfiesPolicy(channel *Channel, modelName string, policy *ChannelS
 		return false
 	}
 	cap := policy.MaxUpstreamCost
-	return cost.Input <= cap.Input && cost.CachedInput <= cap.CachedInput && cost.Output <= cap.Output
+	return cost.Input <= cap.Input && cost.CachedInput <= cap.CachedInput &&
+		cost.CacheCreation <= cap.CacheCreation && cost.Output <= cap.Output
 }
 
 type ChannelInfo struct {

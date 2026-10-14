@@ -17,19 +17,20 @@ import {
   shouldShowModelSquareNavigation,
 } from '../classroom-quick-start'
 
-test('prefers the classroom DeepSeek Flash models in the documented order', () => {
+test('prefers Qwen3.8 Flash before the classroom DeepSeek fallbacks', () => {
   assert.equal(
     selectClassroomModel([
       'gpt-4o-mini',
       'deepseek-v4-1-flash-260910',
       'deepseek-v4-flash-ga-260731',
+      'qwen3.8-flash',
     ]),
-    'deepseek-v4-flash-ga-260731'
+    'qwen3.8-flash'
   )
 })
 
 test('uses the primary classroom model while the user model list is empty', () => {
-  assert.equal(selectClassroomModel([]), 'deepseek-v4-flash-ga-260731')
+  assert.equal(selectClassroomModel([]), 'qwen3.8-flash')
 })
 
 test('normalizes configured routes to an OpenAI-compatible base URL', () => {

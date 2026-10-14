@@ -125,6 +125,16 @@ async function renderOverview() {
 }
 
 describe('overview setup guide', () => {
+  it('allows long quick action descriptions to wrap within their card', async () => {
+    const user = userEvent.setup()
+    await renderOverview()
+    await user.click(await screen.findByRole('button', { name: 'Setup guide' }))
+    const action = screen.getByRole('button', {
+      name: /^IF.Learn starter pack/,
+    })
+    expect(action).toHaveClass('min-w-0', 'w-full', 'whitespace-normal')
+  })
+
   it('shows usage first and only a header entry when setup is complete', async () => {
     await renderOverview()
 
