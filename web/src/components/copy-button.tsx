@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Check, Copy } from 'lucide-react'
-import { type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -38,6 +38,9 @@ interface CopyButtonProps {
   size?: 'default' | 'sm' | 'lg' | 'icon'
   tooltip?: string
   successTooltip?: string
+  notify?: boolean
+  successMessage?: string
+  errorMessage?: string
   'aria-label'?: string
 }
 
@@ -50,10 +53,17 @@ export function CopyButton({
   size = 'icon',
   tooltip,
   successTooltip,
+  notify = false,
+  successMessage,
+  errorMessage,
   'aria-label': ariaLabel,
 }: CopyButtonProps) {
   const { t } = useTranslation()
-  const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
+  const { copiedText, copyToClipboard } = useCopyToClipboard({
+    notify,
+    successMessage,
+    errorMessage,
+  })
   const isCopied = copiedText === value
   const resolvedTooltip = tooltip ?? t('Copy to clipboard')
   const resolvedSuccessTooltip = successTooltip ?? t('Copied!')
@@ -80,7 +90,7 @@ export function CopyButton({
   if (tooltip || successTooltip) {
     return (
       <Tooltip>
-        <TooltipTrigger render={button}></TooltipTrigger>
+        <TooltipTrigger render={button} />
         <TooltipContent>
           <p>{isCopied ? resolvedSuccessTooltip : resolvedTooltip}</p>
         </TooltipContent>

@@ -116,6 +116,10 @@ test('renders server-owned product details and starts direct IFLinkPay checkout'
         success: true,
         data: {
           product_id: 'deepseek-classroom-5-20261014',
+          billing_multipliers: {
+            'qwen3.8-flash': 1,
+            'deepseek-v4-1-flash-260910': 0.6,
+          },
           plan: {
             id: 2,
             title: 'DeepSeek 课堂专享六折包',
@@ -133,6 +137,7 @@ test('renders server-owned product details and starts direct IFLinkPay checkout'
             total_amount: 2_500_000,
             product_type: 'pack_deepseek_classroom',
             product_code: 'deepseek-classroom-5-20261014',
+            model_scope: 'qwen3.8-flash,deepseek-v4-1-flash-260910',
           },
         },
       }
@@ -167,11 +172,17 @@ test('renders server-owned product details and starts direct IFLinkPay checkout'
       </QueryClientProvider>
     )
   })
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
 
   const text = document.body.textContent ?? ''
   assert.equal(text.includes('IF.Learn 启动包'), true)
   assert.equal(text.includes('¥5.00'), true)
   assert.equal(text.includes('10,000 算力点'), true)
+  assert.equal(text.includes('qwen3.8-flash'), true)
+  assert.equal(text.includes('官网价 ×1.00'), true)
+  assert.equal(text.includes('官网价 ×0.60'), true)
   assert.equal(text.includes('使用 IFLinkPay 支付'), true)
   assert.equal(text.includes('支付宝'), false)
 

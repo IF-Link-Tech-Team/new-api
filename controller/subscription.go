@@ -17,8 +17,39 @@ import (
 // ---- Shared types ----
 
 type SubscriptionPlanDTO struct {
-	Plan      model.SubscriptionPlan `json:"plan"`
-	ProductID string                 `json:"product_id"`
+	Plan               model.SubscriptionPlan `json:"plan"`
+	ProductID          string                 `json:"product_id"`
+	BillingMultipliers map[string]float64     `json:"billing_multipliers,omitempty"`
+}
+
+func subscriptionBillingMultipliers(productType string, modelScope string, priceVersion string) map[string]float64 {
+	productType = strings.TrimSpace(productType)
+	priceVersion = strings.TrimSpace(priceVersion)
+	if productType == "" || priceVersion == "" {
+		return nil
+	}
+
+	result := make(map[string]float64)
+	seen := make(map[string]struct{})
+	for _, rawModel := range strings.Split(modelScope, ",") {
+		modelName := strings.TrimSpace(rawModel)
+		if modelName == "" {
+			continue
+		}
+		if _, exists := seen[modelName]; exists {
+			continue
+		}
+		seen[modelName] = struct{}{}
+		price, err := model.GetProductPriceSnapshot(productType, modelName, priceVersion)
+		if err != nil {
+			continue
+		}
+		result[modelName] = price.BillingMultiplier
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // subscriptionPlanProductID is the stable identifier exposed in Checkout
@@ -170,8 +201,9 @@ func GetSubscriptionPlans(c *gin.Context) {
 	for _, p := range plans {
 		p.NormalizeDefaults()
 		result = append(result, SubscriptionPlanDTO{
-			Plan:      p,
-			ProductID: subscriptionPlanProductID(p),
+			Plan:               p,
+			ProductID:          subscriptionPlanProductID(p),
+			BillingMultipliers: subscriptionBillingMultipliers(p.ProductType, p.ModelScope, p.PriceVersion),
 		})
 	}
 	common.ApiSuccess(c, result)
@@ -188,8 +220,9 @@ func GetSubscriptionProduct(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, SubscriptionPlanDTO{
-		Plan:      *plan,
-		ProductID: subscriptionPlanProductID(*plan),
+		Plan:               *plan,
+		ProductID:          subscriptionPlanProductID(*plan),
+		BillingMultipliers: subscriptionBillingMultipliers(plan.ProductType, plan.ModelScope, plan.PriceVersion),
 	})
 }
 
@@ -218,6 +251,11 @@ func GetSubscriptionSelf(c *gin.Context) {
 		for _, summary := range summaries {
 			item := gin.H{"subscription": summary.Subscription}
 			if summary.Subscription != nil {
+				item["billing_multipliers"] = subscriptionBillingMultipliers(
+					summary.Subscription.ProductType,
+					summary.Subscription.ModelScope,
+					summary.Subscription.PriceVersion,
+				)
 				planId := summary.Subscription.PlanId
 				plan := planCache[planId]
 				if plan == nil {

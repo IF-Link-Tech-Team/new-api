@@ -67,11 +67,13 @@ import { formatQuotaAsComputePoints } from '@/lib/compute-points'
 import { formatQuota } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import { ModelIdList } from './components/model-id-list'
 import {
   getProductComputePointsLabel,
   getProductDisplayName,
   IF_LEARN_PRODUCT_NAME,
   isIfLearnPlan,
+  parseModelScope,
 } from './lib/product-display'
 
 function formatDate(unix: number): string {
@@ -99,13 +101,6 @@ function productLabel(productType?: string): string {
     default:
       return '专项流量包'
   }
-}
-
-function modelDisplayName(model: string): string {
-  if (model === 'qwen3.8-flash') return 'Qwen3.8 Flash'
-  if (model === 'deepseek-v4-flash-ga-260731') return 'DeepSeek V4 Flash'
-  if (model === 'deepseek-v4-1-flash-260910') return 'DeepSeek V4.1 Flash'
-  return model
 }
 
 function keyProvisioningLabel(
@@ -408,10 +403,8 @@ export function TrafficPacks({
                       isMonthly && currentTier > 0 && tier > currentTier
                     const disabled =
                       !plan.redemption_enabled || sameTier || lowerTier
-                    const models = (plan.model_scope || '')
-                      .split(',')
-                      .map((model) => model.trim())
-                      .filter(Boolean)
+                    const models = parseModelScope(plan.model_scope)
+                    const billingMultipliers = item.billing_multipliers || {}
                     let purchaseLabel = '立即购买'
                     if (!plan.redemption_enabled) {
                       purchaseLabel = '兑换暂未开放'
@@ -473,7 +466,7 @@ export function TrafficPacks({
                           {isClassroom && computePoints ? (
                             <div className='bg-muted/40 rounded-md border px-3 py-2.5'>
                               <p className='text-muted-foreground text-xs'>
-                                {t('¥5 DeepSeek call credit')}
+                                {t('¥5 classroom model shared credit')}
                               </p>
                               <p className='mt-1 font-semibold tabular-nums'>
                                 {computePoints}
@@ -481,12 +474,16 @@ export function TrafficPacks({
                             </div>
                           ) : null}
                           <div className='space-y-2 text-sm'>
-                            <p className='flex items-center gap-2'>
-                              <ShieldCheck className='h-4 w-4 text-emerald-600' />
-                              官网价 ×
-                              {Number(plan.billing_multiplier || 1).toFixed(2)}{' '}
-                              扣费
-                            </p>
+                            {Object.keys(billingMultipliers).length === 0 ? (
+                              <p className='flex items-center gap-2'>
+                                <ShieldCheck className='h-4 w-4 text-emerald-600' />
+                                官网价 ×
+                                {Number(plan.billing_multiplier || 1).toFixed(
+                                  2
+                                )}{' '}
+                                扣费
+                              </p>
+                            ) : null}
                             <p className='flex items-center gap-2'>
                               <KeyRound className='h-4 w-4 text-blue-600' />
                               {keyProvisioningLabel(isMonthly, isClassroom)}
@@ -498,13 +495,10 @@ export function TrafficPacks({
                               </p>
                             )}
                           </div>
-                          <div className='flex flex-wrap gap-1.5'>
-                            {models.map((model) => (
-                              <Badge key={model} variant='secondary'>
-                                {modelDisplayName(model)}
-                              </Badge>
-                            ))}
-                          </div>
+                          <ModelIdList
+                            models={models}
+                            billingMultipliers={billingMultipliers}
+                          />
                           <Button
                             className='w-full whitespace-nowrap'
                             disabled={disabled}
@@ -556,7 +550,9 @@ export function TrafficPacks({
           )}
 
           <section>
-            <h2 className='mb-3 text-lg font-semibold'>我的权益实例</h2>
+            <h2 className='mb-3 text-lg font-semibold'>
+              {category === 'subscription' ? '我的订阅' : '我的权益实例'}
+            </h2>
             {!loading && subscriptions.length === 0 ? (
               <Card>
                 <CardContent className='text-muted-foreground py-10 text-center text-sm'>
@@ -578,6 +574,8 @@ export function TrafficPacks({
                   const remainingValue =
                     total > 0 ? faceValue * (remaining / total) : 0
                   const isPackage = item.plan_category === 'package'
+                  const models = parseModelScope(sub.model_scope)
+                  const billingMultipliers = item.billing_multipliers || {}
                   const token = tokenBySubscription.get(sub.id)
                   const revealed = token ? revealedKeys[token.id] : ''
                   const isActive =
@@ -702,8 +700,11 @@ export function TrafficPacks({
                               扣费倍率
                             </p>
                             <p className='mt-1 font-medium'>
-                              官网价 ×
-                              {Number(sub.billing_multiplier || 1).toFixed(2)}
+                              {Object.keys(billingMultipliers).length > 0
+                                ? '按模型计价'
+                                : `官网价 ×${Number(
+                                    sub.billing_multiplier || 1
+                                  ).toFixed(2)}`}
                             </p>
                           </div>
                         </div>
@@ -729,6 +730,14 @@ export function TrafficPacks({
                             首期基础课程资格已记录，套餐到期后仍保留
                           </p>
                         )}
+                        {models.length > 0 ? (
+                          <div className='rounded-lg border p-3'>
+                            <ModelIdList
+                              models={models}
+                              billingMultipliers={billingMultipliers}
+                            />
+                          </div>
+                        ) : null}
                         <div className='rounded-lg border p-3'>
                           <div className='mb-2 flex items-center gap-2'>
                             <KeyRound className='h-4 w-4' />

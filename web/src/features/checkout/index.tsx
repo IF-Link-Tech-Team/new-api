@@ -14,7 +14,6 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -24,10 +23,12 @@ import {
   redeemProductCode,
 } from '@/features/subscriptions/api'
 import type { ProductRedemptionResult } from '@/features/subscriptions/types'
+import { ModelIdList } from '@/features/traffic-packs/components/model-id-list'
 import {
   getProductComputePointsLabel,
   getProductDisplayName,
   isIfLearnPlan,
+  parseModelScope,
 } from '@/features/traffic-packs/lib/product-display'
 import { getTopupInfo } from '@/features/wallet/api'
 
@@ -63,10 +64,8 @@ export function Checkout({ productId }: CheckoutProps) {
   const plan = productQuery.data?.plan
   const productName = plan ? getProductDisplayName(plan) : ''
   const computePoints = plan ? getProductComputePointsLabel(plan) : null
-  const models = (plan?.model_scope || '')
-    .split(',')
-    .map((model) => model.trim())
-    .filter(Boolean)
+  const models = parseModelScope(plan?.model_scope)
+  const billingMultipliers = productQuery.data?.billing_multipliers || {}
   const ifLinkPayEnabled =
     paymentConfigQuery.data?.success === true &&
     paymentConfigQuery.data.data?.enable_iflinkpay_topup === true
@@ -220,7 +219,7 @@ export function Checkout({ productId }: CheckoutProps) {
                 <div className='bg-muted/35 grid gap-3 rounded-md p-3 sm:grid-cols-2'>
                   <div>
                     <span className='text-muted-foreground text-xs'>
-                      {t('DeepSeek call credit')}
+                      {t('Classroom model shared credit')}
                     </span>
                     <p className='mt-1 text-lg font-semibold tabular-nums'>
                       ¥{Number(plan.price_amount).toFixed(2)}
@@ -244,17 +243,12 @@ export function Checkout({ productId }: CheckoutProps) {
                 </span>
               </div>
               {models.length > 0 ? (
-                <div className='space-y-2 border-t pt-3'>
-                  <span className='text-muted-foreground'>
-                    {t('Supported Models')}
-                  </span>
-                  <div className='flex flex-wrap gap-1.5'>
-                    {models.map((model) => (
-                      <Badge key={model} variant='secondary'>
-                        {model}
-                      </Badge>
-                    ))}
-                  </div>
+                <div className='border-t pt-3'>
+                  <ModelIdList
+                    models={models}
+                    billingMultipliers={billingMultipliers}
+                    title={t('Supported Models')}
+                  />
                 </div>
               ) : null}
             </div>
