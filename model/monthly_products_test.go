@@ -101,49 +101,61 @@ func TestMonthlyBootstrapCreatesUnifiedTiersAndMixedPriceSnapshots(t *testing.T)
 }
 
 func TestMonthlyIFLinkPayOrderProvisionsOneBoundKeyIdempotently(t *testing.T) {
-	setupMonthlyProductsTest(t)
-	var lite SubscriptionPlan
-	require.NoError(t, DB.Where("product_code = ?", "lite").First(&lite).Error)
-	user := createV1ContractUser(t, "monthly-iflinkpay-user")
+	for _, tier := range []struct {
+		code  string
+		money string
+		quota int64
+	}{
+		{code: "lite", money: "19.90", quota: 9_950_000},
+		{code: "pro", money: "49.90", quota: 24_950_000},
+		{code: "max", money: "99.90", quota: 49_950_000},
+	} {
+		t.Run(tier.code, func(t *testing.T) {
+			setupMonthlyProductsTest(t)
+			var lite SubscriptionPlan
+			require.NoError(t, DB.Where("product_code = ?", tier.code).First(&lite).Error)
+			user := createV1ContractUser(t, "monthly-iflinkpay-user")
 
-	order, _, err := CreateSubscriptionOrder(user.Id, lite.Id, "SUB-MONTHLY-IFLINKPAY-TEST", PaymentMethodIFLinkPay, PaymentProviderIFLinkPay, true)
-	require.NoError(t, err)
-	require.NoError(t, CompleteSubscriptionOrderWithReceipt(order.TradeNo, PaymentProviderIFLinkPay, PaymentMethodIFLinkPay, PaymentReceipt{
-		Amount: decimal.RequireFromString("19.90"), Currency: "CNY", ProviderTradeNo: "iflinkpay-monthly-test-1",
-	}))
-	require.NoError(t, CompleteSubscriptionOrderWithReceipt(order.TradeNo, PaymentProviderIFLinkPay, PaymentMethodIFLinkPay, PaymentReceipt{
-		Amount: decimal.RequireFromString("19.90"), Currency: "CNY", ProviderTradeNo: "iflinkpay-monthly-test-1",
-	}))
+			order, _, err := CreateSubscriptionOrder(user.Id, lite.Id, "SUB-MONTHLY-IFLINKPAY-TEST", PaymentMethodIFLinkPay, PaymentProviderIFLinkPay, true)
+			require.NoError(t, err)
+			require.NoError(t, CompleteSubscriptionOrderWithReceipt(order.TradeNo, PaymentProviderIFLinkPay, PaymentMethodIFLinkPay, PaymentReceipt{
+				Amount: decimal.RequireFromString(tier.money), Currency: "CNY", ProviderTradeNo: "iflinkpay-monthly-test-1",
+			}))
+			require.NoError(t, CompleteSubscriptionOrderWithReceipt(order.TradeNo, PaymentProviderIFLinkPay, PaymentMethodIFLinkPay, PaymentReceipt{
+				Amount: decimal.RequireFromString(tier.money), Currency: "CNY", ProviderTradeNo: "iflinkpay-monthly-test-1",
+			}))
 
-	completed := GetSubscriptionOrderByTradeNo(order.TradeNo)
-	require.Equal(t, common.TopUpStatusSuccess, completed.Status)
-	require.Equal(t, ProvisioningStatusProvisioned, completed.ProvisioningStatus)
-	require.NotNil(t, completed.UserSubscriptionId)
-	var subscription UserSubscription
-	require.NoError(t, DB.First(&subscription, *completed.UserSubscriptionId).Error)
-	require.Equal(t, int64(9_950_000), subscription.AmountTotal)
-	require.Zero(t, subscription.AmountUsed)
-	require.Equal(t, MonthlyPriceVersion, subscription.PriceVersion)
-	require.Equal(t, lite.ModelScope, subscription.ModelScope)
-	require.WithinDuration(t, time.Unix(subscription.StartTime, 0).Add(30*24*time.Hour), time.Unix(subscription.EndTime, 0), time.Second)
+			completed := GetSubscriptionOrderByTradeNo(order.TradeNo)
+			require.Equal(t, common.TopUpStatusSuccess, completed.Status)
+			require.Equal(t, ProvisioningStatusProvisioned, completed.ProvisioningStatus)
+			require.NotNil(t, completed.UserSubscriptionId)
+			var subscription UserSubscription
+			require.NoError(t, DB.First(&subscription, *completed.UserSubscriptionId).Error)
+			require.Equal(t, tier.quota, subscription.AmountTotal)
+			require.Zero(t, subscription.AmountUsed)
+			require.Equal(t, MonthlyPriceVersion, subscription.PriceVersion)
+			require.Equal(t, lite.ModelScope, subscription.ModelScope)
+			require.WithinDuration(t, time.Unix(subscription.StartTime, 0).Add(30*24*time.Hour), time.Unix(subscription.EndTime, 0), time.Second)
 
-	var bindings []SubscriptionKeyBinding
-	require.NoError(t, DB.Where("user_subscription_id = ?", subscription.Id).Find(&bindings).Error)
-	require.Len(t, bindings, 1)
-	var token Token
-	require.NoError(t, DB.First(&token, bindings[0].TokenId).Error)
-	require.Equal(t, subscription.Id, token.UserSubscriptionId)
-	require.Equal(t, lite.ModelScope, token.ModelLimits)
-	require.Equal(t, MonthlyPriceVersion, token.PriceVersion)
-	require.NotEmpty(t, token.Key)
+			var bindings []SubscriptionKeyBinding
+			require.NoError(t, DB.Where("user_subscription_id = ?", subscription.Id).Find(&bindings).Error)
+			require.Len(t, bindings, 1)
+			var token Token
+			require.NoError(t, DB.First(&token, bindings[0].TokenId).Error)
+			require.Equal(t, subscription.Id, token.UserSubscriptionId)
+			require.Equal(t, lite.ModelScope, token.ModelLimits)
+			require.Equal(t, MonthlyPriceVersion, token.PriceVersion)
+			require.NotEmpty(t, token.Key)
 
-	var subscriptionCount, bindingCount, courseCount int64
-	require.NoError(t, DB.Model(&UserSubscription{}).Where("user_id = ?", user.Id).Count(&subscriptionCount).Error)
-	require.NoError(t, DB.Model(&SubscriptionKeyBinding{}).Where("user_id = ?", user.Id).Count(&bindingCount).Error)
-	require.NoError(t, DB.Model(&CourseEntitlement{}).Where("user_id = ?", user.Id).Count(&courseCount).Error)
-	require.Equal(t, int64(1), subscriptionCount)
-	require.Equal(t, int64(1), bindingCount)
-	require.Zero(t, courseCount)
+			var subscriptionCount, bindingCount, courseCount int64
+			require.NoError(t, DB.Model(&UserSubscription{}).Where("user_id = ?", user.Id).Count(&subscriptionCount).Error)
+			require.NoError(t, DB.Model(&SubscriptionKeyBinding{}).Where("user_id = ?", user.Id).Count(&bindingCount).Error)
+			require.NoError(t, DB.Model(&CourseEntitlement{}).Where("user_id = ?", user.Id).Count(&courseCount).Error)
+			require.Equal(t, int64(1), subscriptionCount)
+			require.Equal(t, int64(1), bindingCount)
+			require.Zero(t, courseCount)
+		})
+	}
 }
 
 func TestMonthlyBootstrapFailsClosedOnUnverifiedChannelCost(t *testing.T) {
