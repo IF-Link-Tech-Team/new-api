@@ -102,6 +102,7 @@ function productLabel(productType?: string): string {
 }
 
 function modelDisplayName(model: string): string {
+  if (model === 'qwen3.8-flash') return 'Qwen3.8 Flash'
   if (model === 'deepseek-v4-flash-ga-260731') return 'DeepSeek V4 Flash'
   if (model === 'deepseek-v4-1-flash-260910') return 'DeepSeek V4.1 Flash'
   return model
@@ -444,7 +445,7 @@ export function TrafficPacks({
                         )}
                         {isClassroom && (
                           <div className='bg-primary text-primary-foreground absolute top-0 right-0 rounded-bl-lg px-3 py-1 text-xs font-medium'>
-                            {t('IF.Learn · DeepSeek')}
+                            {t('IF.Learn starter pack')}
                           </div>
                         )}
                         <CardHeader>

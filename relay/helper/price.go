@@ -3,10 +3,10 @@ package helper
 import (
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -78,9 +78,11 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		if err != nil {
 			return hosttypes.PriceData{}, fmt.Errorf("V1 product price unavailable: %w", err)
 		}
-		if info.ProductBillingMultiplier <= 0 || math.Abs(productPrice.BillingMultiplier-info.ProductBillingMultiplier) > 0.000001 {
-			return hosttypes.PriceData{}, errors.New("V1 product billing multiplier does not match its immutable price version")
-		}
+		// The immutable product/model/version row is authoritative. This permits
+		// IF.Learn to share one entitlement pool while DeepSeek settles at 0.60
+		// and Qwen settles at 1.00, without stacking a token/global multiplier.
+		info.ProductBillingMultiplier = productPrice.BillingMultiplier
+		common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, productPrice.BillingMultiplier)
 		groupRatioInfo := HandleGroupRatio(c, info)
 		return modelPriceHelperTiered(c, info, promptTokens, meta, groupRatioInfo, productPrice.BillingExpression)
 	}

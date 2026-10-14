@@ -55,9 +55,10 @@ var frozenV1BillingMultipliers = map[string]float64{
 }
 
 type PriceComponents struct {
-	Input       float64 `json:"input"`
-	CachedInput float64 `json:"cached_input"`
-	Output      float64 `json:"output"`
+	Input         float64 `json:"input"`
+	CachedInput   float64 `json:"cached_input"`
+	CacheCreation float64 `json:"cache_creation,omitempty"`
+	Output        float64 `json:"output"`
 }
 
 type ProductRoutePolicy struct {
@@ -100,9 +101,9 @@ func explicitModelIds(scope string) []string {
 }
 
 func validPositivePriceComponents(value PriceComponents) bool {
-	return value.Input > 0 && value.Output > 0 && value.CachedInput >= 0 &&
-		!math.IsNaN(value.Input) && !math.IsNaN(value.CachedInput) && !math.IsNaN(value.Output) &&
-		!math.IsInf(value.Input, 0) && !math.IsInf(value.CachedInput, 0) && !math.IsInf(value.Output, 0)
+	return value.Input > 0 && value.Output > 0 && value.CachedInput >= 0 && value.CacheCreation >= 0 &&
+		!math.IsNaN(value.Input) && !math.IsNaN(value.CachedInput) && !math.IsNaN(value.CacheCreation) && !math.IsNaN(value.Output) &&
+		!math.IsInf(value.Input, 0) && !math.IsInf(value.CachedInput, 0) && !math.IsInf(value.CacheCreation, 0) && !math.IsInf(value.Output, 0)
 }
 
 func IsV1ProductType(productType string) bool {
@@ -136,6 +137,17 @@ func UsesVersionedProductPricing(productType string) bool {
 func ExpectedV1BillingMultiplier(productType string) (float64, bool) {
 	multiplier, ok := frozenV1BillingMultipliers[strings.TrimSpace(productType)]
 	return multiplier, ok
+}
+
+// ExpectedProductPriceBillingMultiplier keeps the plan-level multiplier as a
+// backwards-compatible entitlement default while allowing an immutable price
+// version to define a different multiplier for one exact model. IF.Learn is
+// the only V1 product with mixed model-level pricing.
+func ExpectedProductPriceBillingMultiplier(productType string, modelName string) (float64, bool) {
+	if strings.TrimSpace(productType) == ProductTypePackDeepSeekClassroom && strings.TrimSpace(modelName) == ClassroomModelQwen {
+		return 1, true
+	}
+	return ExpectedV1BillingMultiplier(productType)
 }
 
 // ValidateV1Contract validates only plans that opt in to the frozen CILAI V1
@@ -259,17 +271,24 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 			if p.ProductFamily != "deepseek_classroom" {
 				return errors.New("pack_deepseek_classroom product_family must be deepseek_classroom")
 			}
-			expectedModels := []string{"deepseek-v4-1-flash-260910", "deepseek-v4-flash-ga-260731"}
+			expectedModels := []string{ClassroomModelV41, ClassroomModelV4GA, ClassroomModelQwen}
+			if p.PriceVersion == ClassroomLegacyPriceVersion {
+				expectedModels = []string{ClassroomModelV41, ClassroomModelV4GA}
+			}
 			if !sameStringSet(explicitModelIds(p.ModelScope), expectedModels) {
-				return errors.New("pack_deepseek_classroom must allow exactly the two classroom DeepSeek Flash models")
+				return errors.New("pack_deepseek_classroom model scope does not match its price version")
 			}
 			if p.MaxPurchasePerUser != 1 {
 				return errors.New("pack_deepseek_classroom max_purchase_per_user must be 1")
 			}
 			for _, modelName := range expectedModels {
 				channels := policy.AllowedChannels[modelName]
-				if len(channels) != 1 || channels[0] != 15 {
-					return fmt.Errorf("pack_deepseek_classroom model %s must be restricted to channel 15", modelName)
+				expectedChannel := 15
+				if modelName == ClassroomModelQwen {
+					expectedChannel = 14
+				}
+				if len(channels) != 1 || channels[0] != expectedChannel {
+					return fmt.Errorf("pack_deepseek_classroom model %s must be restricted to channel %d", modelName, expectedChannel)
 				}
 			}
 		}
@@ -343,7 +362,7 @@ func (p *ProductPrice) ValidateV1() error {
 	if RequiresStrictV1RoutePolicy(p.ProductType) && p.FallbackAllowed {
 		return errors.New("V1 product prices must fail closed and cannot enable route fallback")
 	}
-	expectedMultiplier, ok := ExpectedV1BillingMultiplier(p.ProductType)
+	expectedMultiplier, ok := ExpectedProductPriceBillingMultiplier(p.ProductType, p.Model)
 	if !ok || math.Abs(expectedMultiplier-p.BillingMultiplier) > 0.000001 {
 		return fmt.Errorf("product price billing_multiplier for %s must be %.2f", p.ProductType, expectedMultiplier)
 	}
@@ -378,11 +397,15 @@ func (p *ProductPrice) ValidateV1() error {
 		seen[channelId] = struct{}{}
 	}
 	if p.ProductType == ProductTypePackDeepSeekClassroom {
-		if p.Model != ClassroomModelV41 && p.Model != ClassroomModelV4GA {
+		if p.Model != ClassroomModelV41 && p.Model != ClassroomModelV4GA && p.Model != ClassroomModelQwen {
 			return errors.New("classroom product price model is not allowed")
 		}
-		if len(channelIds) != 1 || channelIds[0] != 15 {
-			return errors.New("classroom product prices must be restricted to channel 15")
+		expectedChannel := 15
+		if p.Model == ClassroomModelQwen {
+			expectedChannel = 14
+		}
+		if len(channelIds) != 1 || channelIds[0] != expectedChannel {
+			return fmt.Errorf("classroom product price for %s must be restricted to channel %d", p.Model, expectedChannel)
 		}
 	}
 	var cost PriceComponents
@@ -393,7 +416,7 @@ func (p *ProductPrice) ValidateV1() error {
 	if err := common.UnmarshalJsonStr(strings.TrimSpace(p.UpstreamSettlementPrice), &upstream); err != nil {
 		return errors.New("upstream_settlement_price must contain valid price components")
 	}
-	if upstream.Input > cost.Input || upstream.CachedInput > cost.CachedInput || upstream.Output > cost.Output {
+	if upstream.Input > cost.Input || upstream.CachedInput > cost.CachedInput || upstream.CacheCreation > cost.CacheCreation || upstream.Output > cost.Output {
 		return errors.New("upstream_settlement_price exceeds max_upstream_cost")
 	}
 	return nil
@@ -488,7 +511,8 @@ func validateV1ProductPriceCatalogTx(tx *gorm.DB, plan *SubscriptionPlan) error 
 		if err := price.ValidateV1(); err != nil {
 			return fmt.Errorf("cannot sell %s: %w", plan.ProductCode, err)
 		}
-		if math.Abs(price.BillingMultiplier-plan.BillingMultiplier) > 0.000001 {
+		expectedMultiplier, ok := ExpectedProductPriceBillingMultiplier(plan.ProductType, modelName)
+		if !ok || math.Abs(price.BillingMultiplier-expectedMultiplier) > 0.000001 {
 			return fmt.Errorf("cannot sell %s: billing multiplier mismatch for model %s", plan.ProductCode, modelName)
 		}
 		policy, err := ParseProductRoutePolicy(plan.AllowedChannels, plan.MaxUpstreamCost, plan.FallbackAllowed)
@@ -532,6 +556,7 @@ func sameChannelSet(left []int, right []int) bool {
 func samePriceComponents(left PriceComponents, right PriceComponents) bool {
 	return math.Abs(left.Input-right.Input) <= 0.000001 &&
 		math.Abs(left.CachedInput-right.CachedInput) <= 0.000001 &&
+		math.Abs(left.CacheCreation-right.CacheCreation) <= 0.000001 &&
 		math.Abs(left.Output-right.Output) <= 0.000001
 }
 

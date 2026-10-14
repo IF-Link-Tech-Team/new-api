@@ -8,6 +8,7 @@ the Free Software Foundation, either version 3 of the License, or
 */
 
 export const CLASSROOM_PREFERRED_MODELS = [
+  'qwen3.8-flash',
   'deepseek-v4-flash-ga-260731',
   'deepseek-v4-1-flash-260910',
 ] as const

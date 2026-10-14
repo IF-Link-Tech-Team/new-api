@@ -82,7 +82,7 @@ const SETUP_GUIDE_VISIBILITY_STORAGE_KEY =
 
 const SETUP_GUIDE_CODE_PATTERN = [
   'const response = await client.chat.completions.create({',
-  "  model: 'deepseek-v4-flash-ga-260731',",
+  "  model: 'qwen3.8-flash',",
   "  messages: [{ role: 'user', content: '你好' }],",
   '})',
   '',
