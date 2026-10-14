@@ -12,6 +12,7 @@ import { test } from 'vitest'
 import {
   getProductComputePointsLabel,
   getProductDisplayName,
+  parseModelScope,
 } from './product-display'
 
 test('uses the IF.Learn public name and the RMB display conversion', () => {
@@ -24,6 +25,13 @@ test('uses the IF.Learn public name and the RMB display conversion', () => {
 
   assert.equal(getProductDisplayName(plan), 'IF.Learn 启动包')
   assert.equal(getProductComputePointsLabel(plan), '10,000 算力点')
+})
+
+test('parses exact API model IDs from the configured model scope', () => {
+  assert.deepEqual(
+    parseModelScope(' qwen3.8-flash,deepseek-v4-1-flash-260910,qwen3.8-flash '),
+    ['qwen3.8-flash', 'deepseek-v4-1-flash-260910']
+  )
 })
 
 test('does not guess a compute point value for non-CNY products', () => {

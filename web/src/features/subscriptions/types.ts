@@ -63,6 +63,7 @@ export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>
 export interface PlanRecord {
   plan: SubscriptionPlan
   product_id: string
+  billing_multipliers?: Record<string, number>
 }
 
 // ============================================================================
@@ -97,6 +98,7 @@ export type UserSubscription = z.infer<typeof userSubscriptionSchema>
 
 export interface UserSubscriptionRecord {
   subscription: UserSubscription
+  billing_multipliers?: Record<string, number>
   plan_title?: string
   plan_subtitle?: string
   plan_price_amount?: number

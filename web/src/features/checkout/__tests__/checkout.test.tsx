@@ -47,6 +47,7 @@ async function renderCheckout(paymentEnabled: boolean) {
         success: true,
         data: {
           product_id: 'pro',
+          billing_multipliers: { 'deepseek-v4': 0.6 },
           plan: {
             id: 15,
             title: 'Backend Pro',
@@ -81,6 +82,8 @@ test('reads server-owned product price and redemption state without creating an 
   const requests = await renderCheckout(false)
   expect(screen.getByText('¥79.00')).toBeVisible()
   expect(screen.getByText('deepseek-v4')).toBeVisible()
+  expect(screen.getByText(/0.60/)).toBeVisible()
+  expect(screen.getByRole('button', { name: /deepseek-v4/ })).toBeEnabled()
   expect(screen.getByRole('button', { name: 'Redeem now' })).toBeDisabled()
   expect(
     screen.getByText('Redemption is currently paused for this product.')

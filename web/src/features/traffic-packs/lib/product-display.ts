@@ -12,6 +12,17 @@ import { cnyToComputePoints, formatComputePoints } from '@/lib/compute-points'
 export const IF_LEARN_PRODUCT_TYPE = 'pack_deepseek_classroom'
 export const IF_LEARN_PRODUCT_NAME = 'IF.Learn 启动包'
 
+export function parseModelScope(modelScope?: string): string[] {
+  return [
+    ...new Set(
+      (modelScope || '')
+        .split(',')
+        .map((model) => model.trim())
+        .filter(Boolean)
+    ),
+  ]
+}
+
 export function isIfLearnPlan(
   plan: Pick<SubscriptionPlan, 'product_type'> | undefined
 ): boolean {
