@@ -73,10 +73,12 @@ func ChatCompletionsResponseToResponsesResponse(resp *dto.OpenAITextResponse, id
 		})
 	}
 	if reasoning := choice.Message.GetReasoningContent(); reasoning != "" {
+		summary := []dto.ResponsesReasoningSummaryPart{{Type: "summary_text", Text: reasoning}}
 		out.Output = append(out.Output, dto.ResponsesOutput{
-			Type:   responsesOutputTypeReasoning,
-			ID:     fmt.Sprintf("%s_reasoning_0", id),
-			Status: responseOutputStatus(out),
+			Type:    responsesOutputTypeReasoning,
+			ID:      fmt.Sprintf("%s_reasoning_0", id),
+			Status:  responseOutputStatus(out),
+			Summary: &summary,
 			Content: []dto.ResponsesOutputContent{
 				{
 					Type: "summary_text",
