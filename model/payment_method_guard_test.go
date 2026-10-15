@@ -365,8 +365,8 @@ func TestCompleteTopUpPaymentPreservesWalletLimitAndCreditsOnce(t *testing.T) {
 		blocked bool
 	}{
 		{"normal credit", 7, false},
-		{"exact wallet ceiling", common.MaxWalletQuota - 10, false},
-		{"reject wallet overflow", common.MaxWalletQuota - 9, true},
+		{"exact wallet ceiling", common.MaxWalletQuota - 50, false},
+		{"reject wallet overflow", common.MaxWalletQuota - 49, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			truncateTables(t)
@@ -386,15 +386,15 @@ func TestCompleteTopUpPaymentPreservesWalletLimitAndCreditsOnce(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.True(t, credited)
-			assert.Equal(t, 10, quota)
+			assert.Equal(t, 50, quota)
 			_, quota, credited, err = CompleteTopUpPayment(order.TradeNo, PaymentProviderIFLinkPay, receipt)
 			require.NoError(t, err)
 			require.False(t, credited)
 			assert.Zero(t, quota)
-			assert.Equal(t, tc.initial+10, getUserQuotaForPaymentGuardTest(t, user.Id))
+			assert.Equal(t, tc.initial+50, getUserQuotaForPaymentGuardTest(t, user.Id))
 			cached, err := GetUserCache(user.Id)
 			require.NoError(t, err)
-			assert.Equal(t, tc.initial+10, cached.Quota)
+			assert.Equal(t, tc.initial+50, cached.Quota)
 		})
 	}
 }
