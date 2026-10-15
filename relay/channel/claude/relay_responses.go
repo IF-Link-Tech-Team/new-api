@@ -42,6 +42,15 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 	// In that case the scanner stops without a transport error and the partial
 	// upstream usage remains billable.
 	streamFailed := false
+	messageStopped := false
+	info.StreamStatus.RequireTerminal()
+	stopScanner := func(sr *helper.StreamResult) {
+		if streamErr != nil {
+			sr.Stop(streamErr)
+		} else {
+			sr.Stop(nil)
+		}
+	}
 
 	sendResponsesEvent := func(eventType string, payload dto.ResponsesStreamResponse) bool {
 		payload.Type = eventType
@@ -69,6 +78,9 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		return sendResponsesEvent(event.Type, event.Payload)
 	}
 	failResponsesStream := func(err error) bool {
+		info.StreamStatus.MarkFailed(string(types.ErrorCodeBadResponse), "server_error", http.StatusBadGateway)
+		usage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
+		state.SetUsage(&usage)
 		failureResults, handled := state.FailResponsesStream("server_error", err.Error(), "")
 		if !handled {
 			return false
@@ -89,20 +101,20 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			if failResponsesStream(err) {
 				// A nil streamErr here is intentional: the protocol-level failure
 				// event was delivered, so only the scanner needs to stop.
-				sr.Stop(streamErr)
+				stopScanner(sr)
 				return
 			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-			sr.Stop(streamErr)
+			stopScanner(sr)
 			return
 		}
 		if claudeError := claudeResponse.GetClaudeError(); claudeError != nil && claudeError.Type != "" {
 			if failResponsesStream(fmt.Errorf("%s", claudeError.Message)) {
-				sr.Stop(streamErr)
+				stopScanner(sr)
 				return
 			}
 			streamErr = types.WithClaudeError(*claudeError, http.StatusInternalServerError)
-			sr.Stop(streamErr)
+			stopScanner(sr)
 			return
 		}
 
@@ -113,6 +125,7 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			maybeMarkClaudeRefusal(c, info, *claudeResponse.Delta.StopReason)
 		}
 		if claudeResponse.Type == "message_stop" {
+			messageStopped = true
 			info.StreamStatus.MarkCompleted()
 		}
 		if claudeResponse.Type == "message_start" && claudeResponse.Message != nil {
@@ -124,16 +137,16 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		hostedEvents, consumed, err := hostedBridge.Convert(&claudeResponse, state)
 		if err != nil {
 			if failResponsesStream(err) {
-				sr.Stop(streamErr)
+				stopScanner(sr)
 				return
 			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
-			sr.Stop(streamErr)
+			stopScanner(sr)
 			return
 		}
 		for _, event := range hostedEvents {
 			if !sendResponsesEvent(event.Type, event.Payload) {
-				sr.Stop(streamErr)
+				stopScanner(sr)
 				return
 			}
 		}
@@ -144,16 +157,16 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		results, err := service.ConvertStreamResponseChunk(c, info, state, &claudeResponse)
 		if err != nil {
 			if failResponsesStream(err) {
-				sr.Stop(streamErr)
+				stopScanner(sr)
 				return
 			}
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
-			sr.Stop(streamErr)
+			stopScanner(sr)
 			return
 		}
 		for _, result := range results {
 			if !sendResult(result) {
-				sr.Stop(streamErr)
+				stopScanner(sr)
 				return
 			}
 		}
@@ -163,6 +176,13 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 	}
 	if streamFailed {
 		return claudeInfo.Usage, nil
+	}
+	if !messageStopped {
+		err := fmt.Errorf("Claude stream ended without message_stop")
+		if failResponsesStream(err) {
+			return claudeInfo.Usage, streamErr
+		}
+		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
