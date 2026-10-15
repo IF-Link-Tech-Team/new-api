@@ -71,7 +71,6 @@ type SubscriptionFunding struct {
 	requestId      string
 	userId         int
 	modelName      string
-	amount         int64 // 预扣的订阅额度（subConsume）
 	subscriptionId int
 	// boundSubscriptionId > 0 时,PreConsume 强制只扣这一份订阅（token 强绑定场景）。
 	boundSubscriptionId int
@@ -85,9 +84,8 @@ type SubscriptionFunding struct {
 
 func (s *SubscriptionFunding) Source() string { return BillingSourceSubscription }
 
-func (s *SubscriptionFunding) PreConsume(_ int) error {
-	// amount 参数被忽略，使用内部 s.amount（已在构造时根据 preConsumedQuota 计算）
-	res, err := model.PreConsumeUserSubscription(s.requestId, s.userId, s.modelName, 0, s.amount, s.boundSubscriptionId)
+func (s *SubscriptionFunding) PreConsume(amount int) error {
+	res, err := model.PreConsumeUserSubscription(s.requestId, s.userId, s.modelName, 0, int64(amount), s.boundSubscriptionId)
 	if err != nil {
 		return err
 	}
