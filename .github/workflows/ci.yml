@@ -108,7 +108,7 @@ jobs:
       matrix:
         include:
           - package: model
-            tests: 'TestPostgres|TestSubscriptionReservation|TestTopUpWalletQuota|Test.*PaymentReceipt|TestManualCompleteTopUp'
+            tests: 'TestPostgres|TestSubscriptionReservation|TestTopUp|Test.*PaymentReceipt|TestMonthlyTiersShareOne|TestMonthlyUpgradeKeeps|TestRepeatedPackPurchases|TestValidateV1ContractRejectsFrozenRuleDrift'
           - package: service
             tests: 'TestSubscriptionBillingSession|TestBillingSessionRefundIsTerminal'
           - package: controller
