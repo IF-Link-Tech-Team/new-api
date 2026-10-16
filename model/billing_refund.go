@@ -33,6 +33,7 @@ type BillingRefund struct {
 	SubscriptionQuota int64  `json:"subscription_quota" gorm:"type:bigint"`
 	ExtraQuota        int64  `json:"extra_quota" gorm:"type:bigint"`
 	TokenQuota        int64  `json:"token_quota" gorm:"type:bigint"`
+	SettlementQuota   int64  `json:"settlement_quota" gorm:"type:bigint"`
 	Status            string `json:"status" gorm:"type:varchar(32);index"`
 	Attempts          int    `json:"attempts"`
 	NextRetryAt       int64  `json:"next_retry_at" gorm:"type:bigint;index"`
@@ -63,6 +64,32 @@ func SaveBillingRefundReservation(receipt *BillingRefund) error {
 	}
 	if result.RowsAffected != 1 {
 		return errors.New("refund receipt is not reservable")
+	}
+	return nil
+}
+
+func PrepareBillingRefundResize(id int64, walletQuota, tokenQuota, extraQuota int64) error {
+	result := DB.Model(&BillingRefund{}).Where("id = ? AND status = ?", id, BillingRefundReserved).Updates(map[string]any{
+		"status": BillingRefundPrepared, "wallet_quota": walletQuota, "token_quota": tokenQuota, "extra_quota": extraQuota, "updated_at": common.GetTimestamp(),
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("billing reservation receipt state conflict")
+	}
+	return nil
+}
+
+func BeginBillingRefundSettlement(id int64, targetQuota int) error {
+	result := DB.Model(&BillingRefund{}).Where("id = ? AND status = ?", id, BillingRefundReserved).Updates(map[string]any{
+		"status": BillingRefundSettling, "settlement_quota": int64(targetQuota), "updated_at": common.GetTimestamp(),
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("billing settlement already started or receipt terminal")
 	}
 	return nil
 }

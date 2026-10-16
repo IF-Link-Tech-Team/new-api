@@ -176,10 +176,46 @@ func TestBillingRefundPartialSettlementRetainsErrorAndCannotRefundSettledFunds(t
 	require.NoError(t, model.DB.First(&receipt, session.refundReceipt.ID).Error)
 	assert.Equal(t, model.BillingRefundReview, receipt.Status)
 	assert.Contains(t, receipt.LastError, "settlement key outage")
+	assert.EqualValues(t, 60, receipt.SettlementQuota)
 	require.Error(t, model.QueueBillingRefund(receipt.ID))
 	alerts, err := model.CountBillingRefundAlerts(time.Now().Unix())
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, alerts)
+}
+
+func TestBillingRefundAmbiguousReservationAndSettlementKeepTargetsWithoutAutomaticReplay(t *testing.T) {
+	for _, action := range []string{"reserve", "settle"} {
+		t.Run(action, func(t *testing.T) {
+			session, _ := seedWalletRefundSession(t)
+			const callback = "test:ambiguous-wallet-write"
+			require.NoError(t, model.DB.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == "users" {
+					tx.AddError(errors.New("synthetic unknown wallet outcome"))
+				}
+			}))
+			t.Cleanup(func() { require.NoError(t, model.DB.Callback().Update().Remove(callback)) })
+			if action == "reserve" {
+				require.Error(t, session.Reserve(160))
+			} else {
+				require.Error(t, session.Settle(60))
+			}
+			require.NoError(t, model.DB.Callback().Update().Remove(callback))
+			var receipt model.BillingRefund
+			require.NoError(t, model.DB.First(&receipt, session.refundReceipt.ID).Error)
+			if action == "reserve" {
+				assert.Equal(t, model.BillingRefundPrepared, receipt.Status)
+				assert.EqualValues(t, 160, receipt.WalletQuota)
+				assert.EqualValues(t, 160, receipt.TokenQuota)
+			} else {
+				assert.Equal(t, model.BillingRefundSettling, receipt.Status)
+				assert.EqualValues(t, 60, receipt.SettlementQuota)
+				require.Error(t, session.Settle(60), "an unknown commit outcome cannot replay the debit/credit")
+			}
+			require.Error(t, model.QueueBillingRefund(receipt.ID))
+			assert.Equal(t, 900, getUserQuota(t, 701))
+			assert.Equal(t, 900, getTokenRemainQuota(t, 701))
+		})
+	}
 }
 
 func TestBillingRefundReconciliationUsesExistingTaskAndRecordsFailure(t *testing.T) {

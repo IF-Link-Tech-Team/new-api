@@ -57,7 +57,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 		return nil
 	}
 	if s.refundReceipt != nil {
-		if err := model.TransitionBillingRefund(s.refundReceipt.ID, []string{model.BillingRefundReserved, model.BillingRefundSettling}, model.BillingRefundSettling); err != nil {
+		if err := model.BeginBillingRefundSettlement(s.refundReceipt.ID, actualQuota); err != nil {
 			return err
 		}
 	}
@@ -191,7 +191,16 @@ func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) er
 		return nil
 	}
 	if s.refundReceipt != nil {
-		if err := model.TransitionBillingRefund(s.refundReceipt.ID, []string{model.BillingRefundReserved}, model.BillingRefundPrepared); err != nil {
+		walletQuota, tokenQuota, extraQuota := s.refundReceipt.WalletQuota, s.refundReceipt.TokenQuota, s.refundReceipt.ExtraQuota
+		if s.funding.Source() == BillingSourceWallet {
+			walletQuota += int64(delta)
+		} else {
+			extraQuota += int64(delta)
+		}
+		if !s.relayInfo.IsPlayground {
+			tokenQuota += int64(delta)
+		}
+		if err := model.PrepareBillingRefundResize(s.refundReceipt.ID, walletQuota, tokenQuota, extraQuota); err != nil {
 			return err
 		}
 	}
