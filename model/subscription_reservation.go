@@ -127,7 +127,9 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 // reservation amount remains authoritative until explicit reserve/settle.
 func findSubscriptionReservationTx(tx *gorm.DB, requestId string, userId, boundSubscriptionId int) (*SubscriptionPreConsumeResult, error) {
 	var record SubscriptionPreConsumeRecord
-	query := tx.Where("request_id = ?", requestId).Limit(1).Find(&record)
+	// Isolate this query from an initialized FOR UPDATE statement. Reusing that
+	// statement for a different model would retain its table and predicates.
+	query := tx.Session(&gorm.Session{}).Where("request_id = ?", requestId).Limit(1).Find(&record)
 	if query.Error != nil {
 		return nil, query.Error
 	}
@@ -141,7 +143,10 @@ func findSubscriptionReservationTx(tx *gorm.DB, requestId string, userId, boundS
 		return nil, errors.New("subscription pre-consume already refunded")
 	}
 	var sub UserSubscription
-	if err := tx.Where("id = ? AND user_id = ?", record.UserSubscriptionId, userId).First(&sub).Error; err != nil {
+	// The pool was locked before the locking record recheck. This metadata read
+	// must not acquire another pool lock after the record (e.g. an expired pool
+	// outside the active selection), which would invert the refund lock order.
+	if err := tx.Session(&gorm.Session{NewDB: true}).Where("id = ? AND user_id = ?", record.UserSubscriptionId, userId).First(&sub).Error; err != nil {
 		return nil, err
 	}
 	return &SubscriptionPreConsumeResult{
