@@ -88,15 +88,20 @@ func TestSubscriptionBillingSessionConcurrentSettlementAndRefund(t *testing.T) {
 	settleErr := <-settleDone
 	<-refundDone
 	wantUsed, wantKey := int64(60), 940
+	wantStatus := model.BillingRefundSettled
 	if settleErr != nil {
 		require.ErrorContains(t, settleErr, "already refunded")
 		wantUsed, wantKey = 0, 1000
+		wantStatus = model.BillingRefundSucceeded
 	}
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
 		var sub model.UserSubscription
 		assert.NoError(collect, model.DB.First(&sub, subID).Error)
 		assert.Equal(collect, wantUsed, sub.AmountUsed)
 		assert.Equal(collect, wantKey, getTokenRemainQuota(t, 601))
+		var receipt model.BillingRefund
+		assert.NoError(collect, model.DB.Where("id = ?", session.refundReceipt.ID).Find(&receipt).Error)
+		assert.Equal(collect, wantStatus, receipt.Status)
 	}, 3*time.Second, 5*time.Millisecond)
 	assert.Equal(t, 1000, getUserQuota(t, 601), "bound keys must not touch wallet balance")
 	assert.False(t, session.NeedsRefund())
@@ -160,6 +165,9 @@ func TestBillingSessionRefundIsTerminalForSettlement(t *testing.T) {
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
 		assert.Equal(collect, 1000, getUserQuota(t, 501))
 		assert.Equal(collect, 1000, getTokenRemainQuota(t, 501))
+		var receipt model.BillingRefund
+		assert.NoError(collect, model.DB.Where("id = ?", session.refundReceipt.ID).Find(&receipt).Error)
+		assert.Equal(collect, model.BillingRefundSucceeded, receipt.Status)
 	}, time.Second, 5*time.Millisecond)
 	assert.Error(t, settleErr, "a late settlement must not refund a failed request twice")
 }

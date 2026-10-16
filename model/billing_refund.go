@@ -1,8 +1,10 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -110,7 +112,9 @@ func TransitionBillingRefund(id int64, from []string, to string) error {
 }
 
 func QueueBillingRefund(id int64) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var receipt BillingRefund
 		if err := lockForUpdate(tx).First(&receipt, id).Error; err != nil {
 			return err
@@ -145,8 +149,11 @@ func FinishBillingRefundSettlement(id int64, failure string) error {
 // one transaction. Cache invalidation is an idempotent second phase: retries of
 // cache_pending never credit funds again, including after an ambiguous COMMIT.
 func ProcessBillingRefund(id int64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db := DB.WithContext(ctx)
 	var receipt BillingRefund
-	err := DB.Transaction(func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		if err := lockForUpdate(tx).First(&receipt, id).Error; err != nil {
 			return err
 		}
@@ -216,20 +223,22 @@ func ProcessBillingRefund(id int64) error {
 	}
 	if common.RedisEnabled && receipt.TokenID > 0 {
 		var token Token
-		if err := DB.Unscoped().Select("key").First(&token, receipt.TokenID).Error; err != nil {
+		if err := db.Unscoped().Select("key").First(&token, receipt.TokenID).Error; err != nil {
 			return err
 		}
 		if err := invalidateTokenCacheForMutation(token.Key); err != nil {
 			return err
 		}
 	}
-	return DB.Model(&BillingRefund{}).Where("id = ? AND status = ?", id, BillingRefundCachePending).Updates(map[string]any{
+	return db.Model(&BillingRefund{}).Where("id = ? AND status = ?", id, BillingRefundCachePending).Updates(map[string]any{
 		"status": BillingRefundSucceeded, "last_error": "", "next_retry_at": 0, "updated_at": common.GetTimestamp(),
 	}).Error
 }
 
 func RecordBillingRefundFailure(id int64, failure error) error {
-	return DB.Transaction(func(tx *gorm.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var receipt BillingRefund
 		if err := lockForUpdate(tx).First(&receipt, id).Error; err != nil {
 			return err
