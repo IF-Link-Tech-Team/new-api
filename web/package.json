@@ -4,6 +4,7 @@
   "private": false,
   "type": "module",
   "scripts": {
+    "test": "bun scripts/test-isolated.mjs",
     "dev": "rsbuild dev",
     "build": "rsbuild build",
     "build:check": "tsgo -b && rsbuild build",

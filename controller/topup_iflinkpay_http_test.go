@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/internal/testutil"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
@@ -26,7 +28,13 @@ func setupIFLinkPayHTTPTest(t *testing.T) *model.User {
 	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
 	settings := operation_setting.GetPaymentSetting()
 	previousSettings := *settings
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	var db *gorm.DB
+	var err error
+	if dsn := os.Getenv("CILAI_TEST_POSTGRES_DSN"); dsn != "" {
+		db, err = testutil.OpenPostgres(dsn)
+	} else {
+		db, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	}
 	require.NoError(t, err)
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
@@ -34,6 +42,10 @@ func setupIFLinkPayHTTPTest(t *testing.T) *model.User {
 	model.DB, model.LOG_DB = db, db
 	common.RedisEnabled, common.QuotaPerUnit = false, 500_000
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	if os.Getenv("CILAI_TEST_POSTGRES_DSN") != "" {
+		common.SetDatabaseTypes(common.DatabaseTypePostgreSQL, common.DatabaseTypePostgreSQL)
+		sqlDB.SetMaxOpenConns(10)
+	}
 	settings.ComplianceConfirmed, settings.ComplianceTermsVersion = true, operation_setting.CurrentComplianceTermsVersion
 	settings.IFLinkPaySecret, settings.IFLinkPayBaseURL = "isolated-payment-secret", "https://payments.example.invalid"
 	t.Cleanup(func() {
@@ -44,9 +56,39 @@ func setupIFLinkPayHTTPTest(t *testing.T) *model.User {
 		*settings = previousSettings
 	})
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}))
+	if os.Getenv("CILAI_TEST_POSTGRES_DSN") != "" {
+		t.Cleanup(func() {
+			for _, table := range []string{"top_ups", "logs", "users"} {
+				require.NoError(t, db.Exec("DELETE FROM "+table).Error)
+			}
+		})
+	}
 	user := &model.User{Username: "iflinkpay-http", AffCode: "iflinkpay-http", Status: common.UserStatusEnabled, Quota: 100}
 	require.NoError(t, db.Create(user).Error)
 	return user
+}
+
+func TestIFLinkPayHTTPCallbackAndManualCompletionCreditOnlyOnce(t *testing.T) {
+	user := setupIFLinkPayHTTPTest(t)
+	order := &model.TopUp{UserId: user.Id, Amount: 1, Money: 1.49, TradeNo: "callback-manual-race", Currency: "CNY",
+		PaymentProvider: model.PaymentProviderIFLinkPay, PaymentMethod: model.PaymentMethodIFLinkPay, Status: common.TopUpStatusPending}
+	require.NoError(t, order.Insert())
+	notify := IFLinkPayNotifyRequest{UID: strconv.Itoa(user.Id), Amount: 149, Order: order.TradeNo, TS: time.Now().Unix()}
+	notify.Sign = ifLinkPaySign(notify.UID, notify.Amount, notify.Order, notify.TS, operation_setting.GetIFLinkPaySecret())
+	start, callbackDone, manualDone := make(chan struct{}), make(chan int, 1), make(chan error, 1)
+	go func() { <-start; callbackDone <- invokeIFLinkPayNotify(t, notify) }()
+	go func() { <-start; manualDone <- model.ManualCompleteTopUp(order.TradeNo, "127.0.0.1") }()
+	close(start)
+	assert.Zero(t, <-callbackDone)
+	require.NoError(t, <-manualDone)
+	assert.Zero(t, invokeIFLinkPayNotify(t, notify))
+	var after model.User
+	require.NoError(t, model.DB.First(&after, user.Id).Error)
+	assert.Equal(t, 745_100, after.Quota)
+	assert.Equal(t, common.TopUpStatusSuccess, model.GetTopUpByTradeNo(order.TradeNo).Status)
+	var logs int64
+	require.NoError(t, model.LOG_DB.Model(&model.Log{}).Where("user_id = ? AND type = ?", user.Id, model.LogTypeTopup).Count(&logs).Error)
+	assert.EqualValues(t, 1, logs)
 }
 
 func TestIFLinkPayHTTPFractionalPurchaseAndCallbackReplay(t *testing.T) {
