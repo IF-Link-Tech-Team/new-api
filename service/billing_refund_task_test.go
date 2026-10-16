@@ -151,6 +151,9 @@ func TestBillingRefundRejectedReserveOrSettlementStillRefundsOriginalReservation
 				assert.NoError(collect, model.DB.First(&sub, subID).Error)
 				assert.Zero(collect, sub.AmountUsed)
 				assert.Equal(collect, 1000, getTokenRemainQuota(t, 601))
+				var receipt model.BillingRefund
+				assert.NoError(collect, model.DB.Where("id = ?", session.refundReceipt.ID).Find(&receipt).Error)
+				assert.Equal(collect, model.BillingRefundSucceeded, receipt.Status)
 			}, 3*time.Second, 5*time.Millisecond)
 		})
 	}
