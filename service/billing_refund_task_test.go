@@ -158,6 +158,30 @@ func TestBillingRefundRejectedReserveOrSettlementStillRefundsOriginalReservation
 	}
 }
 
+func TestBillingRefundPartialSettlementRetainsErrorAndCannotRefundSettledFunds(t *testing.T) {
+	session, c := seedWalletRefundSession(t)
+	const callback = "test:settlement-key-outage"
+	require.NoError(t, model.DB.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "tokens" {
+			tx.AddError(errors.New("synthetic settlement key outage"))
+		}
+	}))
+	t.Cleanup(func() { require.NoError(t, model.DB.Callback().Update().Remove(callback)) })
+	require.ErrorContains(t, session.Settle(60), "settlement key outage")
+	session.Refund(c)
+	assert.False(t, session.NeedsRefund())
+	assert.Equal(t, 940, getUserQuota(t, 701))
+	assert.Equal(t, 900, getTokenRemainQuota(t, 701))
+	var receipt model.BillingRefund
+	require.NoError(t, model.DB.First(&receipt, session.refundReceipt.ID).Error)
+	assert.Equal(t, model.BillingRefundReview, receipt.Status)
+	assert.Contains(t, receipt.LastError, "settlement key outage")
+	require.Error(t, model.QueueBillingRefund(receipt.ID))
+	alerts, err := model.CountBillingRefundAlerts(time.Now().Unix())
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, alerts)
+}
+
 func TestBillingRefundReconciliationUsesExistingTaskAndRecordsFailure(t *testing.T) {
 	setupBillingLifecycleDB(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.SystemTask{}, &model.SystemTaskLock{}))

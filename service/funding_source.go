@@ -59,9 +59,6 @@ func (w *WalletFunding) Settle(delta int) error {
 	if delta == 0 {
 		return nil
 	}
-	if delta > 0 {
-		return model.AdjustUserQuotaDirect(w.userId, -delta)
-	}
 	return model.AdjustUserQuotaDirect(w.userId, -delta)
 }
 
