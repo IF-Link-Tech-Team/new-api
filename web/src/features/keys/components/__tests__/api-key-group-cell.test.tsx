@@ -67,6 +67,9 @@ await i18n.use(initReactI18next).init({
           'Automatically selects the best available group with circuit breaker mechanism',
       },
     },
+    zh: {
+      translation: { Auto: '自动', 'Cross-group': '跨组', Ratio: '倍率' },
+    },
   },
 })
 
@@ -232,5 +235,41 @@ describe('API key group table cell', () => {
 
     await act(async () => root.unmount())
     container.remove()
+  })
+
+  test('keeps the Auto identity visible without ratio data when language changes', async () => {
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    try {
+      await act(async () =>
+        root.render(<CellHarness group='auto' shouldReduceMotion />)
+      )
+      assert.equal(
+        container.querySelector('[data-auto-group-effect="badge"]')
+          ?.textContent,
+        'Auto'
+      )
+      await act(async () => {
+        await i18n.changeLanguage('zh')
+      })
+      assert.equal(
+        container.querySelector('[data-auto-group-effect="badge"]')
+          ?.textContent,
+        '自动'
+      )
+      assert.equal(
+        container.querySelector('[data-auto-group-effect="ratio"]'),
+        null
+      )
+      assert.equal(
+        container.querySelector('[data-auto-group-flow-border]'),
+        null
+      )
+    } finally {
+      await act(async () => root.unmount())
+      await i18n.changeLanguage('en')
+      container.remove()
+    }
   })
 })
