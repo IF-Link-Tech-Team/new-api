@@ -140,11 +140,11 @@ jobs:
       matrix:
         include:
           - package: model
-            tests: 'TestPostgres|TestSubscriptionReservation|TestTopUp|Test.*PaymentReceipt|TestMonthlyTiersShareOne|TestMonthlyUpgradeKeeps|TestRepeatedPackPurchases|TestValidateV1ContractRejectsFrozenRuleDrift'
+            tests: 'TestBillingRefund|TestPostgres|TestSubscriptionReservation|TestTopUp|Test.*PaymentReceipt|TestMonthlyTiersShareOne|TestMonthlyUpgradeKeeps|TestRepeatedPackPurchases|TestValidateV1ContractRejectsFrozenRuleDrift'
           - package: service
-            tests: 'TestSubscriptionBillingSession|TestBillingSessionRefundIsTerminal'
+            tests: 'TestBillingRefund|TestSubscriptionBillingSession|TestBillingSessionRefundIsTerminal'
           - package: controller
-            tests: 'TestIFLinkPayHTTP'
+            tests: 'TestIFLinkPayHTTP|TestBillingRefundHTTP'
     services:
       postgres:
         image: postgres:16

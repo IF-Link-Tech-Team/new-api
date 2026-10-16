@@ -2096,39 +2096,41 @@ func RefundSubscriptionPreConsume(requestId string) error {
 	if strings.TrimSpace(requestId) == "" {
 		return errors.New("requestId is empty")
 	}
-	return DB.Transaction(func(tx *gorm.DB) error {
-		var record SubscriptionPreConsumeRecord
-		if err := tx.Where("request_id = ?", requestId).First(&record).Error; err != nil {
+	return DB.Transaction(func(tx *gorm.DB) error { return refundSubscriptionPreConsumeTx(tx, requestId) })
+}
+
+func refundSubscriptionPreConsumeTx(tx *gorm.DB, requestId string) error {
+	var record SubscriptionPreConsumeRecord
+	if err := tx.Where("request_id = ?", requestId).First(&record).Error; err != nil {
+		return err
+	}
+	if record.Status == "refunded" {
+		return nil
+	}
+	// Match reservation's pool -> record lock order. The first read only
+	// locates the immutable pool ID; re-read status under the record lock.
+	if record.PreConsumed > 0 {
+		var sub UserSubscription
+		if err := lockForUpdate(tx).Where("id = ?", record.UserSubscriptionId).First(&sub).Error; err != nil {
 			return err
 		}
-		if record.Status == "refunded" {
-			return nil
-		}
-		// Match reservation's pool -> record lock order. The first read only
-		// locates the immutable pool ID; re-read status under the record lock.
-		if record.PreConsumed > 0 {
-			var sub UserSubscription
-			if err := lockForUpdate(tx).Where("id = ?", record.UserSubscriptionId).First(&sub).Error; err != nil {
-				return err
-			}
-		}
-		if err := lockForUpdate(tx).
-			Where("request_id = ?", requestId).First(&record).Error; err != nil {
-			return err
-		}
-		if record.Status == "refunded" {
-			return nil
-		}
-		if record.PreConsumed <= 0 {
-			record.Status = "refunded"
-			return tx.Save(&record).Error
-		}
-		if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.PreConsumed); err != nil {
-			return err
-		}
+	}
+	if err := lockForUpdate(tx).
+		Where("request_id = ?", requestId).First(&record).Error; err != nil {
+		return err
+	}
+	if record.Status == "refunded" {
+		return nil
+	}
+	if record.PreConsumed <= 0 {
 		record.Status = "refunded"
 		return tx.Save(&record).Error
-	})
+	}
+	if err := postConsumeUserSubscriptionDeltaTx(tx, record.UserSubscriptionId, -record.PreConsumed); err != nil {
+		return err
+	}
+	record.Status = "refunded"
+	return tx.Save(&record).Error
 }
 
 // ResetDueSubscriptions resets subscriptions whose next_reset_time has passed.
@@ -2180,7 +2182,11 @@ func CleanupSubscriptionPreConsumeRecords(olderThanSeconds int64) (int64, error)
 		olderThanSeconds = 7 * 24 * 3600
 	}
 	cutoff := GetDBTimestamp() - olderThanSeconds
-	res := DB.Where("updated_at < ?", cutoff).Delete(&SubscriptionPreConsumeRecord{})
+	// Legacy consumed rows have no durable settlement outcome and cannot be
+	// safely discarded. Pending/review refunds retain their idempotency proof.
+	settled := DB.Model(&BillingRefund{}).Select("request_id").Where("subscription_id > 0 AND status = ?", BillingRefundSettled)
+	protected := DB.Model(&BillingRefund{}).Select("request_id").Where("subscription_id > 0 AND status NOT IN ?", []string{BillingRefundSettled, BillingRefundSucceeded})
+	res := DB.Where("updated_at < ? AND (status = ? OR request_id IN (?)) AND request_id NOT IN (?)", cutoff, "refunded", settled, protected).Delete(&SubscriptionPreConsumeRecord{})
 	return res.RowsAffected, res.Error
 }
 
@@ -2241,7 +2247,7 @@ func postConsumeUserSubscriptionDeltaTx(tx *gorm.DB, userSubscriptionId int, del
 		newUsed = 0
 	}
 	if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
-		return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
+		return fmt.Errorf("%w: subscription used exceeds total, used=%d total=%d", ErrSubscriptionQuotaInsufficient, newUsed, sub.AmountTotal)
 	}
 	sub.AmountUsed = newUsed
 	return tx.Save(&sub).Error

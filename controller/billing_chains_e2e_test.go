@@ -80,7 +80,7 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.Channel{}, &model.Ability{},
-		&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{},
+		&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.BillingRefund{},
 		&model.ProductPrice{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
 		&model.SubscriptionKeyBinding{},
 	))
