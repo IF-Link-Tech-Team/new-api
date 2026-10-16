@@ -1,0 +1,13 @@
+revision,source,outcome,preconsume_dml,reserve_dml,settle_dml,refund_dml,total_dml
+e4722ebab,wallet,exact,2,0,0,0,2
+34b6db14f,wallet,exact,4,0,2,0,6
+e4722ebab,wallet,lower,2,0,2,0,4
+34b6db14f,wallet,lower,4,0,4,0,8
+e4722ebab,wallet,refund-resize,2,2,0,2,6
+34b6db14f,wallet,refund-resize,4,4,0,5,13
+e4722ebab,subscription,exact,3,0,0,0,3
+34b6db14f,subscription,exact,5,0,2,0,7
+e4722ebab,subscription,lower,3,0,2,0,5
+34b6db14f,subscription,lower,5,0,4,0,9
+e4722ebab,subscription,refund-resize,3,2,0,4,9
+34b6db14f,subscription,refund-resize,5,4,0,7,16

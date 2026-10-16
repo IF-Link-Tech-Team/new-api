@@ -66,7 +66,8 @@ func AdminCreateProductPrice(c *gin.Context) {
 
 // AdminSetProductPriceEnabled is the only mutation permitted on an existing
 // price version. Repricing requires a new price_version, while this switch is
-// the fail-closed emergency stop for a model/product combination.
+// the sale switch for a model/product combination. Paid entitlements retain
+// their historical price version; this switch must not erase purchased rights.
 func AdminSetProductPriceEnabled(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
