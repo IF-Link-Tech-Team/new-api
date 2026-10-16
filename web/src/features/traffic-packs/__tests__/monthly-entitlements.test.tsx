@@ -7,38 +7,8 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import assert from 'node:assert/strict'
-import { after, afterEach, test } from 'node:test'
+import { afterEach, test } from 'vitest'
 
-import { Window } from 'happy-dom'
-
-const domWindow = new Window({ url: 'https://token.iflink.tech/plans' })
-const globals = [
-  'window',
-  'self',
-  'document',
-  'navigator',
-  'sessionStorage',
-  'localStorage',
-  'HTMLElement',
-  'HTMLButtonElement',
-  'HTMLInputElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'MouseEvent',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-for (const name of globals) {
-  Object.defineProperty(globalThis, name, {
-    configurable: true,
-    value: domWindow[name],
-  })
-}
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
 const {
@@ -67,13 +37,12 @@ afterEach(async () => {
   api.defaults.adapter = originalAdapter
   sessionStorage.clear()
   document.body.replaceChildren()
-  domWindow.location.href = 'https://token.iflink.tech/plans'
+  window.history.replaceState({}, '', '/plans')
 })
-after(() => domWindow.close())
 
 for (const returnParameter of ['iflinkpay_return', 'alipay_return']) {
   test(`${returnParameter} reloads the provisioned entitlement and shows monthly compute points`, async () => {
-    domWindow.location.href = `https://token.iflink.tech/plans?${returnParameter}=SUB-TEST-PAID`
+    window.history.replaceState({}, '', `/plans?${returnParameter}=SUB-TEST-PAID`)
     const requests: string[] = []
     const subscription = {
       id: 352,
@@ -154,7 +123,7 @@ for (const returnParameter of ['iflinkpay_return', 'alipay_return']) {
     assert.ok(
       requests.filter((path) => path === '/api/subscription/self').length >= 2
     )
-    assert.equal(domWindow.location.search, '')
+    assert.equal(window.location.search, '')
     assert.match(host.textContent ?? '', /37,800 算力点/)
     assert.match(host.textContent ?? '', /39,800 算力点/)
     assert.ok(host.querySelector('[aria-label="复制模型 ID qwen3.8-flash"]'))

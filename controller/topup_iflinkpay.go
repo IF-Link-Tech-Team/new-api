@@ -115,8 +115,8 @@ func RequestIFLinkPay(c *gin.Context) {
 		return
 	}
 
-	// Amount 是兼容旧表结构的整数展示字段,Money 保存已验签的实付人民币;
-	// IFLinkPay 入账以 Money × QuotaPerUnit 计算,避免小数金额被四舍五入。
+	// Money 保存精确到分的实付人民币，IFLinkPay 按 Money × QuotaPerUnit 入账。
+	// Amount 保留历史整数展示口径，不参与 IFLinkPay 额度计算。
 	topUp := &model.TopUp{
 		UserId:          id,
 		Amount:          int64(math.Round(payMoney)),
@@ -128,6 +128,15 @@ func RequestIFLinkPay(c *gin.Context) {
 		CompleteTime:    0,
 		Status:          common.TopUpStatusPending,
 		Currency:        "CNY",
+	}
+	quota, quotaErr := topUp.WalletQuota()
+	if quotaErr != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "充值金额超出可入账额度，请减少单次充值金额"})
+		return
+	}
+	if err := model.ValidateTopUpQuotaCapacity(id, quota); err != nil {
+		common.ApiError(c, err)
+		return
 	}
 	if err := topUp.Insert(); err != nil {
 		logger.LogError(c.Request.Context(), fmt.Sprintf("IFLinkPay 创建充值订单失败 user_id=%d trade_no=%s amount=%.2f error=%q", id, tradeNo, payMoney, err.Error()))

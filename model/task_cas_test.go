@@ -11,10 +11,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/internal/testutil"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
@@ -23,7 +23,7 @@ func TestMain(m *testing.M) {
 	var db *gorm.DB
 	var err error
 	if postgresDSN != "" {
-		db, err = gorm.Open(postgres.Open(postgresDSN), &gorm.Config{})
+		db, err = testutil.OpenPostgres(postgresDSN)
 	} else {
 		db, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	}

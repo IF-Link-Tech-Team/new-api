@@ -29,7 +29,11 @@ import {
 import { useMediaQuery } from '@/hooks'
 import { cn } from '@/lib/utils'
 
-import { GroupRatioBadge, type GroupRatio } from './auto-group-visuals'
+import {
+  AutoGroupBadge,
+  GroupRatioBadge,
+  type GroupRatio,
+} from './auto-group-visuals'
 
 type ApiKeyGroupCellProps = {
   crossGroupRetry: boolean
@@ -74,7 +78,7 @@ export function ApiKeyGroupCell(props: ApiKeyGroupCellProps) {
             tabIndex={0}
             className={cn(
               'ml-0 gap-3 overflow-visible text-xs',
-              isMobile ? 'w-full justify-between' : 'max-w-50'
+              isMobile ? 'w-full justify-between' : 'max-w-64'
             )}
           />
         }
@@ -85,6 +89,7 @@ export function ApiKeyGroupCell(props: ApiKeyGroupCellProps) {
           copyable={false}
           className='px-0'
         />
+        <AutoGroupBadge shouldReduceMotion={props.shouldReduceMotion} />
         <GroupRatioBadge
           ratio={props.ratio}
           isAuto

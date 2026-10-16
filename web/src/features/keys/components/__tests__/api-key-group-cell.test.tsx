@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, test } from 'vitest'
 
@@ -37,6 +37,9 @@ await i18n.use(initReactI18next).init({
         'Automatically selects the best available group with circuit breaker mechanism':
           'Automatically selects the best available group with circuit breaker mechanism',
       },
+    },
+    zh: {
+      translation: { Auto: '自动', 'Cross-group': '跨组', Ratio: '倍率' },
     },
   },
 })
@@ -62,20 +65,19 @@ function CellHarness(props: {
 }
 
 describe('API key group table cell', () => {
-  test('keeps the group and compact localized multiplier together with one subtle flowing edge', () => {
+  test('keeps the Auto identity and localized multiplier visible together', () => {
     const { container } = render(
       <CellHarness group='auto' ratio='自动' crossGroupRetry />
     )
     const group = screen.getByText('Cross-group')
-    const multiplier = screen
-      .getByText('Auto')
-      .closest<HTMLElement>('[data-slot="badge"]')
+    const multiplier = container.querySelector<HTMLElement>('[data-slot="badge"]')
     expect(group).toBeInTheDocument()
+    expect(group.closest('[data-api-key-group-cell]')).toHaveClass('max-w-64')
     expect(multiplier).toHaveClass('h-5', 'min-w-12', 'rounded-md')
     expect(multiplier).not.toHaveTextContent('Ratio')
     expect(container).not.toHaveTextContent('自动')
-    expect(container.querySelector('[data-auto-group-frame]')).toBeNull()
-    const flow = container.querySelector('[data-auto-group-flow-border]')
+    expect(container.querySelector('[data-auto-group-effect="badge"]')).toHaveTextContent('Auto')
+    const flow = container.querySelector('.auto-group-flow-border-subtle')
     expect(flow).toHaveClass('auto-group-flow-border-subtle')
     expect(flow).toHaveAttribute('aria-hidden', 'true')
     expect(group.closest('[data-api-key-group-cell]')).toContainElement(
@@ -87,14 +89,15 @@ describe('API key group table cell', () => {
     const { container } = render(
       <CellHarness group='auto' ratio='Auto' shouldReduceMotion />
     )
-    expect(screen.getByText('Auto')).toBeInTheDocument()
+    expect(screen.getAllByText('Auto')).toHaveLength(2)
     expect(container.querySelector('[data-auto-group-flow-border]')).toBeNull()
   })
 
-  test('does not invent a multiplier while automatic ratio data is unavailable', () => {
-    render(<CellHarness group='auto' />)
+  test('keeps Auto identity without inventing a multiplier when ratio is unavailable', () => {
+    const { container } = render(<CellHarness group='auto' />)
     expect(screen.getByText('Cross-group')).toBeInTheDocument()
-    expect(screen.queryByText('Auto')).not.toBeInTheDocument()
+    expect(screen.getByText('Auto')).toBeInTheDocument()
+    expect(container.querySelector('[data-slot="badge"]')).toBeNull()
   })
 
   test.each([
@@ -156,5 +159,23 @@ describe('API key group table cell', () => {
     expect(screen.getByText('vip')).toBeInTheDocument()
     expect(screen.queryByText('Auto')).not.toBeInTheDocument()
     expect(screen.queryByText('自动')).not.toBeInTheDocument()
+  })
+
+  test('keeps the Auto identity visible without ratio data when language changes', async () => {
+    const { container } = render(<CellHarness group='auto' shouldReduceMotion />)
+    try {
+      expect(screen.getByText('Auto')).toBeInTheDocument()
+      await act(async () => {
+        await i18n.changeLanguage('zh')
+      })
+      expect(screen.getByText('自动')).toBeInTheDocument()
+      expect(screen.getByText('跨组')).toBeInTheDocument()
+      expect(container.querySelector('[data-slot="badge"]')).toBeNull()
+      expect(container.querySelector('[data-auto-group-flow-border]')).toBeNull()
+    } finally {
+      await act(async () => {
+        await i18n.changeLanguage('en')
+      })
+    }
   })
 })
