@@ -355,6 +355,11 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/self/export", middleware.UserAuth(), controller.ExportUserLogs)
 		logRoute.GET("/self/search", middleware.UserAuth(), middleware.SearchRateLimit(), controller.SearchUserLogs)
 
+		refundRoute := apiRouter.Group("/billing-refund")
+		refundRoute.Use(middleware.RootAuth())
+		refundRoute.GET("/", controller.ListBillingRefunds)
+		refundRoute.POST("/:id/review", controller.ReviewBillingRefund)
+
 		systemTaskRoute := apiRouter.Group("/system-task")
 		systemTaskRoute.Use(middleware.RootAuth())
 		{

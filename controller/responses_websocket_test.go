@@ -88,7 +88,8 @@ func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 		setting.ModelRequestRateLimitMutex.Unlock()
 		require.NoError(t, sqlDB.Close())
 	})
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Option{}, &model.ProductPrice{}, &model.BillingRefund{}))
+	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(time.Now().Unix()))
 	// The shared in-memory limiter outlives each database fixture. Give every
 	// user a separate quota bucket, including when the tests run with -count.
 	user := &model.User{Id: 5062000 + int(responsesWSTestUserSequence.Add(1)), Username: "responses-ws-user", Status: common.UserStatusEnabled, Group: "default", Quota: 1000, AuthVersion: 1}
@@ -851,7 +852,12 @@ func TestResponsesWebSocketInitialUpstreamRejectionRefundsReservation(t *testing
 			rejectionError, _ := rejection["error"].(map[string]any)
 			assert.Equal(t, tc.wantType, rejectionError["type"])
 			assert.Equal(t, tc.wantMessage, rejectionError["message"])
-			assert.Equal(t, 2000, <-preConsumed, "the rejected request reserved quota before contacting upstream")
+			select {
+			case quota := <-preConsumed:
+				assert.Equal(t, 2000, quota, "the rejected request reserved quota before contacting upstream")
+			case <-time.After(3 * time.Second):
+				t.Fatal("request did not reach upstream after pre-consume")
+			}
 			deadline := time.NewTimer(3 * time.Second)
 			defer deadline.Stop()
 			for {

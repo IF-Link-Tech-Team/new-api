@@ -103,6 +103,64 @@ func TestTryReserveQuotaWithoutRedis(t *testing.T) {
 	assert.Equal(t, 55, getTokenFromDB(t, token.Id).RemainQuota)
 }
 
+func TestDurableReservationsPersistWithRedisBatchingAndRejectOverspend(t *testing.T) {
+	truncateTables(t)
+	resetBatchUpdateTestState(t)
+	useUserCacheMiniRedis(t)
+	common.BatchUpdateEnabled = true
+	user := createReserveTestUser(t, 100)
+	require.NoError(t, populateUserCache(user))
+	token := createReserveTestToken(t, 100)
+	_, err := GetTokenByKey(token.Key, true)
+	require.NoError(t, err)
+	for _, reserve := range []func(int) (bool, error){
+		func(amount int) (bool, error) { return TryReserveUserQuotaDirect(user.Id, amount) },
+		func(amount int) (bool, error) { return TryReserveTokenQuotaDirect(token.Id, token.Key, amount, false) },
+	} {
+		ok, err := reserve(60)
+		require.NoError(t, err)
+		require.True(t, ok)
+		ok, err = reserve(41)
+		require.NoError(t, err)
+		assert.False(t, ok)
+	}
+	assert.Equal(t, 40, getUserQuotaFromDB(t, user.Id))
+	assert.Equal(t, 40, getTokenFromDB(t, token.Id).RemainQuota)
+	cached, err := GetUserCache(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, 40, cached.Quota)
+	cachedToken, err := GetTokenByKey(token.Key, false)
+	require.NoError(t, err)
+	assert.Equal(t, 40, cachedToken.RemainQuota)
+	batchUpdate()
+	assert.Equal(t, 40, getUserQuotaFromDB(t, user.Id))
+	assert.Equal(t, 60, getTokenFromDB(t, token.Id).UsedQuota)
+}
+
+func TestDurableReservationsRespectEarlierUnflushedSpending(t *testing.T) {
+	truncateTables(t)
+	resetBatchUpdateTestState(t)
+	useUserCacheMiniRedis(t)
+	common.BatchUpdateEnabled = true
+	user := createReserveTestUser(t, 100)
+	token := createReserveTestToken(t, 100)
+	ok, err := TryReserveUserQuota(user.Id, 80)
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = TryReserveTokenQuota(token.Id, token.Key, 80, false)
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = TryReserveUserQuotaDirect(user.Id, 21)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	ok, err = TryReserveTokenQuotaDirect(token.Id, token.Key, 21, false)
+	require.NoError(t, err)
+	assert.False(t, ok)
+	batchUpdate()
+	assert.Equal(t, 20, getUserQuotaFromDB(t, user.Id))
+	assert.Equal(t, 20, getTokenFromDB(t, token.Id).RemainQuota)
+}
+
 func TestRedisBatchReserveNeverFallsBackToStaleDatabaseBalance(t *testing.T) {
 	truncateTables(t)
 	resetBatchUpdateTestState(t)

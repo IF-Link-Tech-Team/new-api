@@ -109,6 +109,10 @@ func persistUserQuotaDelta(id int, delta int) error {
 		addNewRecord(BatchUpdateTypeUserQuota, id, delta)
 		return nil
 	}
+	return persistUserQuotaDeltaDirect(id, delta)
+}
+
+func persistUserQuotaDeltaDirect(id int, delta int) error {
 	result := DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota + ?", delta))
 	if result.Error != nil {
 		return result.Error
@@ -124,6 +128,10 @@ func persistTokenQuotaDelta(id int, delta int) error {
 		addNewRecord(BatchUpdateTypeTokenQuota, id, delta)
 		return nil
 	}
+	return persistTokenQuotaDeltaDirect(id, delta)
+}
+
+func persistTokenQuotaDeltaDirect(id int, delta int) error {
 	result := DB.Model(&Token{}).Where("id = ?", id).Updates(
 		map[string]any{
 			"remain_quota":  gorm.Expr("remain_quota + ?", delta),
@@ -158,10 +166,24 @@ func reserveTokenQuotaDB(id int, quota int) (bool, error) {
 	return result.RowsAffected == 1, result.Error
 }
 
+// Durable receipts require synchronous SQL persistence while keeping Redis
+// reservations authoritative when other callers still have queued batch deltas.
+func TryReserveUserQuotaDirect(id int, quota int) (bool, error) {
+	return tryReserveUserQuota(id, quota, true)
+}
+
+func TryReserveTokenQuotaDirect(id int, key string, quota int, unlimited bool) (bool, error) {
+	return tryReserveTokenQuota(id, key, quota, unlimited, true)
+}
+
 // TryReserveUserQuota atomically checks and deducts a user's wallet quota.
 // 缓存命中时以缓存余额为准（避免批量模式下过期的数据库余额放大并发超扣）；
 // Redis 异常或水合失败时降级为数据库条件更新，保证服务可用。
 func TryReserveUserQuota(id int, quota int) (bool, error) {
+	return tryReserveUserQuota(id, quota, false)
+}
+
+func tryReserveUserQuota(id int, quota int, durable bool) (bool, error) {
 	if quota < 0 {
 		return false, errors.New("quota cannot be negative")
 	}
@@ -187,7 +209,12 @@ func TryReserveUserQuota(id int, quota int) (bool, error) {
 	if result == cacheQuotaInsufficient {
 		return false, nil
 	}
-	if err = persistUserQuotaDelta(id, -quota); err != nil {
+	if durable {
+		err = persistUserQuotaDeltaDirect(id, -quota)
+	} else {
+		err = persistUserQuotaDelta(id, -quota)
+	}
+	if err != nil {
 		compensated, compensateErr := cacheApplyUserQuotaDelta(id, int64(quota))
 		if compensateErr != nil || compensated != cacheQuotaOK {
 			common.SysError(common.LogText("failed to compensate reserved user quota: result=%d error=%v", compensated, compensateErr))
@@ -200,6 +227,10 @@ func TryReserveUserQuota(id int, quota int) (bool, error) {
 // TryReserveTokenQuota atomically checks and deducts a token quota. Unlimited
 // tokens skip the balance check but still update remain/used accounting.
 func TryReserveTokenQuota(id int, key string, quota int, unlimited bool) (bool, error) {
+	return tryReserveTokenQuota(id, key, quota, unlimited, false)
+}
+
+func tryReserveTokenQuota(id int, key string, quota int, unlimited bool, durable bool) (bool, error) {
 	if quota < 0 {
 		return false, errors.New("quota cannot be negative")
 	}
@@ -207,6 +238,9 @@ func TryReserveTokenQuota(id int, key string, quota int, unlimited bool) (bool, 
 		return true, nil
 	}
 	if unlimited {
+		if durable {
+			return true, AdjustTokenQuotaDirect(id, key, -quota)
+		}
 		return true, DecreaseTokenQuota(id, key, quota)
 	}
 	if !common.RedisEnabled {
@@ -228,7 +262,12 @@ func TryReserveTokenQuota(id int, key string, quota int, unlimited bool) (bool, 
 	if result == cacheQuotaInsufficient {
 		return false, nil
 	}
-	if err = persistTokenQuotaDelta(id, -quota); err != nil {
+	if durable {
+		err = persistTokenQuotaDeltaDirect(id, -quota)
+	} else {
+		err = persistTokenQuotaDelta(id, -quota)
+	}
+	if err != nil {
 		compensated, compensateErr := cacheApplyTokenQuotaDelta(id, key, int64(quota))
 		if compensateErr != nil || compensated != cacheQuotaOK {
 			common.SysError(common.LogText("failed to compensate reserved token quota: result=%d error=%v", compensated, compensateErr))
