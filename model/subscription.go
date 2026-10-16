@@ -600,20 +600,19 @@ type UserSubscription struct {
 	// Downgrade target group on expiry (snapshot from plan; empty = revert to PrevUserGroup)
 	DowngradeGroup string `json:"downgrade_group" gorm:"type:varchar(64);default:''"`
 
-	// Whether wallet fallback is allowed after this subscription's quota is exhausted (snapshot from plan)
+	// Legacy policy snapshot retained for API/data compatibility. The current
+	// key-selected billing path never falls back from a bound pool to the wallet.
 	AllowWalletOverflow bool `json:"allow_wallet_overflow"`
 
 	// ModelScope snapshot from the plan: when non-empty, only requests whose
-	// model matches an entry may consume this subscription; every other model
-	// skips it and falls back to the wallet.
+	// model matches an entry may consume this subscription. A bound key rejects
+	// every other model without searching another pool or the wallet.
 	ModelScope string `json:"model_scope" gorm:"type:varchar(255);default:''"`
 
-	// DailyQuotaLimit caps the user's per-24h consumption of this subscription
-	// in raw quota units (tokens). 0 = no cap (default). When set and the
-	// daily sum of SubscriptionPreConsumeRecord.PreConsumed + this pre-consume
-	// would exceed the limit, PreConsumeUserSubscription returns an error so
-	// billing falls back to the user's wallet (when AllowWalletOverflow=true)
-	// or rejects the request.
+	// DailyQuotaLimit caps this subscription's reservations per UTC calendar
+	// day in raw quota units. 0 = no cap. Refunded records are excluded. This is
+	// a reservation cap, not a sum of actual settled charges. Both bound and
+	// legacy selectors enforce it; a bound key cannot fall back to the wallet.
 	DailyQuotaLimit int64 `json:"daily_quota_limit" gorm:"type:bigint;not null;default:0"`
 
 	ProductType         string  `json:"product_type" gorm:"type:varchar(32);default:'';index"`
@@ -2092,203 +2091,6 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 	return tx.Save(sub).Error
 }
 
-// PreConsumeUserSubscription pre-consumes from any active subscription total quota.
-//
-// boundSubscriptionId == 0: 兼容模式,按 userId 找所有匹配 modelName 的 active 订阅,
-//
-//	按 end_time asc + amount 充足 选择一个扣费(原有逻辑)。
-//
-// boundSubscriptionId > 0: 强绑定模式,只从该 ID 的订阅扣费(用于 token 强绑定场景),
-//
-//	即使其他订阅也匹配也不会被选用,失败直接报错(不会回退钱包)。
-func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64, boundSubscriptionId int) (*SubscriptionPreConsumeResult, error) {
-	if userId <= 0 {
-		return nil, errors.New("invalid userId")
-	}
-	if strings.TrimSpace(requestId) == "" {
-		return nil, errors.New("requestId is empty")
-	}
-	if amount <= 0 {
-		return nil, errors.New("amount must be > 0")
-	}
-	if boundSubscriptionId < 0 {
-		return nil, errors.New("invalid boundSubscriptionId")
-	}
-	now := GetDBTimestamp()
-
-	returnValue := &SubscriptionPreConsumeResult{}
-
-	err := DB.Transaction(func(tx *gorm.DB) error {
-		var existing SubscriptionPreConsumeRecord
-		query := tx.Where("request_id = ?", requestId).Limit(1).Find(&existing)
-		if query.Error != nil {
-			return query.Error
-		}
-		if query.RowsAffected > 0 {
-			if existing.Status == "refunded" {
-				return errors.New("subscription pre-consume already refunded")
-			}
-			var sub UserSubscription
-			if err := tx.Where("id = ?", existing.UserSubscriptionId).First(&sub).Error; err != nil {
-				return err
-			}
-			returnValue.UserSubscriptionId = sub.Id
-			returnValue.PreConsumed = existing.PreConsumed
-			returnValue.AmountTotal = sub.AmountTotal
-			returnValue.AmountUsedBefore = sub.AmountUsed
-			returnValue.AmountUsedAfter = sub.AmountUsed
-			return nil
-		}
-
-		var subs []UserSubscription
-		// 强绑定模式: 只锁定 boundSubscriptionId 指定的那一份订阅,失败直接报错。
-		if boundSubscriptionId > 0 {
-			var bound UserSubscription
-			if err := lockForUpdate(tx).
-				Where("id = ? AND user_id = ? AND status = ? AND end_time > ?",
-					boundSubscriptionId, userId, "active", now).
-				First(&bound).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return fmt.Errorf("bound subscription #%d not found / not active / expired", boundSubscriptionId)
-				}
-				return err
-			}
-			if !modelScopeMatchesForProduct(bound.ModelScope, modelName, bound.ProductType) {
-				return fmt.Errorf("bound subscription #%d does not support model %q (model_scope=%q)",
-					boundSubscriptionId, modelName, bound.ModelScope)
-			}
-			plan, err := getSubscriptionPlanByIdTx(tx, bound.PlanId)
-			if err != nil {
-				return err
-			}
-			if err := maybeResetUserSubscriptionWithPlanTx(tx, &bound, plan, now); err != nil {
-				return err
-			}
-			usedBefore := bound.AmountUsed
-			if bound.AmountTotal > 0 && bound.AmountTotal-usedBefore < amount {
-				return fmt.Errorf("bound subscription #%d quota insufficient: need=%d, remain=%d",
-					boundSubscriptionId, amount, bound.AmountTotal-usedBefore)
-			}
-			record := &SubscriptionPreConsumeRecord{
-				RequestId:          requestId,
-				UserId:             userId,
-				UserSubscriptionId: bound.Id,
-				PreConsumed:        amount,
-				Status:             "consumed",
-			}
-			if err := tx.Create(record).Error; err != nil {
-				var dup SubscriptionPreConsumeRecord
-				if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
-					if dup.Status == "refunded" {
-						return errors.New("subscription pre-consume already refunded")
-					}
-					returnValue.UserSubscriptionId = bound.Id
-					returnValue.PreConsumed = dup.PreConsumed
-					returnValue.AmountTotal = bound.AmountTotal
-					returnValue.AmountUsedBefore = bound.AmountUsed
-					returnValue.AmountUsedAfter = bound.AmountUsed
-					return nil
-				}
-				return err
-			}
-			bound.AmountUsed += amount
-			if err := tx.Save(&bound).Error; err != nil {
-				return err
-			}
-			returnValue.UserSubscriptionId = bound.Id
-			returnValue.PreConsumed = amount
-			returnValue.AmountTotal = bound.AmountTotal
-			returnValue.AmountUsedBefore = usedBefore
-			returnValue.AmountUsedAfter = bound.AmountUsed
-			return nil
-		}
-
-		// 兼容模式: 按 end_time asc 选第一个 model 匹配 + 余额足够的
-		if err := lockForUpdate(tx).
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
-			Order("end_time asc, id asc").
-			Find(&subs).Error; err != nil {
-			return errors.New("no active subscription")
-		}
-		if len(subs) == 0 {
-			return errors.New("no active subscription")
-		}
-		for _, candidate := range subs {
-			sub := candidate
-			// 模型作用域: 套餐可限定适用模型,不匹配则跳过此套餐(回退钱包/拒绝)
-			if !modelScopeMatchesForProduct(sub.ModelScope, modelName, sub.ProductType) {
-				continue
-			}
-			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
-			if err != nil {
-				return err
-			}
-			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
-				return err
-			}
-			usedBefore := sub.AmountUsed
-			if sub.AmountTotal > 0 {
-				remain := sub.AmountTotal - usedBefore
-				if remain < amount {
-					continue
-				}
-			}
-			// 风控: 套餐可设每日 quota 上限,超过则跳过此套餐(回退钱包/拒绝)
-			if sub.DailyQuotaLimit > 0 {
-				dayStart := now - (now % 86400)
-				var dailyUsed int64
-				if err := tx.Model(&SubscriptionPreConsumeRecord{}).
-					Where("user_subscription_id = ? AND status = ? AND created_at >= ?", sub.Id, "consumed", dayStart).
-					Select("COALESCE(SUM(pre_consumed),0)").
-					Scan(&dailyUsed).Error; err != nil {
-					return fmt.Errorf("查询每日用量失败: %w", err)
-				}
-				if dailyUsed+amount > sub.DailyQuotaLimit {
-					common.SysLog(fmt.Sprintf("user %d sub %d daily quota exceeded: used=%d limit=%d", userId, sub.Id, dailyUsed, sub.DailyQuotaLimit))
-					continue
-				}
-			}
-			record := &SubscriptionPreConsumeRecord{
-				RequestId:          requestId,
-				UserId:             userId,
-				UserSubscriptionId: sub.Id,
-				PreConsumed:        amount,
-				Status:             "consumed",
-			}
-			if err := tx.Create(record).Error; err != nil {
-				var dup SubscriptionPreConsumeRecord
-				if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
-					if dup.Status == "refunded" {
-						return errors.New("subscription pre-consume already refunded")
-					}
-					returnValue.UserSubscriptionId = sub.Id
-					returnValue.PreConsumed = dup.PreConsumed
-					returnValue.AmountTotal = sub.AmountTotal
-					returnValue.AmountUsedBefore = sub.AmountUsed
-					returnValue.AmountUsedAfter = sub.AmountUsed
-					return nil
-				}
-				return err
-			}
-			sub.AmountUsed += amount
-			if err := tx.Save(&sub).Error; err != nil {
-				return err
-			}
-			returnValue.UserSubscriptionId = sub.Id
-			returnValue.PreConsumed = amount
-			returnValue.AmountTotal = sub.AmountTotal
-			returnValue.AmountUsedBefore = usedBefore
-			returnValue.AmountUsedAfter = sub.AmountUsed
-			return nil
-		}
-		return fmt.Errorf("subscription quota insufficient, need=%d", amount)
-	})
-	if err != nil {
-		return nil, err
-	}
-	return returnValue, nil
-}
-
 // RefundSubscriptionPreConsume is idempotent and refunds pre-consumed subscription quota by requestId.
 func RefundSubscriptionPreConsume(requestId string) error {
 	if strings.TrimSpace(requestId) == "" {
@@ -2296,6 +2098,20 @@ func RefundSubscriptionPreConsume(requestId string) error {
 	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var record SubscriptionPreConsumeRecord
+		if err := tx.Where("request_id = ?", requestId).First(&record).Error; err != nil {
+			return err
+		}
+		if record.Status == "refunded" {
+			return nil
+		}
+		// Match reservation's pool -> record lock order. The first read only
+		// locates the immutable pool ID; re-read status under the record lock.
+		if record.PreConsumed > 0 {
+			var sub UserSubscription
+			if err := lockForUpdate(tx).Where("id = ?", record.UserSubscriptionId).First(&sub).Error; err != nil {
+				return err
+			}
+		}
 		if err := lockForUpdate(tx).
 			Where("request_id = ?", requestId).First(&record).Error; err != nil {
 			return err
