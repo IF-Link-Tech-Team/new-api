@@ -99,6 +99,21 @@ func QueueBillingRefund(id int64) error {
 	})
 }
 
+func FinishBillingRefundSettlement(id int64, failure string) error {
+	status := BillingRefundSettled
+	if failure != "" {
+		status = BillingRefundReview
+	}
+	result := DB.Model(&BillingRefund{}).Where("id = ? AND status = ?", id, BillingRefundSettling).Updates(map[string]any{"status": status, "last_error": failure, "updated_at": common.GetTimestamp()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("billing settlement receipt state conflict")
+	}
+	return nil
+}
+
 // ProcessBillingRefund commits all SQL credits and their idempotency marker in
 // one transaction. Cache invalidation is an idempotent second phase: retries of
 // cache_pending never credit funds again, including after an ambiguous COMMIT.

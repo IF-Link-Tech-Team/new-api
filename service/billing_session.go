@@ -76,11 +76,7 @@ func (s *BillingSession) Settle(actualQuota int) error {
 	// 2) 调整令牌额度
 	var tokenErr error
 	if !s.relayInfo.IsPlayground {
-		if delta > 0 {
-			tokenErr = model.AdjustTokenQuotaDirect(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
-		} else {
-			tokenErr = model.AdjustTokenQuotaDirect(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
-		}
+		tokenErr = model.AdjustTokenQuotaDirect(s.relayInfo.TokenId, s.relayInfo.TokenKey, -delta)
 		if tokenErr != nil {
 			// 资金来源已提交，令牌调整失败只能记录日志；标记 settled 防止 Refund 误退资金
 			common.SysLog(fmt.Sprintf("error adjusting token quota after funding settled (userId=%d, tokenId=%d, delta=%d): %s",
@@ -102,11 +98,11 @@ func (s *BillingSession) finishRefundReceipt(settleErr error) error {
 	if s.refundReceipt == nil {
 		return nil
 	}
-	status := model.BillingRefundSettled
+	failure := ""
 	if settleErr != nil {
-		status = model.BillingRefundReview
+		failure = settleErr.Error()
 	}
-	return model.TransitionBillingRefund(s.refundReceipt.ID, []string{model.BillingRefundSettling}, status)
+	return model.FinishBillingRefundSettlement(s.refundReceipt.ID, failure)
 }
 
 // Refund 退还所有预扣费，幂等安全，异步执行。
@@ -319,7 +315,7 @@ func (s *BillingSession) reserveFunding(delta int) error {
 		// 与结算补扣（SettleBilling 正差额 → WalletFunding.Settle）语义一致：
 		// 全额无条件扣减，余额不足的部分记为欠费（余额可为负），不中断请求，
 		// 保证日志记录的预扣额度与用户余额的实际变动始终对账一致。
-		// DecreaseUserQuota 仅在数据库错误时失败。
+		// Durable billing writes the debit directly to SQL.
 		if err := model.AdjustUserQuotaDirect(funding.userId, -delta); err != nil {
 			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 		}
