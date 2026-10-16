@@ -200,6 +200,7 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionRoute.POST("/creem/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestCreemPay)
 			subscriptionRoute.POST("/waffo-pancake/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestWaffoPancakePay)
 			subscriptionRoute.POST("/alipay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestAlipayPay)
+			subscriptionRoute.POST("/iflinkpay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestIFLinkPay)
 		}
 		subscriptionAdminRoute := apiRouter.Group("/subscription/admin")
 		subscriptionAdminRoute.Use(middleware.AdminAuth())
@@ -211,6 +212,7 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.GET("/product-prices", controller.AdminListProductPrices)
 			subscriptionAdminRoute.POST("/product-prices", controller.AdminCreateProductPrice)
 			subscriptionAdminRoute.POST("/classroom/bootstrap", controller.AdminBootstrapClassroomProduct)
+			subscriptionAdminRoute.POST("/monthly/bootstrap", controller.AdminBootstrapMonthlyProducts)
 			subscriptionAdminRoute.PATCH("/product-prices/:id", controller.AdminSetProductPriceEnabled)
 			subscriptionAdminRoute.POST("/bind", controller.AdminBindSubscription)
 			subscriptionAdminRoute.POST("/plans/:id/subscriptions/reset", controller.AdminResetPlanSubscriptions)

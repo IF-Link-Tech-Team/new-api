@@ -11,8 +11,20 @@ import (
 )
 
 func TestResolveChannelSelectionPolicyUsesExactModelAndFailsClosed(t *testing.T) {
+	truncate(t)
+	price := &model.ProductPrice{
+		ProductType: model.ProductTypePackQwen, Model: "qwen3.8-flash", PriceVersion: "qwen-route-v1",
+		OfficialReferencePrice:  `{"input":1,"cached_input":0.2,"output":4}`,
+		UserSellingPrice:        `{"input":1,"cached_input":0.2,"output":4}`,
+		UpstreamSettlementPrice: `{"input":0.5,"cached_input":0.1,"output":2}`,
+		BillingExpression:       `tier("base", p * 1 + cr * 0.2 + c * 4)`, BillingMultiplier: 0.75,
+		AllowedChannels: `[14,15]`, MaxUpstreamCost: `{"input":1,"cached_input":0.2,"output":4}`,
+		FallbackAllowed: false, Enabled: true,
+	}
+	require.NoError(t, model.DB.Create(price).Error)
 	ctx, _ := gin.CreateTestContext(nil)
 	common.SetContextKey(ctx, constant.ContextKeyTokenProductType, model.ProductTypePackQwen)
+	common.SetContextKey(ctx, constant.ContextKeyTokenPriceVersion, price.PriceVersion)
 	common.SetContextKey(ctx, constant.ContextKeyTokenAllowedChannels, `{"qwen3.8-flash":[14,15]}`)
 	common.SetContextKey(ctx, constant.ContextKeyTokenMaxUpstreamCost, `{"qwen3.8-flash":{"input":1,"cached_input":0.2,"output":4}}`)
 	common.SetContextKey(ctx, constant.ContextKeyTokenFallbackAllowed, false)
@@ -23,6 +35,7 @@ func TestResolveChannelSelectionPolicyUsesExactModelAndFailsClosed(t *testing.T)
 	require.Contains(t, policy.AllowedChannelIds, 14)
 	require.True(t, policy.RequireCost)
 	require.Equal(t, 0.2, policy.MaxUpstreamCost.CachedInput)
+	require.Equal(t, 0.75, ctx.GetFloat64(string(constant.ContextKeyTokenBillingMultiplier)))
 
 	_, err = ResolveChannelSelectionPolicy(ctx, "qwen3.8-flash-preview")
 	require.ErrorContains(t, err, "no compliant product route")

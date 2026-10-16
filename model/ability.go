@@ -137,7 +137,21 @@ func GetChannel(
 
 func GetChannelWithPolicy(group string, model string, retry int, filters []dto.ChannelFilter, policy *ChannelSelectionPolicy) (*Channel, error) {
 	var abilities []Ability
-	err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).Order("priority DESC, weight DESC").Find(&abilities).Error
+	query := DB.Where("enabled = ?", true)
+	if policy != nil {
+		// Explicit product channels authorize access independently of the wallet group.
+		channelIds := make([]int, 0, len(policy.AllowedChannelIds))
+		for channelId := range policy.AllowedChannelIds {
+			channelIds = append(channelIds, channelId)
+		}
+		if len(channelIds) == 0 {
+			return nil, nil
+		}
+		query = query.Where("channel_id IN ?", channelIds)
+	} else {
+		query = query.Where(commonGroupCol+" = ?", group)
+	}
+	err := query.Session(&gorm.Session{}).Where("model = ?", model).Order("priority DESC, weight DESC").Find(&abilities).Error
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +159,7 @@ func GetChannelWithPolicy(group string, model string, retry int, filters []dto.C
 	// Like the memory cache, retry with the routing name (for example without
 	// @ modifiers) when no channel serves the exact name.
 	if normalized := ratio_setting.RoutingMatchModelName(model); len(abilities) == 0 && normalized != "" && normalized != model {
-		err = DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, normalized, true).Order("priority DESC, weight DESC").Find(&abilities).Error
+		err = query.Session(&gorm.Session{}).Where("model = ?", normalized).Order("priority DESC, weight DESC").Find(&abilities).Error
 		if err != nil {
 			return nil, err
 		}
@@ -162,7 +176,7 @@ func GetChannelWithPolicy(group string, model string, retry int, filters []dto.C
 		}
 		allowed := make(map[int]struct{}, len(candidates))
 		for _, candidate := range candidates {
-			if ChannelSatisfiesPolicy(candidate, model, policy) {
+			if candidate.Status == common.ChannelStatusEnabled && ChannelSatisfiesPolicy(candidate, model, policy) {
 				allowed[candidate.Id] = struct{}{}
 			}
 		}
@@ -170,6 +184,8 @@ func GetChannelWithPolicy(group string, model string, retry int, filters []dto.C
 		for _, ability := range abilities {
 			if _, ok := allowed[ability.ChannelId]; ok {
 				filtered = append(filtered, ability)
+				// A channel exposed in multiple groups must not receive extra weight.
+				delete(allowed, ability.ChannelId)
 			}
 		}
 		abilities = filtered

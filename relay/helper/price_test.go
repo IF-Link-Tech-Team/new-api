@@ -81,6 +81,109 @@ func TestModelPriceHelperUsesWalletVersionedSnapshot(t *testing.T) {
 	require.Equal(t, 1.0, info.TieredBillingSnapshot.ProductMultiplier)
 }
 
+func TestModelPriceHelperUsesImmutableModelMultiplierForMixedClassroomPrice(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.ProductPrice{}))
+	model.DB = db
+	t.Cleanup(func() { model.DB = oldDB })
+
+	oldQuotaPerUnit := common.QuotaPerUnit
+	common.QuotaPerUnit = 500_000
+	oldGroupRatios := ratio_setting.GroupRatio2JSONString()
+	oldModelRatios := ratio_setting.ModelRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"qwen3.8-flash":99}`))
+	t.Cleanup(func() {
+		common.QuotaPerUnit = oldQuotaPerUnit
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldGroupRatios))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(oldModelRatios))
+	})
+
+	price := &model.ProductPrice{
+		ProductType: model.ProductTypePackDeepSeekClassroom, Model: model.ClassroomModelQwen,
+		PriceVersion:            model.ClassroomPriceVersion,
+		OfficialReferencePrice:  `{"input":0.8,"cached_input":0.1,"cache_creation":1.25,"output":2.7}`,
+		UserSellingPrice:        `{"input":0.8,"cached_input":0.1,"cache_creation":1.25,"output":2.7}`,
+		UpstreamSettlementPrice: `{"input":0.64,"cached_input":0.08,"cache_creation":1,"output":2.16}`,
+		BillingExpression:       `tier("base", p * 0.8 + cr * 0.1 + cc * 1.25 + c * 2.7)`,
+		BillingMultiplier:       1, AllowedChannels: `[14]`,
+		MaxUpstreamCost: `{"input":0.64,"cached_input":0.08,"cache_creation":1,"output":2.16}`,
+		Enabled:         true,
+	}
+	require.NoError(t, model.DB.Create(price).Error)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Set("group", "default")
+	info := &relaycommon.RelayInfo{
+		OriginModelName: model.ClassroomModelQwen, UserGroup: "default", UsingGroup: "default",
+		ProductType:              model.ProductTypePackDeepSeekClassroom,
+		ProductBillingMultiplier: 0.60, ProductPriceVersion: model.ClassroomPriceVersion,
+		BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)},
+	}
+	priceData, err := ModelPriceHelper(ctx, info, 1_000, &types.TokenCountMeta{MaxTokens: 100})
+	require.NoError(t, err)
+	// rc.46 reserves input only: 1,000*0.8 / 1M * 500,000 * 1.00 = 400.
+	// The output limit must not change the reservation or stack the legacy 0.60 multiplier.
+	require.Equal(t, 400, priceData.QuotaToPreConsume)
+	require.Equal(t, 1.0, info.ProductBillingMultiplier)
+	require.Equal(t, 1.0, info.TieredBillingSnapshot.ProductMultiplier)
+}
+
+func TestModelPriceHelperUsesMonthlyModelMultiplierWithoutGlobalModelRatioStacking(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.ProductPrice{}))
+	model.DB = db
+	t.Cleanup(func() { model.DB = oldDB })
+
+	oldQuotaPerUnit := common.QuotaPerUnit
+	common.QuotaPerUnit = 500_000
+	oldGroupRatios := ratio_setting.GroupRatio2JSONString()
+	oldModelRatios := ratio_setting.ModelRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"deepseek-v4-flash-ga-260731":99}`))
+	t.Cleanup(func() {
+		common.QuotaPerUnit = oldQuotaPerUnit
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldGroupRatios))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(oldModelRatios))
+	})
+
+	price := &model.ProductPrice{
+		ProductType: model.ProductTypeMonthlySubscription, Model: model.MonthlyModelDeepSeek,
+		PriceVersion:            model.MonthlyPriceVersion,
+		OfficialReferencePrice:  `{"input":3,"cached_input":0.1,"output":9}`,
+		UserSellingPrice:        `{"input":2.1,"cached_input":0.07,"output":6.3}`,
+		UpstreamSettlementPrice: `{"input":1.5,"cached_input":0.05,"output":4.5}`,
+		BillingExpression:       `tier("base", p * 3 + cr * 0.1 + c * 9)`,
+		BillingMultiplier:       0.70, AllowedChannels: `[15]`,
+		MaxUpstreamCost: `{"input":1.5,"cached_input":0.05,"output":4.5}`,
+		Enabled:         true,
+	}
+	require.NoError(t, model.DB.Create(price).Error)
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Set("group", "default")
+	info := &relaycommon.RelayInfo{
+		OriginModelName: model.MonthlyModelDeepSeek, UserGroup: "default", UsingGroup: "default",
+		ProductType:              model.ProductTypeMonthlySubscription,
+		ProductBillingMultiplier: 0.85, ProductPriceVersion: model.MonthlyPriceVersion,
+		BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)},
+	}
+	priceData, err := ModelPriceHelper(ctx, info, 1_000, &types.TokenCountMeta{MaxTokens: 100})
+	require.NoError(t, err)
+	// (1,000*3 + 100*9) / 1M * 500,000 * 0.70 = 1,365.
+	require.Equal(t, 1_365, priceData.QuotaToPreConsume)
+	require.Equal(t, 0.70, info.ProductBillingMultiplier)
+	require.Equal(t, 0.70, info.TieredBillingSnapshot.ProductMultiplier)
+}
+
 func TestModelPriceHelperTieredUsesPreloadedRequestInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

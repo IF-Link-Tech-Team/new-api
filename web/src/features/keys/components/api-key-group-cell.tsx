@@ -78,7 +78,7 @@ export function ApiKeyGroupCell(props: ApiKeyGroupCellProps) {
             tabIndex={0}
             className={cn(
               'ml-0 gap-3 overflow-visible text-xs',
-              isMobile ? 'w-full justify-between' : 'max-w-50'
+              isMobile ? 'w-full justify-between' : 'max-w-64'
             )}
           />
         }

@@ -40,6 +40,7 @@ import {
   paySubscriptionWaffoPancake,
   paySubscriptionBalance,
   paySubscriptionAlipay,
+  paySubscriptionIFLinkPay,
 } from '../../api'
 import { formatDuration, formatResetPeriod } from '../../lib'
 import type { PlanRecord } from '../../types'
@@ -58,6 +59,7 @@ interface Props {
   enableWaffoPancake?: boolean
   enableOnlineTopUp?: boolean
   enableAlipay?: boolean
+  enableIFLinkPay?: boolean
   epayMethods?: PaymentMethod[]
   purchaseLimit?: number
   purchaseCount?: number
@@ -95,8 +97,14 @@ export function SubscriptionPurchaseDialog(props: Props) {
     props.enableOnlineTopUp &&
     (props.epayMethods || []).length > 0
   const hasAlipay = props.enableAlipay === true
+  const hasIFLinkPay = !!props.enableIFLinkPay
   const hasAnyPayment =
-    hasAlipay || hasStripe || hasCreem || hasWaffoPancake || hasEpay
+    hasAlipay ||
+    hasIFLinkPay ||
+    hasStripe ||
+    hasCreem ||
+    hasWaffoPancake ||
+    hasEpay
   const totalAmount = Number(plan.total_amount || 0)
   const amountDue =
     props.amountDueOverride !== undefined
@@ -251,9 +259,32 @@ export function SubscriptionPurchaseDialog(props: Props) {
         window.location.href = res.data.pay_url
         return
       }
-      toast.error(res.message || t('Payment request failed'))
-    } catch {
-      toast.error(t('Payment request failed'))
+      handleServerError(res, t('Payment request failed'))
+    } catch (error) {
+      handleServerError(error, t('Payment request failed'))
+    } finally {
+      setPaying(false)
+    }
+  }
+
+  const handlePayIFLinkPay = async () => {
+    setPaying(true)
+    try {
+      const res = await paySubscriptionIFLinkPay({ plan_id: plan.id })
+      if (res.success && res.data?.pay_url) {
+        if (res.data.trade_no) {
+          sessionStorage.setItem(
+            'cilai_pending_subscription_order',
+            res.data.trade_no
+          )
+        }
+        toast.success(t('Redirecting to payment page...'))
+        window.location.href = res.data.pay_url
+      } else {
+        handleServerError(res, t('Payment request failed'))
+      }
+    } catch (error) {
+      handleServerError(error, t('Payment request failed'))
     } finally {
       setPaying(false)
     }
@@ -394,7 +425,16 @@ export function SubscriptionPurchaseDialog(props: Props) {
                 onClick={handlePayAlipay}
                 disabled={paying || limitReached}
               >
-                支付宝支付
+                {t('Alipay payment')}
+              </Button>
+            )}
+            {hasIFLinkPay && (
+              <Button
+                className='w-full'
+                onClick={handlePayIFLinkPay}
+                disabled={paying || limitReached}
+              >
+                {t('Pay with IFLinkPay')}
               </Button>
             )}
             {(hasStripe || hasCreem || hasWaffoPancake) && (

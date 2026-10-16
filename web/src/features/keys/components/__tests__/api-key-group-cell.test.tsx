@@ -72,6 +72,7 @@ describe('API key group table cell', () => {
     const group = screen.getByText('Cross-group')
     const multiplier = container.querySelector<HTMLElement>('[data-slot="badge"]')
     expect(group).toBeInTheDocument()
+    expect(group.closest('[data-api-key-group-cell]')).toHaveClass('max-w-64')
     expect(multiplier).toHaveClass('h-5', 'min-w-12', 'rounded-md')
     expect(multiplier).not.toHaveTextContent('Ratio')
     expect(container).not.toHaveTextContent('自动')

@@ -132,23 +132,30 @@ func GetRandomSatisfiedChannelWithPolicy(group string, model string, retry int, 
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
-	// First, try to find channels with the exact model name.
-	channels, _ := filterCandidateIDs(group2model2channels[group][model], model, filters)
-
-	// If no channels found, try to find channels with the normalized model name.
-	if len(channels) == 0 {
-		normalizedModel := ratio_setting.RoutingMatchModelName(model)
-		channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
-	}
+	var channels []int
 	if policy != nil {
-		filtered := make([]int, 0, len(channels))
-		for _, channelId := range channels {
+		// Only the explicit product allowlist may cross wallet groups.
+		normalizedModel := ratio_setting.RoutingMatchModelName(model)
+		for channelId := range policy.AllowedChannelIds {
 			channel, ok := channelsIDM[channelId]
-			if ok && ChannelSatisfiesPolicy(channel, model, policy) {
-				filtered = append(filtered, channelId)
+			if !ok || channel.Status != common.ChannelStatusEnabled || !ChannelSatisfiesPolicy(channel, model, policy) {
+				continue
+			}
+			for _, channelGroup := range channel.GetGroups() {
+				if isChannelIDInList(group2model2channels[channelGroup][model], channelId) ||
+					(normalizedModel != "" && normalizedModel != model && isChannelIDInList(group2model2channels[channelGroup][normalizedModel], channelId)) {
+					channels = append(channels, channelId)
+					break
+				}
 			}
 		}
-		channels = filtered
+		channels, _ = filterCandidateIDs(channels, model, filters)
+	} else {
+		channels, _ = filterCandidateIDs(group2model2channels[group][model], model, filters)
+		if len(channels) == 0 {
+			normalizedModel := ratio_setting.RoutingMatchModelName(model)
+			channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
+		}
 	}
 
 	if len(channels) == 0 {

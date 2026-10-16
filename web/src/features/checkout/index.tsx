@@ -8,23 +8,29 @@ the Free Software Foundation, either version 3 of the License, or
 */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, Loader2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { CheckCircle2, Coins, CreditCard, Loader2 } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { PaymentDisplayPanel } from '@/features/payment-display/components/payment-display-panel'
-import { loadPaymentDisplayConfig } from '@/features/payment-display/lib/payment-display-config'
 import {
   getSubscriptionProduct,
+  paySubscriptionIFLinkPay,
   redeemProductCode,
 } from '@/features/subscriptions/api'
 import type { ProductRedemptionResult } from '@/features/subscriptions/types'
+import { ModelIdList } from '@/features/traffic-packs/components/model-id-list'
+import {
+  getProductComputePointsLabel,
+  getProductDisplayName,
+  isIfLearnPlan,
+  parseModelScope,
+} from '@/features/traffic-packs/lib/product-display'
+import { getTopupInfo } from '@/features/wallet/api'
 
 interface CheckoutProps {
   productId?: string
@@ -44,30 +50,54 @@ export function Checkout({ productId }: CheckoutProps) {
     enabled: Boolean(productId),
     retry: false,
   })
-  const [qrCodeUrl, setQrCodeUrl] = useState('')
+  const paymentConfigQuery = useQuery({
+    queryKey: ['topup-info', 'checkout-payment-availability'],
+    queryFn: getTopupInfo,
+    retry: false,
+  })
   const [code, setCode] = useState('')
   const [redeeming, setRedeeming] = useState(false)
+  const [paying, setPaying] = useState(false)
   const [result, setResult] = useState<ProductRedemptionResult | null>(null)
-
-  useEffect(() => {
-    let active = true
-    void loadPaymentDisplayConfig().then((config) => {
-      if (active) setQrCodeUrl(config.alipayQrCodeUrl)
-    })
-    return () => {
-      active = false
-    }
-  }, [])
+  const [redemptionError, setRedemptionError] = useState('')
 
   const plan = productQuery.data?.plan
-  const models = (plan?.model_scope || '')
-    .split(',')
-    .map((model) => model.trim())
-    .filter(Boolean)
+  const productName = plan ? getProductDisplayName(plan) : ''
+  const computePoints = plan ? getProductComputePointsLabel(plan) : null
+  const models = parseModelScope(plan?.model_scope)
+  const billingMultipliers = productQuery.data?.billing_multipliers || {}
+  const ifLinkPayEnabled =
+    paymentConfigQuery.data?.success === true &&
+    paymentConfigQuery.data.data?.enable_iflinkpay_topup === true
+
+  const submitPayment = async () => {
+    if (!plan || paying || !ifLinkPayEnabled) return
+    setPaying(true)
+    try {
+      const response = await paySubscriptionIFLinkPay({ plan_id: plan.id })
+      const payURL = response.data?.pay_url
+      if (!response.success || !payURL) {
+        throw new Error(response.message || t('Payment request failed'))
+      }
+      const target = new URL(payURL, window.location.origin)
+      if (target.protocol !== 'https:' && target.protocol !== 'http:') {
+        throw new Error(t('Payment request failed'))
+      }
+      toast.success(t('Redirecting to payment page...'))
+      window.location.href = target.toString()
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : t('Payment request failed')
+      )
+    } finally {
+      setPaying(false)
+    }
+  }
 
   const submitRedemption = async () => {
     if (!productId || !code.trim() || redeeming) return
     setRedeeming(true)
+    setRedemptionError('')
     try {
       const response = await redeemProductCode({
         key: code.trim(),
@@ -88,14 +118,40 @@ export function Checkout({ productId }: CheckoutProps) {
             )
       )
     } catch (error) {
-      toast.error(
+      const message =
         error instanceof Error
           ? error.message
           : t('Redemption failed. Please try again.')
-      )
+      setRedemptionError(message)
+      toast.error(message)
     } finally {
       setRedeeming(false)
     }
+  }
+
+  let paymentAction = (
+    <Alert>
+      <AlertDescription>
+        {t(
+          'Online topup is not enabled. Please use redemption code or contact administrator.'
+        )}
+      </AlertDescription>
+    </Alert>
+  )
+  if (paymentConfigQuery.isLoading) {
+    paymentAction = <Skeleton className='h-11 w-full rounded-md' />
+  } else if (ifLinkPayEnabled) {
+    paymentAction = (
+      <Button
+        className='w-full'
+        size='lg'
+        disabled={paying}
+        onClick={() => void submitPayment()}
+      >
+        {paying ? <Loader2 className='animate-spin' /> : <CreditCard />}
+        {t('Pay with IFLinkPay')}
+      </Button>
+    )
   }
 
   return (
@@ -143,14 +199,49 @@ export function Checkout({ productId }: CheckoutProps) {
 
         {plan ? (
           <div className='space-y-5'>
-            <PaymentDisplayPanel
-              productName={plan.title}
-              amount={`¥${Number(plan.price_amount).toFixed(2)}`}
-              qrCodeUrl={qrCodeUrl || undefined}
-              onQrCodeError={() => setQrCodeUrl('')}
-            />
+            <div className='bg-muted/50 space-y-3 rounded-lg border p-4'>
+              <div className='flex items-start justify-between gap-4'>
+                <span className='text-muted-foreground text-sm'>
+                  {t('Product Name')}
+                </span>
+                <span className='max-w-[240px] text-right text-sm font-medium break-words'>
+                  {productName}
+                </span>
+              </div>
+              <div className='flex items-center justify-between gap-4 border-t pt-3'>
+                <span className='text-sm font-medium'>
+                  {t('Amount Due (RMB)')}
+                </span>
+                <span className='text-primary text-xl font-bold'>
+                  ¥{Number(plan.price_amount).toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            {paymentAction}
 
             <div className='space-y-2 rounded-lg border p-4 text-sm'>
+              {isIfLearnPlan(plan) ? (
+                <div className='bg-muted/35 grid gap-3 rounded-md p-3 sm:grid-cols-2'>
+                  <div>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('Classroom model shared credit')}
+                    </span>
+                    <p className='mt-1 text-lg font-semibold tabular-nums'>
+                      ¥{Number(plan.price_amount).toFixed(2)}
+                    </p>
+                  </div>
+                  <div>
+                    <span className='text-muted-foreground text-xs'>
+                      {t('Compute points')}
+                    </span>
+                    <p className='mt-1 flex items-center gap-2 text-lg font-semibold tabular-nums'>
+                      <Coins className='h-4 w-4' />
+                      {computePoints}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
               <div className='flex justify-between gap-4'>
                 <span className='text-muted-foreground'>{t('Validity')}</span>
                 <span>
@@ -158,17 +249,12 @@ export function Checkout({ productId }: CheckoutProps) {
                 </span>
               </div>
               {models.length > 0 ? (
-                <div className='space-y-2 border-t pt-3'>
-                  <span className='text-muted-foreground'>
-                    {t('Supported Models')}
-                  </span>
-                  <div className='flex flex-wrap gap-1.5'>
-                    {models.map((model) => (
-                      <Badge key={model} variant='secondary'>
-                        {model}
-                      </Badge>
-                    ))}
-                  </div>
+                <div className='border-t pt-3'>
+                  <ModelIdList
+                    models={models}
+                    billingMultipliers={billingMultipliers}
+                    title={t('Supported Models')}
+                  />
                 </div>
               ) : null}
             </div>
@@ -181,11 +267,21 @@ export function Checkout({ productId }: CheckoutProps) {
                     'The code must match this product. A failed attempt will not consume it.'
                   )}
                 </p>
+                {isIfLearnPlan(plan) ? (
+                  <p className='text-muted-foreground mt-1 text-xs'>
+                    {t(
+                      'A valid code grants the product directly. No payment is required before redemption.'
+                    )}
+                  </p>
+                ) : null}
               </div>
               <div className='flex flex-col gap-2 sm:flex-row'>
                 <Input
                   value={code}
-                  onChange={(event) => setCode(event.target.value)}
+                  onChange={(event) => {
+                    setCode(event.target.value)
+                    if (redemptionError) setRedemptionError('')
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') void submitRedemption()
                   }}
@@ -209,6 +305,11 @@ export function Checkout({ productId }: CheckoutProps) {
                 <p className='text-destructive text-sm'>
                   {t('Redemption is currently paused for this product.')}
                 </p>
+              ) : null}
+              {redemptionError ? (
+                <Alert variant='destructive' role='alert'>
+                  <AlertDescription>{redemptionError}</AlertDescription>
+                </Alert>
               ) : null}
             </div>
 

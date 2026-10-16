@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 
@@ -133,6 +134,26 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 	if len(channelIds) == 0 || !ok {
 		return nil, fmt.Errorf("model %s has no compliant product route", modelName)
 	}
+	priceVersion := common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceVersion)
+	if strings.TrimSpace(priceVersion) == "" {
+		return nil, errors.New("V1 product price version is required")
+	}
+	price, err := model.GetProductPriceSnapshot(productType, modelName, priceVersion)
+	if err != nil {
+		return nil, fmt.Errorf("V1 product price unavailable: %w", err)
+	}
+	var priceChannels []int
+	if err := common.UnmarshalJsonStr(price.AllowedChannels, &priceChannels); err != nil {
+		return nil, err
+	}
+	var priceCost model.PriceComponents
+	if err := common.UnmarshalJsonStr(price.MaxUpstreamCost, &priceCost); err != nil {
+		return nil, err
+	}
+	if !sameChannelIds(channelIds, priceChannels) || !sameRoutePrice(maxCost, priceCost) || price.FallbackAllowed != policySnapshot.FallbackAllowed {
+		return nil, fmt.Errorf("model %s entitlement route does not match immutable price version", modelName)
+	}
+	common.SetContextKey(ctx, constant.ContextKeyTokenBillingMultiplier, price.BillingMultiplier)
 	allowed := make(map[int]struct{}, len(channelIds))
 	for _, channelId := range channelIds {
 		allowed[channelId] = struct{}{}
@@ -142,6 +163,29 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 		MaxUpstreamCost:   maxCost,
 		RequireCost:       true,
 	}, nil
+}
+
+func sameChannelIds(left []int, right []int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	seen := make(map[int]struct{}, len(left))
+	for _, id := range left {
+		seen[id] = struct{}{}
+	}
+	for _, id := range right {
+		if _, ok := seen[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func sameRoutePrice(left model.PriceComponents, right model.PriceComponents) bool {
+	return math.Abs(left.Input-right.Input) <= 0.000001 &&
+		math.Abs(left.CachedInput-right.CachedInput) <= 0.000001 &&
+		math.Abs(left.CacheCreation-right.CacheCreation) <= 0.000001 &&
+		math.Abs(left.Output-right.Output) <= 0.000001
 }
 
 func (p *RetryParam) GetRetry() int {

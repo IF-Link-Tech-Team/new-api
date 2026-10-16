@@ -17,7 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { act, render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
+import { useState } from 'react'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { beforeEach, expect, it, vi } from 'vitest'
 
@@ -78,32 +80,60 @@ it('translates billing history statuses and updates them when the language chang
   }
 })
 
-it('keeps wallet payment disabled until a supported amount is selected', () => {
-  render(
-    <I18nextProvider i18n={i18n}>
-      <RechargeFormCard
-        topupInfo={{
-          enable_online_topup: false,
-          enable_alipay_topup: true,
-          enable_stripe_topup: false,
-          pay_methods: [],
-          min_topup: 1,
-          stripe_min_topup: 1,
-          amount_options: [10, 30, 50],
-          discount: {},
-        }}
-        presetAmounts={[{ value: 10 }, { value: 30 }, { value: 50 }]}
-        selectedPreset={null}
-        topupAmount={1}
-        paymentLoading={null}
-        redemptionCode=''
-        redeeming={false}
-        onSelectPreset={vi.fn()}
-        onPaymentMethodSelect={vi.fn()}
-        onRedemptionCodeChange={vi.fn()}
-        onRedeem={vi.fn()}
-      />
-    </I18nextProvider>
-  )
-  expect(screen.getByRole('button', { name: /支付宝支付/ })).toBeDisabled()
+it('requires the configured minimum and preserves decimal custom recharge amounts', async () => {
+  const user = userEvent.setup()
+  const onPay = vi.fn()
+  function RechargeFixture() {
+    const [amount, setAmount] = useState(1)
+    return (
+      <I18nextProvider i18n={i18n}>
+        <RechargeFormCard
+          topupInfo={{
+            enable_online_topup: false,
+            enable_iflinkpay_topup: true,
+            enable_alipay_topup: false,
+            enable_stripe_topup: false,
+            pay_methods: [
+              { type: 'iflinkpay', name: 'IFLinkPay', min_topup: 2 },
+              { type: 'alipay', name: 'Disabled Alipay' },
+            ],
+            min_topup: 1,
+            stripe_min_topup: 1,
+            amount_options: [10, 30, 50],
+            discount: {},
+          }}
+          presetAmounts={[{ value: 10 }, { value: 30 }, { value: 50 }]}
+          selectedPreset={null}
+          topupAmount={amount}
+          onTopupAmountChange={setAmount}
+          paymentAmount={amount}
+          calculating={false}
+          paymentLoading={null}
+          redemptionCode=''
+          redeeming={false}
+          onSelectPreset={vi.fn()}
+          onPaymentMethodSelect={onPay}
+          onRedemptionCodeChange={vi.fn()}
+          onRedeem={vi.fn()}
+        />
+      </I18nextProvider>
+    )
+  }
+  render(<RechargeFixture />)
+  expect(screen.getByRole('button', { name: /IFLinkPay/ })).toBeDisabled()
+  expect(
+    screen.queryByRole('button', { name: 'Disabled Alipay' })
+  ).not.toBeInTheDocument()
+  const amount = screen.getByRole('spinbutton')
+  await user.clear(amount)
+  await user.type(amount, '2.25')
+  expect(amount).toHaveValue(2.25)
+  const pay = screen.getByRole('button', { name: 'IFLinkPay' })
+  expect(pay).toBeEnabled()
+  await user.click(pay)
+  expect(onPay).toHaveBeenCalledWith({
+    type: 'iflinkpay',
+    name: 'IFLinkPay',
+    min_topup: 2,
+  })
 })

@@ -39,6 +39,10 @@ func setupClassroomRedemptionTest(t *testing.T) (*SubscriptionPlan, []Redemption
 		Models: ClassroomModelV41 + "," + ClassroomModelV4GA, Group: "default",
 	}
 	require.NoError(t, DB.Create(&channel).Error)
+	require.NoError(t, DB.Create(&Channel{
+		Id: 14, Name: "果核-Qwen", Type: 1, Key: "test-qwen-key", Status: common.ChannelStatusEnabled,
+		Models: ClassroomModelQwen, Group: "default",
+	}).Error)
 	bootstrap, err := BootstrapClassroomProduct(true, true, true, 0)
 	require.NoError(t, err)
 	require.Equal(t, int64(2_500_000), bootstrap.TotalAmount)
@@ -92,6 +96,12 @@ func TestClassroomProductPricingAndBatchContract(t *testing.T) {
 	var ga ProductPrice
 	require.NoError(t, DB.Where("product_type = ? AND model = ?", ProductTypePackDeepSeekClassroom, ClassroomModelV4GA).First(&ga).Error)
 	assert.Contains(t, ga.BillingExpression, `cr * 0.10`)
+	var qwen ProductPrice
+	require.NoError(t, DB.Where("product_type = ? AND model = ?", ProductTypePackDeepSeekClassroom, ClassroomModelQwen).First(&qwen).Error)
+	assert.Equal(t, 1.0, qwen.BillingMultiplier)
+	assert.Equal(t, ClassroomPriceVersion, qwen.PriceVersion)
+	assert.Contains(t, qwen.BillingExpression, `cc * 1.25`)
+	assert.Equal(t, `[14]`, qwen.AllowedChannels)
 }
 
 func TestClassroomBootstrapCreatesHiddenPlanAndKeepsRedemptionEnabled(t *testing.T) {
@@ -109,6 +119,10 @@ func TestClassroomBootstrapCreatesHiddenPlanAndKeepsRedemptionEnabled(t *testing
 		Models: ClassroomModelV41 + "," + ClassroomModelV4GA, Group: "default",
 	}
 	require.NoError(t, DB.Create(&channel).Error)
+	require.NoError(t, DB.Create(&Channel{
+		Id: 14, Name: "果核-Qwen", Type: 1, Key: "test-qwen-key", Status: common.ChannelStatusEnabled,
+		Models: ClassroomModelQwen, Group: "default",
+	}).Error)
 
 	result, err := BootstrapClassroomProduct(true, true, false, 0)
 	require.NoError(t, err)
@@ -123,7 +137,7 @@ func TestClassroomProductPricesBothModelsIncludingCacheAndPeakWindows(t *testing
 	setupClassroomRedemptionTest(t)
 	location, err := time.LoadLocation("Asia/Shanghai")
 	require.NoError(t, err)
-	params := billingexpr.TokenParams{P: 1_000_000, C: 1_000_000, CR: 1_000_000, Len: 2_000_000}
+	params := billingexpr.TokenParams{P: 1_000_000, C: 1_000_000, CR: 1_000_000, CC: 1_000_000, Len: 2_000_000}
 
 	loadSnapshot := func(modelName string) *billingexpr.BillingSnapshot {
 		var price ProductPrice
@@ -171,6 +185,13 @@ func TestClassroomProductPricesBothModelsIncludingCacheAndPeakWindows(t *testing
 	require.Equal(t, "offpeak", weekend.MatchedTier)
 	require.Equal(t, offpeak.ActualQuotaAfterGroup, weekend.ActualQuotaAfterGroup)
 
+	qwen, err := billingexpr.ComputeTieredQuota(loadSnapshot(ClassroomModelQwen), params)
+	require.NoError(t, err)
+	require.Equal(t, "base", qwen.MatchedTier)
+	// (0.80 input + 0.10 cache hit + 1.25 cache creation + 2.70 output)
+	// * 1.00 * 500,000 quota/CNY.
+	require.Equal(t, 2_425_000, qwen.ActualQuotaAfterGroup)
+
 	// The ordinary wallet catalog shares the audited official expressions but
 	// freezes a 1.00 multiplier, so the classroom discount cannot leak to a
 	// normal API key.
@@ -202,12 +223,62 @@ func TestClassroomProductCanStopNewRedemptionsWithoutBreakingPriceSnapshots(t *t
 	require.NoError(t, DB.Model(&ProductPrice{}).
 		Where("product_type = ? AND enabled = ?", ProductTypePackDeepSeekClassroom, false).
 		Count(&disabledPrices).Error)
-	require.Equal(t, int64(2), disabledPrices)
+	require.Equal(t, int64(3), disabledPrices)
 
 	// Existing entitlements resolve by immutable version, independent of the
 	// current sale switch.
 	_, err = GetProductPriceSnapshot(ProductTypePackDeepSeekClassroom, ClassroomModelV4GA, ClassroomPriceVersion)
 	require.NoError(t, err)
+}
+
+func TestClassroomBootstrapMigratesExistingEntitlementWithoutResettingLedgerOrDates(t *testing.T) {
+	plan, codes := setupClassroomRedemptionTest(t)
+	user := &User{Username: "classroom-migrate", AffCode: "classroom-migrate-aff", Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, DB.Create(user).Error)
+	claim, err := RedeemProductCode(codes[0].Key, user.Id, plan.Id)
+	require.NoError(t, err)
+	var originalToken Token
+	require.NoError(t, DB.First(&originalToken, claim.TokenId).Error)
+	legacyScope, legacyAllowed, legacyCosts, err := classroomLegacySnapshot()
+	require.NoError(t, err)
+	startTime := common.GetTimestamp() - 300
+	endTime := common.GetTimestamp() + 7200
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", claim.UserSubscriptionId).Updates(map[string]interface{}{
+		"amount_total": int64(2_500_000), "amount_used": int64(12_345), "start_time": startTime, "end_time": endTime,
+		"price_version": ClassroomLegacyPriceVersion, "model_scope": legacyScope,
+		"allowed_channels": legacyAllowed, "max_upstream_cost": legacyCosts,
+	}).Error)
+	require.NoError(t, DB.Model(&Token{}).Where("id = ?", claim.TokenId).Updates(map[string]interface{}{
+		"used_quota": 12_345, "expired_time": endTime, "price_version": ClassroomLegacyPriceVersion,
+		"model_limits": legacyScope, "allowed_channels": legacyAllowed, "max_upstream_cost": legacyCosts,
+	}).Error)
+
+	result, err := BootstrapClassroomProduct(true, true, true, 0)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, result.MigratedSubscriptions)
+	require.EqualValues(t, 1, result.MigratedTokens)
+
+	var sub UserSubscription
+	require.NoError(t, DB.First(&sub, claim.UserSubscriptionId).Error)
+	require.Equal(t, int64(2_500_000), sub.AmountTotal)
+	require.Equal(t, int64(12_345), sub.AmountUsed)
+	require.Equal(t, startTime, sub.StartTime)
+	require.Equal(t, endTime, sub.EndTime)
+	require.Equal(t, ClassroomPriceVersion, sub.PriceVersion)
+	require.ElementsMatch(t, []string{ClassroomModelQwen, ClassroomModelV41, ClassroomModelV4GA}, explicitModelIds(sub.ModelScope))
+
+	var token Token
+	require.NoError(t, DB.First(&token, claim.TokenId).Error)
+	require.Equal(t, 12_345, token.UsedQuota)
+	require.Equal(t, endTime, token.ExpiredTime)
+	require.Equal(t, ClassroomPriceVersion, token.PriceVersion)
+	require.Equal(t, ClassroomPriceVersion, sub.PriceVersion)
+	require.Equal(t, originalToken.Key, token.Key)
+
+	idempotent, err := BootstrapClassroomProduct(true, true, true, 0)
+	require.NoError(t, err)
+	require.Zero(t, idempotent.MigratedSubscriptions)
+	require.Zero(t, idempotent.MigratedTokens)
 }
 
 func TestClassroomRedemptionIsAtomicIdempotentAndOnePerAccount(t *testing.T) {
