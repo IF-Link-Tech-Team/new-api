@@ -85,6 +85,10 @@ func OpenAIResponsesRequestToClaudeMessages(c context.Context, info convmeta.Met
 	for _, item := range inputItems {
 		itemType := strings.TrimSpace(kitutil.Interface2String(item["type"]))
 		switch itemType {
+		case "reasoning":
+			// A client may replay public Responses summaries. They are not
+			// signed Anthropic thinking blocks and must not become user messages.
+			continue
 		case ResponsesInputTypeFunctionCall:
 			claudeRequest.Messages = appendClaudeToolUse(claudeRequest.Messages, responsesFunctionCallItemToClaudeToolUse(item, "arguments"))
 		case ResponsesInputTypeCustomToolCall:
@@ -134,30 +138,10 @@ func responsesFunctionDeclarationsToClaudeTools(functions []dto.FunctionRequest)
 		tools = append(tools, &dto.Tool{
 			Name:        function.Name,
 			Description: function.Description,
-			InputSchema: responsesFunctionParametersToClaudeInputSchema(function.Parameters),
+			InputSchema: sharedclaude.FunctionParametersToInputSchema(function.Parameters),
 		})
 	}
 	return tools
-}
-
-func responsesFunctionParametersToClaudeInputSchema(parameters any) map[string]interface{} {
-	if params, ok := parameters.(map[string]any); ok {
-		schema := make(map[string]interface{}, len(params))
-		for key, value := range params {
-			schema[key] = value
-		}
-		if schema["type"] == nil {
-			schema["type"] = "object"
-		}
-		if schema["properties"] == nil {
-			schema["properties"] = map[string]interface{}{}
-		}
-		return schema
-	}
-	return map[string]interface{}{
-		"type":       "object",
-		"properties": map[string]interface{}{},
-	}
 }
 
 func applyResponsesReasoningToClaude(req *dto.OpenAIResponsesRequest, claudeRequest *dto.ClaudeRequest) {

@@ -17,15 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
+import { after as afterAll, afterEach, test } from 'node:test'
 
 import { Window } from 'happy-dom'
-
-const bunTestModule = 'bun:test'
-const { afterAll, afterEach, test } = (await import(bunTestModule)) as {
-  afterAll: typeof import('node:test').after
-  afterEach: typeof import('node:test').afterEach
-  test: typeof import('node:test').test
-}
 
 const domWindow = new Window({ url: 'https://token.iflink.tech/checkout' })
 const domGlobals = [
@@ -33,11 +27,13 @@ const domGlobals = [
   'document',
   'navigator',
   'HTMLElement',
+  'HTMLInputElement',
   'HTMLImageElement',
   'SVGElement',
   'Node',
   'Element',
   'Event',
+  'MouseEvent',
   'MutationObserver',
   'ResizeObserver',
   'requestAnimationFrame',
@@ -68,14 +64,9 @@ await i18n.use(initReactI18next).init({
   resources: {
     zh: {
       translation: {
-        'Alipay payment integration is in progress. Online payment is currently unavailable.':
-          '支付宝支付接入中，当前暂无法完成在线付款',
-        'Alipay QR code': '支付宝支付二维码',
-        'Alipay QR code pending': '支付宝支付二维码待接入',
         'Amount Due (RMB)': '应付金额（人民币）',
-        Payment: '支付',
+        'Pay with IFLinkPay': '使用 IFLinkPay 支付',
         'Product Name': '商品名称',
-        'Review your payment details': '请核对商品与金额',
       },
     },
   },
@@ -86,13 +77,11 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-const originalFetch = globalThis.fetch
 const originalAdapter = api.defaults.adapter
 let root: ReturnType<typeof createRoot> | null = null
 let host: HTMLDivElement | null = null
 
 afterEach(async () => {
-  globalThis.fetch = originalFetch
   api.defaults.adapter = originalAdapter
   if (root) {
     await act(async () => root?.unmount())
@@ -107,42 +96,54 @@ afterAll(() => {
   domWindow.close()
 })
 
-test('renders server-owned product details without creating an order', async () => {
-  const fetchRequests: string[] = []
+test('renders server-owned product details and starts direct IFLinkPay checkout', async () => {
   const apiRequests: Array<{ method?: string; url?: string }> = []
-  globalThis.fetch = async (input) => {
-    fetchRequests.push(String(input))
-    return {
-      ok: true,
-      json: async () => ({ alipayQrCodeUrl: '' }),
-    } as Response
-  }
   api.defaults.adapter = async (config) => {
     apiRequests.push({ method: config.method, url: config.url })
-    return {
-      data: {
+    let data: unknown
+    if (config.url === '/api/user/topup/info') {
+      data = {
+        success: true,
+        data: { enable_iflinkpay_topup: true },
+      }
+    } else if (config.method === 'post') {
+      data = {
+        success: false,
+        message: '支付请求失败',
+      }
+    } else {
+      data = {
         success: true,
         data: {
-          product_id: 'pro',
+          product_id: 'deepseek-classroom-5-20261014',
+          billing_multipliers: {
+            'qwen3.8-flash': 1,
+            'deepseek-v4-1-flash-260910': 0.6,
+          },
           plan: {
             id: 2,
-            title: 'Pro',
-            subtitle: '稳定使用',
-            price_amount: 79,
+            title: 'DeepSeek 课堂专享六折包',
+            subtitle: '课堂使用',
+            price_amount: 5,
             currency: 'CNY',
-            duration_unit: 'month',
-            duration_value: 1,
+            duration_unit: 'day',
+            duration_value: 10,
             quota_reset_period: 'never',
             enabled: true,
             listed: true,
             redemption_enabled: true,
             sort_order: 2,
             max_purchase_per_user: 1,
-            total_amount: 39_500_000,
-            product_code: 'pro',
+            total_amount: 2_500_000,
+            product_type: 'pack_deepseek_classroom',
+            product_code: 'deepseek-classroom-5-20261014',
+            model_scope: 'qwen3.8-flash,deepseek-v4-1-flash-260910',
           },
         },
-      },
+      }
+    }
+    return {
+      data,
       status: 200,
       statusText: 'OK',
       headers: {},
@@ -154,8 +155,9 @@ test('renders server-owned product details without creating an order', async () 
     defaultOptions: { queries: { retry: false, staleTime: Infinity } },
   })
   await queryClient.prefetchQuery({
-    queryKey: ['subscription-product', 'pro'],
-    queryFn: async () => (await getSubscriptionProduct('pro')).data,
+    queryKey: ['subscription-product', 'deepseek-classroom-5-20261014'],
+    queryFn: async () =>
+      (await getSubscriptionProduct('deepseek-classroom-5-20261014')).data,
   })
 
   host = document.createElement('div')
@@ -165,19 +167,44 @@ test('renders server-owned product details without creating an order', async () 
     root?.render(
       <QueryClientProvider client={queryClient}>
         <I18nextProvider i18n={i18n}>
-          <Checkout productId='pro' />
+          <Checkout productId='deepseek-classroom-5-20261014' />
         </I18nextProvider>
       </QueryClientProvider>
     )
   })
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
 
   const text = document.body.textContent ?? ''
-  assert.equal(text.includes('Pro'), true)
-  assert.equal(text.includes('¥79.00'), true)
-  assert.equal(text.includes('支付宝支付二维码待接入'), true)
-  assert.equal(text.includes('支付宝支付接入中，当前暂无法完成在线付款'), true)
+  assert.equal(text.includes('IF.Learn 启动包'), true)
+  assert.equal(text.includes('¥5.00'), true)
+  assert.equal(text.includes('10,000 算力点'), true)
+  assert.equal(text.includes('qwen3.8-flash'), true)
+  assert.equal(text.includes('官网价 ×1.00'), true)
+  assert.equal(text.includes('官网价 ×0.60'), true)
+  assert.equal(text.includes('使用 IFLinkPay 支付'), true)
+  assert.equal(text.includes('支付宝'), false)
+
+  const payButton = [...document.querySelectorAll('button')].find((element) =>
+    element.textContent?.includes('使用 IFLinkPay 支付')
+  )
+  assert.ok(payButton)
+  await act(async () => {
+    payButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
   assert.deepEqual(apiRequests, [
-    { method: 'get', url: '/api/subscription/products/pro' },
+    {
+      method: 'get',
+      url: '/api/subscription/products/deepseek-classroom-5-20261014',
+    },
+    {
+      method: 'get',
+      url: '/api/user/topup/info',
+    },
+    {
+      method: 'post',
+      url: '/api/subscription/iflinkpay/pay',
+    },
   ])
-  assert.deepEqual(fetchRequests, ['/payment-display.json'])
 })

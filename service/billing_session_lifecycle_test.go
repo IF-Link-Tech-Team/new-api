@@ -142,8 +142,8 @@ func TestBillingSessionRefundIsTerminalForSettlement(t *testing.T) {
 	session.Refund(c)
 	settleErr := session.Settle(0)
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
-		assert.Equal(t, 1000, getUserQuota(t, 501))
-		assert.Equal(t, 1000, getTokenRemainQuota(t, 501))
+		assert.Equal(collect, 1000, getUserQuota(t, 501))
+		assert.Equal(collect, 1000, getTokenRemainQuota(t, 501))
 	}, time.Second, 5*time.Millisecond)
 	assert.Error(t, settleErr, "a late settlement must not refund a failed request twice")
 }

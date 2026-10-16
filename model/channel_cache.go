@@ -124,23 +124,40 @@ func GetRandomSatisfiedChannelWithPolicy(group string, model string, retry int, 
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
-	// First, try to find channels with the exact model name.
-	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
-
-	// If no channels found, try to find channels with the normalized model name.
-	if len(channels) == 0 {
-		normalizedModel := ratio_setting.FormatMatchingModelName(model)
-		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
-	}
+	var channels []int
 	if policy != nil {
-		filtered := make([]int, 0, len(channels))
-		for _, channelId := range channels {
+		// An immutable product policy names the exact reviewed channel IDs and
+		// cost ceiling. Select those channels across their configured groups so a
+		// classroom entitlement does not require widening the wallet group.
+		normalizedModel := ratio_setting.FormatMatchingModelName(model)
+		channels = make([]int, 0, len(policy.AllowedChannelIds))
+		for channelId := range policy.AllowedChannelIds {
 			channel, ok := channelsIDM[channelId]
-			if ok && ChannelSatisfiesPolicy(channel, model, policy) {
-				filtered = append(filtered, channelId)
+			if !ok || channel.Status != common.ChannelStatusEnabled || !ChannelSatisfiesPolicy(channel, model, policy) {
+				continue
+			}
+			enabledForModel := false
+			for _, channelGroup := range channel.GetGroups() {
+				if isChannelIDInList(group2model2channels[channelGroup][model], channelId) ||
+					(normalizedModel != "" && normalizedModel != model && isChannelIDInList(group2model2channels[channelGroup][normalizedModel], channelId)) {
+					enabledForModel = true
+					break
+				}
+			}
+			if enabledForModel {
+				channels = append(channels, channelId)
 			}
 		}
-		channels = filtered
+		channels = filterChannelsByRequestPathAndModel(channels, requestPath, model)
+	} else {
+		// First, try to find channels with the exact model name.
+		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
+
+		// If no channels found, try to find channels with the normalized model name.
+		if len(channels) == 0 {
+			normalizedModel := ratio_setting.FormatMatchingModelName(model)
+			channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+		}
 	}
 
 	if len(channels) == 0 {

@@ -34,6 +34,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import {
+  cnyToComputePoints,
+  formatComputePoints,
+} from '@/lib/compute-points'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -43,6 +47,7 @@ import {
   getPaymentIcon,
   getMinTopupAmount,
   calculatePresetPricing,
+  getAvailablePaymentMethods,
 } from '../lib'
 import type {
   PaymentMethod,
@@ -81,7 +86,6 @@ interface RechargeFormCardProps {
   waffoMinTopup?: number
   onWaffoMethodSelect?: (method: WaffoPayMethod, index: number) => void
   enableWaffoPancakeTopup?: boolean
-  displayPendingAlipay?: boolean
 }
 
 export function RechargeFormCard({
@@ -112,7 +116,6 @@ export function RechargeFormCard({
   waffoMinTopup,
   onWaffoMethodSelect,
   enableWaffoPancakeTopup,
-  displayPendingAlipay = false,
 }: RechargeFormCardProps) {
   const { t } = useTranslation()
   const [localAmount, setLocalAmount] = useState(topupAmount.toString())
@@ -135,28 +138,14 @@ export function RechargeFormCard({
   }
 
   const hasConfigurableTopup =
-    displayPendingAlipay ||
     topupInfo?.enable_online_topup ||
     topupInfo?.enable_stripe_topup ||
     topupInfo?.enable_iflinkpay_topup ||
     enableWaffoTopup ||
     enableWaffoPancakeTopup
   const hasAnyTopup = hasConfigurableTopup || enableCreemTopup
-  const configuredPaymentMethods = topupInfo?.pay_methods || []
-  const hasConfiguredAlipay = configuredPaymentMethods.some(
-    (method) => method.type === 'alipay'
-  )
   const standardPaymentMethods: PaymentMethod[] =
-    displayPendingAlipay && !hasConfiguredAlipay
-      ? [
-          {
-            name: t('Alipay integration in progress'),
-            type: 'alipay',
-            display_only: true,
-          },
-          ...configuredPaymentMethods,
-        ]
-      : configuredPaymentMethods
+    getAvailablePaymentMethods(topupInfo)
   const hasStandardPaymentMethods = standardPaymentMethods.length > 0
   const hasWaffoPaymentMethods =
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
@@ -241,6 +230,27 @@ export function RechargeFormCard({
         <div className='space-y-4 sm:space-y-6'>
           {hasConfigurableTopup && (
             <>
+              <div className='bg-muted/30 grid gap-2 rounded-lg border px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-4'>
+                <div>
+                  <div className='text-sm font-semibold'>
+                    {t('1 CNY = 2,000 compute points')}
+                  </div>
+                  <p className='text-muted-foreground mt-0.5 text-xs'>
+                    {t(
+                      'Top-ups remain wallet cash; compute points are a display conversion only.'
+                    )}
+                  </p>
+                </div>
+                <div className='text-sm sm:text-right'>
+                  <span className='text-muted-foreground'>
+                    {t('Estimated credit')}:{' '}
+                  </span>
+                  <strong>
+                    {formatComputePoints(cnyToComputePoints(topupAmount))}
+                  </strong>
+                </div>
+              </div>
+
               {presetAmounts.length > 0 && (
                 <div className='space-y-2.5 sm:space-y-3'>
                   <Label className='text-muted-foreground text-xs font-medium tracking-wider uppercase'>

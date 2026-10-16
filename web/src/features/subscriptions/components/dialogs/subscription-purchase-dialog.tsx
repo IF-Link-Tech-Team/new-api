@@ -45,6 +45,7 @@ import {
   paySubscriptionEpay,
   paySubscriptionWaffoPancake,
   paySubscriptionBalance,
+  paySubscriptionIFLinkPay,
 } from '../../api'
 import { formatDuration, formatResetPeriod } from '../../lib'
 import type { PlanRecord } from '../../types'
@@ -62,6 +63,7 @@ interface Props {
   enableCreem?: boolean
   enableWaffoPancake?: boolean
   enableOnlineTopUp?: boolean
+  enableIFLinkPay?: boolean
   epayMethods?: PaymentMethod[]
   purchaseLimit?: number
   purchaseCount?: number
@@ -93,7 +95,9 @@ export function SubscriptionPurchaseDialog(props: Props) {
     props.enableWaffoPancake && !!plan.waffo_pancake_product_id
   const hasEpay =
     props.enableOnlineTopUp && (props.epayMethods || []).length > 0
-  const hasAnyPayment = hasStripe || hasCreem || hasWaffoPancake || hasEpay
+  const hasIFLinkPay = !!props.enableIFLinkPay
+  const hasAnyPayment =
+    hasIFLinkPay || hasStripe || hasCreem || hasWaffoPancake || hasEpay
   const selectedEpayMethodLabel =
     (props.epayMethods || []).find((m) => m.type === selectedEpayMethod)
       ?.name ||
@@ -257,6 +261,27 @@ export function SubscriptionPurchaseDialog(props: Props) {
     }
   }
 
+  const handlePayIFLinkPay = async () => {
+    setPaying(true)
+    try {
+      const res = await paySubscriptionIFLinkPay({ plan_id: plan.id })
+      if (res.success && res.data?.pay_url) {
+        toast.success(t('Redirecting to payment page...'))
+        window.location.href = res.data.pay_url
+      } else {
+        toast.error(
+          res.message && res.message !== 'success'
+            ? res.message
+            : t('Payment request failed')
+        )
+      }
+    } catch {
+      toast.error(t('Payment request failed'))
+    } finally {
+      setPaying(false)
+    }
+  }
+
   if (props.displayOnly) {
     return (
       <PaymentDisplayDialog
@@ -330,7 +355,10 @@ export function SubscriptionPurchaseDialog(props: Props) {
           <Separator />
           <div className='flex items-center justify-between'>
             <span className='text-sm font-medium'>{t('Amount Due')}</span>
-            <span className='text-primary text-lg font-bold'>${price}</span>
+            <span className='text-primary text-lg font-bold'>
+              {plan.currency === 'CNY' ? '¥' : `${plan.currency} `}
+              {price}
+            </span>
           </div>
         </div>
 
@@ -381,6 +409,15 @@ export function SubscriptionPurchaseDialog(props: Props) {
             <p className='text-muted-foreground text-xs'>
               {t('Select payment method')}
             </p>
+            {hasIFLinkPay && (
+              <Button
+                className='w-full'
+                onClick={handlePayIFLinkPay}
+                disabled={paying || limitReached}
+              >
+                {t('Pay with IFLinkPay')}
+              </Button>
+            )}
             {(hasStripe || hasCreem || hasWaffoPancake) && (
               <div className='grid grid-cols-2 gap-2 sm:flex'>
                 {hasStripe && (

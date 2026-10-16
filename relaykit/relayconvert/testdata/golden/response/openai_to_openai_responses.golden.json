@@ -35,7 +35,13 @@
         }
       ],
       "quality": "",
-      "size": ""
+      "size": "",
+      "summary": [
+        {
+          "type": "summary_text",
+          "text": "Deep thought."
+        }
+      ]
     },
     {
       "type": "function_call",

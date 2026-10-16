@@ -114,6 +114,28 @@ export function isIFLinkPayPayment(paymentType: string): boolean {
   return paymentType === PAYMENT_TYPES.IFLINKPAY
 }
 
+/**
+ * Only expose methods whose matching backend capability is enabled. The
+ * server keeps legacy method definitions for compatibility, so presence in
+ * pay_methods alone is not evidence that a method can currently accept money.
+ */
+export function getAvailablePaymentMethods(
+  topupInfo: TopupInfo | null
+): PaymentMethod[] {
+  return (topupInfo?.pay_methods || []).filter((method) => {
+    if (method.type === PAYMENT_TYPES.IFLINKPAY) {
+      return topupInfo?.enable_iflinkpay_topup === true
+    }
+    if (method.type === PAYMENT_TYPES.ALIPAY) {
+      return topupInfo?.enable_alipay_topup === true
+    }
+    if (method.type === PAYMENT_TYPES.STRIPE) {
+      return topupInfo?.enable_stripe_topup === true
+    }
+    return topupInfo?.enable_online_topup === true
+  })
+}
+
 export interface PaymentProcessors {
   regular: (topupAmount: number, paymentType: string) => Promise<boolean>
   waffo: (topupAmount: number, payMethodIndex: number) => Promise<boolean>
@@ -149,8 +171,9 @@ export function getDefaultPaymentType(topupInfo: TopupInfo | null): string {
   }
 
   // Return first available payment method or default
-  if (topupInfo.pay_methods?.length > 0) {
-    return topupInfo.pay_methods[0].type
+  const availableMethods = getAvailablePaymentMethods(topupInfo)
+  if (availableMethods.length > 0) {
+    return availableMethods[0].type
   }
 
   if (topupInfo.enable_stripe_topup) {
