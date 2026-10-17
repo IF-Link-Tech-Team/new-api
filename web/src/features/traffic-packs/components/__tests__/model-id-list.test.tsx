@@ -24,8 +24,8 @@ test('copies the exact model ID while showing each configured multiplier', async
       }}
     />
   )
-  expect(screen.getByText('官网价 ×1.00')).toBeVisible()
-  expect(screen.getByText('官网价 ×0.60')).toBeVisible()
+  expect(screen.getByText('Versioned base price ×1.00')).toBeVisible()
+  expect(screen.getByText('Versioned base price ×0.60')).toBeVisible()
   await user.click(
     screen.getByRole('button', { name: '复制模型 ID qwen3.8-flash' })
   )

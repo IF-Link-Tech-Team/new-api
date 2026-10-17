@@ -19,6 +19,7 @@ const (
 	ProductTypePackQwen              = "pack_qwen"
 	ProductTypePackK3                = "pack_k3"
 	ProductTypePackDeepSeekClassroom = "pack_deepseek_classroom"
+	ProductTypePackDeepSeekBigfish   = "pack_deepseek_bigfish"
 	ProductTypeActivationCredit      = "activation_credit"
 	ProductTypeLegacySubscription    = "legacy_subscription"
 
@@ -52,6 +53,7 @@ var frozenV1BillingMultipliers = map[string]float64{
 	ProductTypePackQwen:              0.75,
 	ProductTypePackK3:                0.95,
 	ProductTypePackDeepSeekClassroom: 0.60,
+	ProductTypePackDeepSeekBigfish:   0.60,
 }
 
 type PriceComponents struct {
@@ -119,7 +121,7 @@ func IsSubscriptionFundedProduct(productType string) bool {
 
 func RequiresStrictV1RoutePolicy(productType string) bool {
 	switch strings.TrimSpace(productType) {
-	case ProductTypeMonthlySubscription, ProductTypePackDSGLM, ProductTypePackQwen, ProductTypePackK3, ProductTypePackDeepSeekClassroom:
+	case ProductTypeMonthlySubscription, ProductTypePackDSGLM, ProductTypePackQwen, ProductTypePackK3, ProductTypePackDeepSeekClassroom, ProductTypePackDeepSeekBigfish:
 		return true
 	default:
 		return false
@@ -191,6 +193,9 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 	expectedDurationDays := 30
 	if p.ProductType == ProductTypePackDeepSeekClassroom {
 		expectedDurationDays = 10
+	}
+	if p.ProductType == ProductTypePackDeepSeekBigfish {
+		expectedDurationDays = 15
 	}
 	if p.DurationUnit != SubscriptionDurationDay || p.DurationValue != expectedDurationDays {
 		return fmt.Errorf("%s must have a fixed %d-day duration", p.ProductType, expectedDurationDays)
@@ -312,8 +317,13 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 			}
 		}
 	}
+	if p.ProductType == ProductTypePackDeepSeekBigfish {
+		if err := validateBigfishPlan(p, policy); err != nil {
+			return err
+		}
+	}
 	if NormalizeResetPeriod(p.QuotaResetPeriod) != SubscriptionResetNever {
-		return errors.New("V1 products cannot reset quota inside their 30-day entitlement")
+		return errors.New("V1 products cannot reset quota inside their entitlement")
 	}
 	expectedQuota, err := common.QuotaFromFloatStrict(p.PriceAmount * common.QuotaPerUnit)
 	if err != nil {
@@ -425,6 +435,11 @@ func (p *ProductPrice) ValidateV1() error {
 		}
 		if len(channelIds) != 1 || channelIds[0] != expectedChannel {
 			return fmt.Errorf("classroom product price for %s must be restricted to channel %d", p.Model, expectedChannel)
+		}
+	}
+	if p.ProductType == ProductTypePackDeepSeekBigfish {
+		if p.PriceVersion != BigfishPriceVersion || (p.Model != ClassroomModelV4GA && p.Model != ClassroomModelV41) || len(channelIds) != 1 || channelIds[0] != 15 {
+			return errors.New("bigfish prices require the audited Flash IDs, channel 15 and independent price version")
 		}
 	}
 	var cost PriceComponents

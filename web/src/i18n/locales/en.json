@@ -1,5 +1,10 @@
 {
   "translation": {
+    "Versioned base price": "Versioned base price",
+    "Sign in to view current prices": "Sign in to view current prices",
+    "Current prices unavailable": "Current prices unavailable. Please retry in the model catalog.",
+    "View current prices and access": "View current prices and access",
+    "No models available for this account": "No models available for this account",
     "360": "360",
     "1000": "1000",
     "10000": "10000",
