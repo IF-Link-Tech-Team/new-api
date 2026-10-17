@@ -37,12 +37,14 @@ import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { CTA, Features, Hero, HowItWorks, Stats } from './components'
+import { LandingModelZones } from './components/landing-model-zones'
 import { useHomePageContent } from './hooks'
 
 export function Home() {
   const { i18n, t } = useTranslation()
   const navigate = useNavigate()
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const customHomeRef = useRef<HTMLDivElement>(null)
   const { resolvedTheme } = useTheme()
   const { auth } = useAuthStore()
   const isAuthenticated = !!auth.user && !!auth.accessToken
@@ -135,13 +137,16 @@ export function Home() {
     if (contentIsHtml) {
       return (
         <PublicLayout showMainContainer={false}>
-          <RichContent
-            mode='html'
-            htmlVariant='isolated'
-            content={content}
-            className='custom-home-content'
-            onClick={handleCustomHomeClick}
-          />
+          <div ref={customHomeRef}>
+            <RichContent
+              mode='html'
+              htmlVariant='isolated'
+              content={content}
+              className='custom-home-content'
+              onClick={handleCustomHomeClick}
+            />
+            <LandingModelZones containerRef={customHomeRef} content={content} />
+          </div>
           <LoginRequiredDialog
             open={pendingProductId !== null}
             onOpenChange={(open) => {
