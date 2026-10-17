@@ -1,5 +1,9 @@
 {
   "translation": {
+    "Sign in to view current prices": "登录后查看实时价格",
+    "Current prices unavailable": "暂时无法读取价格，请到模型广场重试",
+    "View current prices and access": "查看实时价格与接入",
+    "No models available for this account": "当前账户暂无可用的专区模型",
     "360": "360",
     "1000": "1000",
     "10000": "10000",
