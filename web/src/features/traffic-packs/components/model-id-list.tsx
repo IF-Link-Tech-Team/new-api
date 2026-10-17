@@ -6,6 +6,8 @@ it under the terms of the GNU Affero General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
+import { useTranslation } from 'react-i18next'
+
 import { CopyButton } from '@/components/copy-button'
 
 interface ModelIdListProps {
@@ -19,6 +21,7 @@ export function ModelIdList({
   billingMultipliers = {},
   title = '可用模型',
 }: ModelIdListProps) {
+  const { t } = useTranslation()
   if (models.length === 0) return null
 
   return (
@@ -37,7 +40,7 @@ export function ModelIdList({
               </code>
               {typeof multiplier === 'number' && Number.isFinite(multiplier) ? (
                 <span className='text-muted-foreground shrink-0 text-xs tabular-nums'>
-                  官网价 ×{multiplier.toFixed(2)}
+                  {t('Versioned base price')} ×{multiplier.toFixed(2)}
                 </span>
               ) : null}
               <CopyButton

@@ -1,5 +1,6 @@
 {
   "translation": {
+    "Versioned base price": "版本基准价",
     "Sign in to view current prices": "登录后查看实时价格",
     "Current prices unavailable": "暂时无法读取价格，请到模型广场重试",
     "View current prices and access": "查看实时价格与接入",
@@ -5281,7 +5282,6 @@
     "DeepSeek call credit": "DeepSeek 调用额度",
     "Classroom model shared credit": "课堂模型共享额度",
     "Compute points": "算力点",
-    "1 CNY = 2,000 compute points": "1 元 = 2,000 算力点",
     "Top-ups remain wallet cash; compute points are a display conversion only.": "充值仍记入按量钱包；算力点仅用于清晰展示额度，不改变后台真实账本。",
     "Estimated credit": "预计到账",
     "A valid code grants the product directly. No payment is required before redemption.": "有效兑换码可直接领取商品，无需先完成付款。",

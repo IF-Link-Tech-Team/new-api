@@ -480,7 +480,7 @@ export function TrafficPacks({
                             {Object.keys(billingMultipliers).length === 0 ? (
                               <p className='flex items-center gap-2'>
                                 <ShieldCheck className='h-4 w-4 text-emerald-600' />
-                                官网价 ×
+                                {t('Versioned base price')} ×
                                 {Number(plan.billing_multiplier || 1).toFixed(
                                   2
                                 )}{' '}
@@ -707,7 +707,7 @@ export function TrafficPacks({
                             <p className='mt-1 font-medium'>
                               {Object.keys(billingMultipliers).length > 0
                                 ? '按模型计价'
-                                : `官网价 ×${Number(
+                                : `${t('Versioned base price')} ×${Number(
                                     sub.billing_multiplier || 1
                                   ).toFixed(2)}`}
                             </p>

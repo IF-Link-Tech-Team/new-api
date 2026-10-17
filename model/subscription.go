@@ -243,7 +243,24 @@ func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
 	now := common.GetTimestamp()
 	p.CreatedAt = now
 	p.UpdatedAt = now
+	if p.ProductType == ProductTypePackDeepSeekBigfish {
+		p.NormalizeDefaults()
+		return p.ValidateV1Contract()
+	}
 	return nil
+}
+
+func (p *SubscriptionPlan) AfterCreate(tx *gorm.DB) error {
+	if p.ProductType != ProductTypePackDeepSeekBigfish {
+		return nil
+	}
+	// GORM's legacy default:true tags would otherwise turn explicit false into
+	// a live/listed/redeemable SKU. New Bigfish products always start as drafts;
+	// reviewed activation must be an explicit, separate admin update.
+	p.Enabled, p.Listed, p.RedemptionEnabled = false, false, false
+	return tx.Model(p).UpdateColumns(map[string]interface{}{
+		"enabled": false, "listed": false, "redemption_enabled": false,
+	}).Error
 }
 
 func (p *SubscriptionPlan) BeforeUpdate(tx *gorm.DB) error {
@@ -492,6 +509,23 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 	var lockedUser User
 	if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&lockedUser).Error; err != nil {
 		return nil, nil, err
+	}
+	if plan.ProductType == ProductTypePackDeepSeekBigfish {
+		if err := checkBigfishPurchaseHistoryTx(tx, userId); err != nil {
+			return nil, nil, err
+		}
+		var pending SubscriptionOrder
+		result := tx.Where("user_id = ? AND product_type = ? AND product_family = ? AND status = ?", userId, ProductTypePackDeepSeekBigfish, BigfishProductFamily, common.TopUpStatusPending).Order("id").Limit(1).Find(&pending)
+		if result.Error != nil {
+			return nil, nil, result.Error
+		}
+		if result.RowsAffected > 0 {
+			if pending.PlanId == plan.Id && pending.PaymentProvider == PaymentProviderIFLinkPay && paymentProvider == PaymentProviderIFLinkPay && pending.PaymentMethod == paymentMethod {
+				frozen, err := provisionPlanFromOrder(&pending, plan)
+				return &pending, frozen, err
+			}
+			return nil, nil, errors.New("已有待支付的大肥鱼活动订单，请完成原订单或联系管理员取消后再选档")
+		}
 	}
 
 	order := &SubscriptionOrder{
@@ -852,6 +886,15 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		return nil, err
 	}
 	nowUnix := getDBTimestampTx(tx)
+	if plan.ProductType == ProductTypePackDeepSeekBigfish {
+		var lockedUser User
+		if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&lockedUser).Error; err != nil {
+			return nil, err
+		}
+		if err := checkBigfishPurchaseHistoryTx(tx, userId); err != nil {
+			return nil, err
+		}
+	}
 	var monthlyCycle *MonthlySubscriptionCycle
 	periodId := ""
 	if plan.ProductType == ProductTypeMonthlySubscription {

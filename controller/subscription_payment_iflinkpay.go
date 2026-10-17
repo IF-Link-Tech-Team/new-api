@@ -75,6 +75,8 @@ func SubscriptionRequestIFLinkPay(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	// A Bigfish checkout retry resumes its existing pending order.
+	tradeNo = order.TradeNo
 	amountFen := int64(math.Round(order.Money * 100))
 	if amountFen <= 0 {
 		_ = model.ExpireSubscriptionOrder(tradeNo, model.PaymentProviderIFLinkPay)

@@ -52,6 +52,7 @@ await i18n.use(initReactI18next).init({
     zh: {
       translation: {
         Copied: '已复制',
+        'Versioned base price': '版本基准价',
       },
     },
   },
@@ -110,8 +111,9 @@ test('copies the exact API model ID and renders model-level pricing', async () =
   })
   await renderList()
 
-  assert.match(host?.textContent || '', /官网价 ×1\.00/)
-  assert.match(host?.textContent || '', /官网价 ×0\.60/)
+  assert.match(host?.textContent || '', /版本基准价 ×1\.00/)
+  assert.match(host?.textContent || '', /版本基准价 ×0\.60/)
+  assert.equal(host?.textContent?.includes('官网价'), false)
   const button = host?.querySelector<HTMLButtonElement>(
     '[aria-label="复制模型 ID qwen3.8-flash"]'
   )
