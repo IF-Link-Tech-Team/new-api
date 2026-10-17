@@ -40,6 +40,8 @@ const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { HtmlContent } = await import('@/components/html-content')
 const { useAuthStore } = await import('@/stores/auth-store')
+const { useSystemConfigStore, DEFAULT_CURRENCY_CONFIG } =
+  await import('@/stores/system-config-store')
 const { api } = await import('@/lib/api')
 const { getPricing } = await import('@/features/pricing/api')
 const { formatPrice } = await import('@/features/pricing/lib/price')
@@ -115,6 +117,9 @@ async function mount() {
 }
 
 function setUp() {
+  useSystemConfigStore
+    .getState()
+    .setConfig({ currency: { ...DEFAULT_CURRENCY_CONFIG } })
   useAuthStore.getState().auth.reset()
   requests = []
   api.defaults.adapter = async (config) => {
@@ -200,6 +205,27 @@ test('signing in shows server prices and filters unavailable models; signing out
   await act(async () => useAuthStore.getState().auth.reset())
   assert.equal(shadow.querySelector('.zone-model-prices'), null)
   assert.match(shadow.textContent || '', /Sign in to view current prices/)
+})
+
+test('late currency settings refresh already visible model prices', async () => {
+  setUp()
+  queryClient.setQueryData(
+    ['pricing', 'landing-model-zones', 7, 'landing-test-session'],
+    catalog
+  )
+  signIn()
+  const shadow = await mount()
+  assert.match(shadow.querySelector('dd')?.textContent || '', /^\$/)
+  await act(async () =>
+    useSystemConfigStore.getState().setConfig({
+      currency: {
+        ...DEFAULT_CURRENCY_CONFIG,
+        quotaDisplayType: 'CNY',
+        usdExchangeRate: 7,
+      },
+    })
+  )
+  assert.match(shadow.querySelector('dd')?.textContent || '', /^¥14/)
 })
 
 test('a model outside usable groups is omitted even when present in the server catalog', async () => {

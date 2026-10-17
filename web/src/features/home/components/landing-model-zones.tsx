@@ -21,6 +21,7 @@ import { getAvailableGroups } from '@/features/pricing/lib/model-helpers'
 import { formatPrice, formatRequestPrice } from '@/features/pricing/lib/price'
 import type { PricingModel } from '@/features/pricing/types'
 import { useAuthStore } from '@/stores/auth-store'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
   readLandingModelZones,
@@ -29,6 +30,8 @@ import {
 
 function LandingModelPrice(props: { model: PricingModel; group: string }) {
   const { t } = useTranslation()
+  // Existing formatters read this store; subscribe to late configuration updates.
+  useSystemConfigStore((state) => state.config.currency)
   const model = props.model
   if (isDynamicPricingModel(model)) {
     const summary = getDynamicPricingSummary(model, {
