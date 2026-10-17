@@ -34,10 +34,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import {
-  cnyToComputePoints,
-  formatComputePoints,
-} from '@/lib/compute-points'
+import { cnyToComputePoints, formatComputePoints } from '@/lib/compute-points'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -232,9 +229,6 @@ export function RechargeFormCard({
             <>
               <div className='bg-muted/30 grid gap-2 rounded-lg border px-3 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-4'>
                 <div>
-                  <div className='text-sm font-semibold'>
-                    {t('1 CNY = 2,000 compute points')}
-                  </div>
                   <p className='text-muted-foreground mt-0.5 text-xs'>
                     {t(
                       'Top-ups remain wallet cash; compute points are a display conversion only.'

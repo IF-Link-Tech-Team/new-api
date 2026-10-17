@@ -181,8 +181,8 @@ test('renders server-owned product details and starts direct IFLinkPay checkout'
   assert.equal(text.includes('¥5.00'), true)
   assert.equal(text.includes('10,000 算力点'), true)
   assert.equal(text.includes('qwen3.8-flash'), true)
-  assert.equal(text.includes('官网价 ×1.00'), true)
-  assert.equal(text.includes('官网价 ×0.60'), true)
+  assert.equal(text.includes('Versioned base price ×1.00'), true)
+  assert.equal(text.includes('Versioned base price ×0.60'), true)
   assert.equal(text.includes('使用 IFLinkPay 支付'), true)
   assert.equal(text.includes('支付宝'), false)
 
