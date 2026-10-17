@@ -1,0 +1,137 @@
+{
+  "stage": "draft",
+  "launch_blockers": [
+    "确认 V4.1 Flash 闲时上游实际结算是否减半，不能把静态峰时成本当作已核实的闲时成本",
+    "核实存量精确模型版本与官方现售版本的对应关系及中国法定节假日计费口径；暂不宣传六折",
+    "确认三档合计每账号限购一份、不续期不叠加的活动规则，以及实际开售和停售时间",
+    "确认用户提供的三张美术素材的商业使用授权"
+  ],
+  "price_requests": [
+    {
+      "price": {
+        "product_type": "pack_deepseek_bigfish",
+        "model": "deepseek-v4-flash-ga-260731",
+        "price_version": "deepseek-bigfish-20261017-v1",
+        "effective_at": 0,
+        "billing_expression": "tier(\"base\", p * 3 + cr * 0.1 + c * 9)",
+        "billing_multiplier": 0.6,
+        "official_reference_price": "{\"input\":3.0,\"cached_input\":0.1,\"output\":9.0}",
+        "user_selling_price": "{\"input\":1.8,\"cached_input\":0.06,\"output\":5.4}",
+        "upstream_settlement_price": "{\"input\":1.5,\"cached_input\":0.05,\"output\":4.5}",
+        "allowed_channels": "[15]",
+        "max_upstream_cost": "{\"input\":1.5,\"cached_input\":0.05,\"output\":4.5}",
+        "fallback_allowed": false,
+        "enabled": false
+      }
+    },
+    {
+      "price": {
+        "product_type": "pack_deepseek_bigfish",
+        "model": "deepseek-v4-1-flash-260910",
+        "price_version": "deepseek-bigfish-20261017-v1",
+        "effective_at": 0,
+        "billing_expression": "weekday(\"Asia/Shanghai\") >= 1 && weekday(\"Asia/Shanghai\") <= 5 && ((hour(\"Asia/Shanghai\") >= 9 && hour(\"Asia/Shanghai\") < 12) || (hour(\"Asia/Shanghai\") >= 14 && hour(\"Asia/Shanghai\") < 18)) ? tier(\"peak\", p * 2 + cr * 0.04 + c * 8) : tier(\"offpeak\", p * 1 + cr * 0.02 + c * 4)",
+        "billing_multiplier": 0.6,
+        "official_reference_price": "{\"input\":2.0,\"cached_input\":0.04,\"output\":8.0}",
+        "user_selling_price": "{\"input\":1.2,\"cached_input\":0.024,\"output\":4.8}",
+        "upstream_settlement_price": "{\"input\":1.0,\"cached_input\":0.02,\"output\":4.0}",
+        "allowed_channels": "[15]",
+        "max_upstream_cost": "{\"input\":1.0,\"cached_input\":0.02,\"output\":4.0}",
+        "fallback_allowed": false,
+        "enabled": false
+      }
+    }
+  ],
+  "plan_requests": [
+    {
+      "plan": {
+        "title": "DeepSeek 大肥鱼 Lite",
+        "subtitle": "19,800 算力点 · DeepSeek 专属 · 支付成功后 15 天有效 · 三档合计每账号限购一份",
+        "product_type": "pack_deepseek_bigfish",
+        "product_code": "deepseek-bigfish-lite-20261017",
+        "product_family": "deepseek-bigfish-promo-20261017",
+        "product_tier": 0,
+        "price_amount": 9.9,
+        "currency": "CNY",
+        "total_amount": 4950000,
+        "duration_unit": "day",
+        "duration_value": 15,
+        "quota_reset_period": "never",
+        "category": "package",
+        "billing_multiplier": 0.6,
+        "price_version": "deepseek-bigfish-20261017-v1",
+        "model_scope": "deepseek-v4-flash-ga-260731,deepseek-v4-1-flash-260910",
+        "allowed_channels": "{\"deepseek-v4-flash-ga-260731\":[15],\"deepseek-v4-1-flash-260910\":[15]}",
+        "max_upstream_cost": "{\"deepseek-v4-flash-ga-260731\":{\"input\":1.5,\"cached_input\":0.05,\"output\":4.5},\"deepseek-v4-1-flash-260910\":{\"input\":1.0,\"cached_input\":0.02,\"output\":4.0}}",
+        "fallback_allowed": false,
+        "allow_wallet_overflow": false,
+        "allow_balance_pay": false,
+        "max_purchase_per_user": 1,
+        "course_eligible": false,
+        "enabled": false,
+        "listed": false,
+        "redemption_enabled": false
+      }
+    },
+    {
+      "plan": {
+        "title": "DeepSeek 大肥鱼 Pro",
+        "subtitle": "39,800 算力点 · DeepSeek 专属 · 支付成功后 15 天有效 · 三档合计每账号限购一份",
+        "product_type": "pack_deepseek_bigfish",
+        "product_code": "deepseek-bigfish-pro-20261017",
+        "product_family": "deepseek-bigfish-promo-20261017",
+        "product_tier": 0,
+        "price_amount": 19.9,
+        "currency": "CNY",
+        "total_amount": 9950000,
+        "duration_unit": "day",
+        "duration_value": 15,
+        "quota_reset_period": "never",
+        "category": "package",
+        "billing_multiplier": 0.6,
+        "price_version": "deepseek-bigfish-20261017-v1",
+        "model_scope": "deepseek-v4-flash-ga-260731,deepseek-v4-1-flash-260910",
+        "allowed_channels": "{\"deepseek-v4-flash-ga-260731\":[15],\"deepseek-v4-1-flash-260910\":[15]}",
+        "max_upstream_cost": "{\"deepseek-v4-flash-ga-260731\":{\"input\":1.5,\"cached_input\":0.05,\"output\":4.5},\"deepseek-v4-1-flash-260910\":{\"input\":1.0,\"cached_input\":0.02,\"output\":4.0}}",
+        "fallback_allowed": false,
+        "allow_wallet_overflow": false,
+        "allow_balance_pay": false,
+        "max_purchase_per_user": 1,
+        "course_eligible": false,
+        "enabled": false,
+        "listed": false,
+        "redemption_enabled": false
+      }
+    },
+    {
+      "plan": {
+        "title": "DeepSeek 大肥鱼 Max",
+        "subtitle": "79,800 算力点 · DeepSeek 专属 · 支付成功后 15 天有效 · 三档合计每账号限购一份",
+        "product_type": "pack_deepseek_bigfish",
+        "product_code": "deepseek-bigfish-max-20261017",
+        "product_family": "deepseek-bigfish-promo-20261017",
+        "product_tier": 0,
+        "price_amount": 39.9,
+        "currency": "CNY",
+        "total_amount": 19950000,
+        "duration_unit": "day",
+        "duration_value": 15,
+        "quota_reset_period": "never",
+        "category": "package",
+        "billing_multiplier": 0.6,
+        "price_version": "deepseek-bigfish-20261017-v1",
+        "model_scope": "deepseek-v4-flash-ga-260731,deepseek-v4-1-flash-260910",
+        "allowed_channels": "{\"deepseek-v4-flash-ga-260731\":[15],\"deepseek-v4-1-flash-260910\":[15]}",
+        "max_upstream_cost": "{\"deepseek-v4-flash-ga-260731\":{\"input\":1.5,\"cached_input\":0.05,\"output\":4.5},\"deepseek-v4-1-flash-260910\":{\"input\":1.0,\"cached_input\":0.02,\"output\":4.0}}",
+        "fallback_allowed": false,
+        "allow_wallet_overflow": false,
+        "allow_balance_pay": false,
+        "max_purchase_per_user": 1,
+        "course_eligible": false,
+        "enabled": false,
+        "listed": false,
+        "redemption_enabled": false
+      }
+    }
+  ]
+}
