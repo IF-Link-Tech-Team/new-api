@@ -144,7 +144,7 @@ jobs:
           - package: service
             tests: 'TestBillingRefund|TestSubscriptionBillingSession|TestBillingSessionRefundIsTerminal|TestMarginReport'
           - package: controller
-            tests: 'TestIFLinkPayHTTP|TestIFLinkPayBigfish|TestBillingRefundHTTP|TestChannelCostVerified'
+            tests: 'TestIFLinkPayHTTP|TestIFLinkPayBigfish|TestBillingRefundHTTP|TestChannelCostVerified|TestStorefrontCatalog'
     services:
       postgres:
         image: postgres:16

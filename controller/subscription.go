@@ -409,6 +409,16 @@ func normalizeAdminSubscriptionPlan(plan *model.SubscriptionPlan) error {
 	plan.ModelScope = strings.TrimSpace(plan.ModelScope)
 	plan.Category = model.NormalizeSubscriptionCategory(plan.Category)
 	plan.QuotaResetPeriod = model.NormalizeResetPeriod(plan.QuotaResetPeriod)
+	plan.DisplayMetadata = strings.TrimSpace(plan.DisplayMetadata)
+	if plan.DisplayMetadata != "" {
+		if len(plan.DisplayMetadata) > 16384 {
+			return fmt.Errorf("display_metadata 过长")
+		}
+		var metadata map[string]any
+		if err := common.UnmarshalJsonStr(plan.DisplayMetadata, &metadata); err != nil {
+			return fmt.Errorf("display_metadata 必须是合法的 JSON 对象")
+		}
+	}
 	if plan.ProductType != "" {
 		if plan.Currency == "" {
 			plan.Currency = "CNY"
@@ -642,6 +652,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"fallback_allowed":           req.Plan.FallbackAllowed,
 			"course_eligible":            req.Plan.CourseEligible,
 			"template_id":                req.Plan.TemplateId,
+			"display_metadata":           req.Plan.DisplayMetadata,
 			"updated_at":                 common.GetTimestamp(),
 		}
 		if req.Plan.AllowBalancePay != nil {

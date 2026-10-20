@@ -33,6 +33,7 @@ import { useTheme } from '@/context/theme-provider'
 import { LoginRequiredDialog } from '@/features/checkout/components/login-required-dialog'
 import { buildCheckoutPath } from '@/features/checkout/lib/checkout-path'
 import { paymentSelectionFromEventPath } from '@/features/payment-display/lib/payment-trigger'
+import { LandingStorefront } from '@/features/storefront/components/landing-storefront'
 import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -137,15 +138,21 @@ export function Home() {
     if (contentIsHtml) {
       return (
         <PublicLayout showMainContainer={false}>
-          <div ref={customHomeRef}>
+          {/*
+            The click handler lives on the wrapper (not on RichContent) so
+            purchase buttons rendered through storefront/model-zone portals
+            into the shadow root still reach it: portal events bubble through
+            the React tree, and this div is their common React ancestor.
+          */}
+          <div ref={customHomeRef} onClick={handleCustomHomeClick}>
             <RichContent
               mode='html'
               htmlVariant='isolated'
               content={content}
               className='custom-home-content'
-              onClick={handleCustomHomeClick}
             />
             <LandingModelZones containerRef={customHomeRef} content={content} />
+            <LandingStorefront containerRef={customHomeRef} content={content} />
           </div>
           <LoginRequiredDialog
             open={pendingProductId !== null}
