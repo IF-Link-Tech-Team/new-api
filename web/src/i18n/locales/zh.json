@@ -7514,6 +7514,7 @@
     "Template billing multiplier: {{value}}": "模板计费倍率：{{value}}",
     "After disabling, this price version stops selling, but historical purchases keep their settled price. Continue?": "禁用后该价格版本停止售卖，历史购买仍按原结算价计费。继续？",
     "After enabling, this price version becomes sellable. Continue?": "启用后该价格版本将开放售卖。继续？",
-    "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "调用退款核对：凭据={{receipt}} 操作={{action}}"
+    "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "调用退款核对：凭据={{receipt}} 操作={{action}}",
+    "Not on sale yet": "暂未开售"
   }
 }
