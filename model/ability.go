@@ -175,9 +175,14 @@ func GetChannelWithPolicy(group string, model string, retry int, requestPath str
 		}
 		eligibleChannelIds = make([]int, 0, len(candidates))
 		for _, candidate := range candidates {
-			if candidate.Status == common.ChannelStatusEnabled && ChannelSatisfiesPolicy(candidate, model, policy) {
-				eligibleChannelIds = append(eligibleChannelIds, candidate.Id)
+			if candidate.Status != common.ChannelStatusEnabled {
+				continue
 			}
+			if !ChannelSatisfiesPolicy(candidate, model, policy) {
+				noteCostPolicyExclusion(candidate, model, policy)
+				continue
+			}
+			eligibleChannelIds = append(eligibleChannelIds, candidate.Id)
 		}
 	}
 

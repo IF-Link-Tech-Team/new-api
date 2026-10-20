@@ -1083,6 +1083,12 @@ func UpdateChannel(c *gin.Context) {
 			// 覆盖模式：直接使用新密钥（默认行为，不需要特殊处理）
 		}
 	}
+	// An explicit upstream_costs change (already gated on ChannelSensitiveWrite
+	// above) re-stamps the cost provenance fields with the operating admin.
+	if _, provided := requestData["upstream_costs"]; provided && channel.UpstreamCosts != originChannel.UpstreamCosts {
+		channel.CostVerifiedAt = common.GetTimestamp()
+		channel.CostVerifiedBy = c.GetInt("id")
+	}
 	err = channel.Update()
 	if err != nil {
 		common.ApiError(c, err)
