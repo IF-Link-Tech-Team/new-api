@@ -571,6 +571,30 @@ func increaseTokenQuota(id int, quota int) (err error) {
 	return err
 }
 
+// AdjustTokenQuotaDirect is used by durable billing sessions. A refundable
+// debit must reach SQL rather than the process-local batch queue, otherwise a
+// restart could replay a refund for a debit that was never persisted.
+func AdjustTokenQuotaDirect(id int, key string, delta int) error {
+	result := DB.Model(&Token{}).Where("id = ?", id).Updates(map[string]any{
+		"remain_quota": gorm.Expr("remain_quota + ?", delta), "used_quota": gorm.Expr("used_quota - ?", delta), "accessed_time": common.GetTimestamp(),
+	})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("billing token not found")
+	}
+	if common.RedisEnabled {
+		if err := cacheIncrTokenQuota(key, int64(delta)); err != nil {
+			common.SysError("billing token cache update failed: " + err.Error())
+			if err := cacheDeleteToken(key); err != nil {
+				common.SysError("billing token cache invalidation failed: " + err.Error())
+			}
+		}
+	}
+	return nil
+}
+
 func DecreaseTokenQuota(id int, key string, quota int) (err error) {
 	if quota < 0 {
 		return errors.New("quota 不能为负数！")

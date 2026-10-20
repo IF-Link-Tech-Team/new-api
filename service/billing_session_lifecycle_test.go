@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"os"
 	"sync/atomic"
@@ -48,9 +49,9 @@ func setupBillingLifecycleDB(t *testing.T) {
 		require.NoError(t, model.InitLogDB())
 		model.LOG_DB = previousLogDB
 	})
-	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.BillingRefund{}))
 	t.Cleanup(func() {
-		for _, table := range []string{"subscription_pre_consume_records", "user_subscriptions", "subscription_plans", "tokens", "users"} {
+		for _, table := range []string{"billing_refunds", "subscription_pre_consume_records", "user_subscriptions", "subscription_plans", "tokens", "users"} {
 			require.NoError(t, model.DB.Exec("DELETE FROM "+table).Error)
 		}
 	})
@@ -84,21 +85,26 @@ func TestSubscriptionBillingSessionConcurrentSettlementAndRefund(t *testing.T) {
 	settleErr := <-settleDone
 	<-refundDone
 	wantUsed, wantKey := int64(60), 940
+	wantStatus := model.BillingRefundSettled
 	if settleErr != nil {
 		require.ErrorContains(t, settleErr, "already refunded")
 		wantUsed, wantKey = 0, 1000
+		wantStatus = model.BillingRefundSucceeded
 	}
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
 		var sub model.UserSubscription
 		assert.NoError(collect, model.DB.First(&sub, subID).Error)
 		assert.Equal(collect, wantUsed, sub.AmountUsed)
 		assert.Equal(collect, wantKey, getTokenRemainQuota(t, 601))
+		var receipt model.BillingRefund
+		assert.NoError(collect, model.DB.Where("id = ?", session.refundReceipt.ID).Find(&receipt).Error)
+		assert.Equal(collect, wantStatus, receipt.Status)
 	}, 3*time.Second, 5*time.Millisecond)
 	assert.Equal(t, 1000, getUserQuota(t, 601), "bound keys must not touch wallet balance")
 	assert.False(t, session.NeedsRefund())
 }
 
-func TestSubscriptionBillingSessionExhaustedRefundRequiresExplicitRecovery(t *testing.T) {
+func TestSubscriptionBillingSessionFailedRefundIsDurableAndRecoveredByWorker(t *testing.T) {
 	session, c, subID := seedSubscriptionBillingSession(t, "exhausted-refund")
 	var attempts atomic.Int32
 	const callback = "test:refund-storage-outage"
@@ -111,24 +117,35 @@ func TestSubscriptionBillingSessionExhaustedRefundRequiresExplicitRecovery(t *te
 	t.Cleanup(func() { require.NoError(t, model.DB.Callback().Update().Remove(callback)) })
 	session.Refund(c)
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
-		assert.EqualValues(collect, 3, attempts.Load())
-		assert.Equal(collect, 1000, getTokenRemainQuota(t, 601))
+		var receipt model.BillingRefund
+		assert.NoError(collect, model.DB.Where("id = ?", session.refundReceipt.ID).Find(&receipt).Error)
+		assert.Equal(collect, model.BillingRefundFailed, receipt.Status)
+		assert.Equal(collect, 1, receipt.Attempts)
 	}, 3*time.Second, 5*time.Millisecond)
+	require.Error(t, processBillingRefund(session.refundReceipt.ID))
+	require.Error(t, processBillingRefund(session.refundReceipt.ID))
+	assert.EqualValues(t, 3, attempts.Load())
+	alerts, err := model.CountBillingRefundAlerts(time.Now().Unix())
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, alerts)
+	assert.Equal(t, 900, getTokenRemainQuota(t, 601), "failed SQL refunds roll back Key and pool together")
 	require.NoError(t, model.DB.Callback().Update().Remove(callback))
 	session.Refund(c)
-	assert.False(t, session.NeedsRefund(), "an exhausted async refund is terminal in memory")
+	assert.False(t, session.NeedsRefund(), "the durable worker now owns the refund")
 	var sub model.UserSubscription
 	require.NoError(t, model.DB.First(&sub, subID).Error)
 	assert.EqualValues(t, 100, sub.AmountUsed, "failed source refund retains the reservation")
 	var record model.SubscriptionPreConsumeRecord
 	require.NoError(t, model.DB.Where("request_id = ?", "exhausted-refund").First(&record).Error)
-	assert.Equal(t, "consumed", record.Status, "there is no durable refund-pending state")
-	// Recovery works only when an operator independently knows this failed
-	// request ID and its idempotency record has not been cleaned up.
-	require.NoError(t, model.RefundSubscriptionPreConsume("exhausted-refund"))
-	require.NoError(t, model.RefundSubscriptionPreConsume("exhausted-refund"))
+	assert.Equal(t, "consumed", record.Status)
+	require.NoError(t, model.ReviewBillingRefund(session.refundReceipt.ID, 999, "retry", "synthetic outage resolved and verified"))
+	result, err := ReconcileBillingRefunds(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.Completed)
+	require.NoError(t, model.ProcessBillingRefund(session.refundReceipt.ID))
 	require.NoError(t, model.DB.First(&sub, subID).Error)
 	assert.Zero(t, sub.AmountUsed)
+	assert.Equal(t, 1000, getTokenRemainQuota(t, 601))
 }
 
 func TestBillingSessionRefundIsTerminalForSettlement(t *testing.T) {
@@ -144,6 +161,9 @@ func TestBillingSessionRefundIsTerminalForSettlement(t *testing.T) {
 	require.EventuallyWithT(t, func(collect *assert.CollectT) {
 		assert.Equal(collect, 1000, getUserQuota(t, 501))
 		assert.Equal(collect, 1000, getTokenRemainQuota(t, 501))
+		var receipt model.BillingRefund
+		assert.NoError(collect, model.DB.Where("id = ?", session.refundReceipt.ID).Find(&receipt).Error)
+		assert.Equal(collect, model.BillingRefundSucceeded, receipt.Status)
 	}, time.Second, 5*time.Millisecond)
 	assert.Error(t, settleErr, "a late settlement must not refund a failed request twice")
 }
@@ -182,4 +202,25 @@ func TestBillingSessionStorageErrorIsNotClassifiedByMessage(t *testing.T) {
 	require.ErrorIs(t, apiErr, databaseErr)
 	assert.Equal(t, types.ErrorCodeUpdateDataError, apiErr.GetErrorCode())
 	assert.Equal(t, 1000, getTokenRemainQuota(t, 503), "failed pre-consumption must roll back the key reservation")
+}
+
+// 预扣截断为 0 的会话没有持久凭据;Reserve 真实扣款后,退款必须凭据化恢复,
+// 不得静默丢失(评审 M1 回归)。
+func TestBillingSessionReserveAfterZeroPreConsumeRefundsDurably(t *testing.T) {
+	setupBillingLifecycleDB(t)
+	seedUser(t, 701, 1000)
+	seedToken(t, 701, 701, "reserve-after-zero", 1000)
+	c, _ := gin.CreateTestContext(nil)
+	info := &relaycommon.RelayInfo{UserId: 701, TokenId: 701, TokenKey: "reserve-after-zero", RequestId: "reserve-after-zero", ForcePreConsume: true}
+	session, apiErr := NewBillingSession(c, info, 0)
+	require.Nil(t, apiErr)
+	require.NoError(t, session.Reserve(100))
+	assert.Equal(t, 900, getUserQuota(t, 701))
+	assert.Equal(t, 900, getTokenRemainQuota(t, 701))
+	session.Refund(c)
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		assert.Equal(collect, 1000, getUserQuota(t, 701))
+		assert.Equal(collect, 1000, getTokenRemainQuota(t, 701))
+	}, 3*time.Second, 5*time.Millisecond)
+	assert.False(t, session.NeedsRefund())
 }

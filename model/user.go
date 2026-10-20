@@ -1275,6 +1275,25 @@ func IncreaseUserQuota(id int, quota int, db bool) (err error) {
 	return increaseUserQuota(id, quota)
 }
 
+// AdjustUserQuotaDirect bypasses the volatile batch queue for durable billing
+// sessions and updates cache only after SQL accepts the debit/credit.
+func AdjustUserQuotaDirect(id int, delta int) error {
+	result := DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota + ?", delta))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errors.New("billing wallet not found")
+	}
+	if err := cacheIncrUserQuota(id, int64(delta)); err != nil {
+		common.SysError("billing wallet cache update failed: " + err.Error())
+		if err := invalidateUserCache(id); err != nil {
+			common.SysError("billing wallet cache invalidation failed: " + err.Error())
+		}
+	}
+	return nil
+}
+
 func increaseUserQuota(id int, quota int) (err error) {
 	err = DB.Model(&User{}).Where("id = ?", id).Update("quota", gorm.Expr("quota + ?", quota)).Error
 	if err != nil {
