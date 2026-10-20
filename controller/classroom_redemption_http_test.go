@@ -60,9 +60,10 @@ func TestClassroomRedemptionHTTPConcurrentAccounts(t *testing.T) {
 	require.NoError(t, model.DB.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.Channel{}, &model.Ability{},
 		&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{},
-		&model.ProductPrice{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
+		&model.ProductPrice{}, &model.ProductTemplate{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
 		&model.SubscriptionKeyBinding{},
 	))
+	require.NoError(t, model.SeedProductTemplates())
 	sqlDB, err := model.DB.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(20)

@@ -18,7 +18,8 @@ import (
 
 func TestIFLinkPayBigfishRetryKeepsSignedOrderAndCannotPaySecondTier(t *testing.T) {
 	user := setupIFLinkPayHTTPTest(t)
-	require.NoError(t, model.DB.AutoMigrate(&model.SubscriptionPlan{}, &model.SubscriptionOrder{}, &model.UserSubscription{}, &model.ProductPrice{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.SubscriptionPlan{}, &model.SubscriptionOrder{}, &model.UserSubscription{}, &model.ProductPrice{}, &model.ProductTemplate{}))
+	require.NoError(t, model.SeedProductTemplates())
 	db := model.DB
 	t.Cleanup(func() {
 		require.NoError(t, db.Where("product_type = ?", model.ProductTypePackDeepSeekBigfish).Delete(&model.SubscriptionOrder{}).Error)

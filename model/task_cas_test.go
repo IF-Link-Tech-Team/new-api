@@ -80,6 +80,7 @@ func TestMain(m *testing.M) {
 		&SubscriptionPreConsumeRecord{},
 		&BillingRefund{},
 		&ProductPrice{},
+		&ProductTemplate{},
 		&Redemption{},
 		&ProductRedemptionClaim{},
 		&SubscriptionKeyBinding{},
@@ -94,6 +95,12 @@ func TestMain(m *testing.M) {
 		&UserAccessToken{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
+	}
+
+	// The product template rows drive ValidateV1Contract; tests never truncate
+	// product_templates, so one idempotent seed covers the whole package.
+	if err := SeedProductTemplates(); err != nil {
+		panic("failed to seed product templates: " + err.Error())
 	}
 
 	os.Exit(m.Run())
