@@ -43,7 +43,7 @@ func (w *WalletFunding) PreConsume(amount int) error {
 	if amount <= 0 {
 		return nil
 	}
-	reserved, err := model.TryReserveUserQuota(w.userId, amount)
+	reserved, err := model.TryReserveUserQuotaDirect(w.userId, amount)
 	if err != nil {
 		return err
 	}
@@ -59,10 +59,7 @@ func (w *WalletFunding) Settle(delta int) error {
 	if delta == 0 {
 		return nil
 	}
-	if delta > 0 {
-		return model.DecreaseUserQuota(w.userId, delta, false)
-	}
-	return model.IncreaseUserQuota(w.userId, -delta, false)
+	return model.AdjustUserQuotaDirect(w.userId, -delta)
 }
 
 func (w *WalletFunding) Refund() error {

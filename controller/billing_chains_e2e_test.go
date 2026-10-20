@@ -80,7 +80,7 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.Channel{}, &model.Ability{},
-		&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{},
+		&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.BillingRefund{},
 		&model.ProductPrice{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
 		&model.SubscriptionKeyBinding{},
 	))
@@ -275,14 +275,18 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	require.Eventually(t, func() bool {
 		var currentEntitlement model.UserSubscription
 		var currentClassroomUser, currentWalletUser model.User
+		var unfinished int64
 		if db.First(&currentEntitlement, classroomToken.UserSubscriptionId).Error != nil ||
 			db.First(&currentClassroomUser, classroomUser.Id).Error != nil ||
 			db.First(&currentWalletUser, walletUser.Id).Error != nil {
 			return false
 		}
+		if db.Model(&model.BillingRefund{}).Where("status NOT IN ?", []string{model.BillingRefundSucceeded, model.BillingRefundSettled}).Count(&unfinished).Error != nil {
+			return false
+		}
 		return currentEntitlement.AmountUsed == classUsedBeforeFailure &&
 			currentClassroomUser.Quota == classWalletBeforeFailure &&
-			currentWalletUser.Quota == walletBeforeFailure
+			currentWalletUser.Quota == walletBeforeFailure && unfinished == 0
 	}, 2*time.Second, 10*time.Millisecond, "asynchronous failure refunds must reach durable balances")
 
 	require.NoError(t, db.First(&entitlement, classroomToken.UserSubscriptionId).Error)
