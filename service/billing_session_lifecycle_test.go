@@ -209,3 +209,24 @@ func TestBillingSessionStorageErrorIsNotClassifiedByMessage(t *testing.T) {
 	assert.Equal(t, types.ErrorCodeUpdateDataError, apiErr.GetErrorCode())
 	assert.Equal(t, 1000, getTokenRemainQuota(t, 503), "failed pre-consumption must roll back the key reservation")
 }
+
+// 预扣截断为 0 的会话没有持久凭据;Reserve 真实扣款后,退款必须凭据化恢复,
+// 不得静默丢失(评审 M1 回归)。
+func TestBillingSessionReserveAfterZeroPreConsumeRefundsDurably(t *testing.T) {
+	setupBillingLifecycleDB(t)
+	seedUser(t, 701, 1000)
+	seedToken(t, 701, 701, "reserve-after-zero", 1000)
+	c, _ := gin.CreateTestContext(nil)
+	info := &relaycommon.RelayInfo{UserId: 701, TokenId: 701, TokenKey: "reserve-after-zero", RequestId: "reserve-after-zero", ForcePreConsume: true}
+	session, apiErr := NewBillingSession(c, info, 0)
+	require.Nil(t, apiErr)
+	require.NoError(t, session.Reserve(100))
+	assert.Equal(t, 900, getUserQuota(t, 701))
+	assert.Equal(t, 900, getTokenRemainQuota(t, 701))
+	session.Refund(c)
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		assert.Equal(collect, 1000, getUserQuota(t, 701))
+		assert.Equal(collect, 1000, getTokenRemainQuota(t, 701))
+	}, 3*time.Second, 5*time.Millisecond)
+	assert.False(t, session.NeedsRefund())
+}

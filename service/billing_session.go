@@ -190,7 +190,18 @@ func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) er
 	if delta <= 0 {
 		return nil
 	}
-	if s.refundReceipt != nil {
+	if s.refundReceipt == nil {
+		// 预扣截断为 0 的会话还没有持久凭据；本次 Reserve 会真实扣款，
+		// 必须先建立审计锚点，否则后续 Refund 会静默丢失这笔退款。
+		receipt := &model.BillingRefund{RequestID: s.relayInfo.RequestId, UserID: s.relayInfo.UserId, TokenID: s.relayInfo.TokenId}
+		if sub, ok := s.funding.(*SubscriptionFunding); ok {
+			receipt.SubscriptionID = sub.boundSubscriptionId
+		}
+		if err := model.CreateBillingRefundReceipt(receipt); err != nil {
+			return err
+		}
+		s.refundReceipt = receipt
+	} else {
 		walletQuota, tokenQuota, extraQuota := s.refundReceipt.WalletQuota, s.refundReceipt.TokenQuota, s.refundReceipt.ExtraQuota
 		if s.funding.Source() == BillingSourceWallet {
 			walletQuota += int64(delta)
