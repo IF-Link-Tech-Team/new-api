@@ -33,6 +33,7 @@ import {
   ServerCog,
   Settings,
   ShieldCheck,
+  Tags,
   Ticket,
   User,
   Users,
@@ -167,6 +168,11 @@ export function useSidebarData(): SidebarData {
             title: t('Subscriptions'),
             url: '/subscriptions',
             icon: CreditCard,
+          },
+          {
+            title: t('Product Prices'),
+            url: '/product-prices',
+            icon: Tags,
           },
           {
             title: t('System Info'),
