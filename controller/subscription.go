@@ -422,7 +422,13 @@ func normalizeAdminSubscriptionPlan(plan *model.SubscriptionPlan) error {
 				plan.BillingMultiplier = multiplier
 			}
 		}
+		if plan.ProductType == model.ProductTypeLegacySubscription {
+			plan.TemplateId = 0
+		} else if template, err := model.GetProductTemplateByType(plan.ProductType); err == nil {
+			plan.TemplateId = int64(template.Id)
+		}
 	} else {
+		plan.TemplateId = 0
 		if plan.Currency == "" {
 			plan.Currency = "USD"
 		}
@@ -635,6 +641,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"max_upstream_cost":          req.Plan.MaxUpstreamCost,
 			"fallback_allowed":           req.Plan.FallbackAllowed,
 			"course_eligible":            req.Plan.CourseEligible,
+			"template_id":                req.Plan.TemplateId,
 			"updated_at":                 common.GetTimestamp(),
 		}
 		if req.Plan.AllowBalancePay != nil {

@@ -218,6 +218,11 @@ type SubscriptionPlan struct {
 	FallbackAllowed   bool    `json:"fallback_allowed"`
 	CourseEligible    bool    `json:"course_eligible"`
 
+	// TemplateId links the plan to its product_templates row. It is pinned
+	// during ValidateV1Contract and backfilled for existing plans by the
+	// product template migration.
+	TemplateId int64 `json:"template_id" gorm:"type:bigint;not null;default:0;index"`
+
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
 }
@@ -245,7 +250,7 @@ func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
 	p.UpdatedAt = now
 	if p.ProductType == ProductTypePackDeepSeekBigfish {
 		p.NormalizeDefaults()
-		return p.ValidateV1Contract()
+		return p.validateV1ContractTx(tx)
 	}
 	return nil
 }
@@ -497,7 +502,7 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 	if plan.PriceAmount < 0 {
 		return nil, nil, errors.New("套餐价格不能为负数")
 	}
-	if err := plan.ValidateV1Contract(); err != nil {
+	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, nil, err
 	}
 	if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
@@ -521,7 +526,7 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		}
 		if result.RowsAffected > 0 {
 			if pending.PlanId == plan.Id && pending.PaymentProvider == PaymentProviderIFLinkPay && paymentProvider == PaymentProviderIFLinkPay && pending.PaymentMethod == paymentMethod {
-				frozen, err := provisionPlanFromOrder(&pending, plan)
+				frozen, err := provisionPlanFromOrder(tx, &pending, plan)
 				return &pending, frozen, err
 			}
 			return nil, nil, errors.New("已有待支付的大肥鱼活动订单，请完成原订单或联系管理员取消后再选档")
@@ -879,7 +884,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		return nil, errors.New("invalid user id")
 	}
 	plan.NormalizeDefaults()
-	if err := plan.ValidateV1Contract(); err != nil {
+	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, err
 	}
 	if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
@@ -1151,7 +1156,7 @@ func refreshSubscriptionUserGroupCache(userId int, operation string) {
 	}
 }
 
-func provisionPlanFromOrder(order *SubscriptionOrder, livePlan *SubscriptionPlan) (*SubscriptionPlan, error) {
+func provisionPlanFromOrder(tx *gorm.DB, order *SubscriptionOrder, livePlan *SubscriptionPlan) (*SubscriptionPlan, error) {
 	if order == nil || livePlan == nil {
 		return nil, errors.New("invalid order plan snapshot")
 	}
@@ -1182,7 +1187,7 @@ func provisionPlanFromOrder(order *SubscriptionOrder, livePlan *SubscriptionPlan
 	plan.CourseEligible = order.CourseEligible
 	allowWalletOverflow := false
 	plan.AllowWalletOverflow = &allowWalletOverflow
-	if err := plan.ValidateV1Contract(); err != nil {
+	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, fmt.Errorf("invalid immutable order snapshot: %w", err)
 	}
 	return &plan, nil
@@ -1368,7 +1373,7 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		if !plan.Enabled {
 			// still allow completion for already purchased orders
 		}
-		provisionPlan, err := provisionPlanFromOrder(&order, plan)
+		provisionPlan, err := provisionPlanFromOrder(tx, &order, plan)
 		if err != nil {
 			return err
 		}

@@ -52,6 +52,7 @@ func TestMain(m *testing.M) {
 		&model.SubscriptionPreConsumeRecord{},
 		&model.BillingRefund{},
 		&model.ProductPrice{},
+		&model.ProductTemplate{},
 		&model.SubscriptionKeyBinding{},
 		&model.CourseEntitlement{},
 		&model.MonthlySubscriptionCycle{},
@@ -59,6 +60,12 @@ func TestMain(m *testing.M) {
 		&model.SystemTaskLock{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
+	}
+
+	// V1 plan validation resolves product_templates rows; seed them once for
+	// the whole package (the seed is insert-only and idempotent).
+	if err := model.SeedProductTemplates(); err != nil {
+		panic("failed to seed product templates: " + err.Error())
 	}
 
 	os.Exit(m.Run())

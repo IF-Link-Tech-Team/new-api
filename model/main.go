@@ -296,6 +296,7 @@ func migrateDB() error {
 		&SubscriptionPreConsumeRecord{},
 		&BillingRefund{},
 		&ProductPrice{},
+		&ProductTemplate{},
 		&SubscriptionKeyBinding{},
 		&CourseEntitlement{},
 		&MonthlySubscriptionCycle{},
@@ -330,7 +331,10 @@ func migrateDB() error {
 			return err
 		}
 	}
-	return MigrateCilaiV1Contracts()
+	if err := MigrateCilaiV1Contracts(); err != nil {
+		return err
+	}
+	return MigrateProductTemplates()
 }
 
 func migrateDBFast() error {
@@ -372,6 +376,7 @@ func migrateDBFast() error {
 		{&SubscriptionPreConsumeRecord{}, "SubscriptionPreConsumeRecord"},
 		{&BillingRefund{}, "BillingRefund"},
 		{&ProductPrice{}, "ProductPrice"},
+		{&ProductTemplate{}, "ProductTemplate"},
 		{&SubscriptionKeyBinding{}, "SubscriptionKeyBinding"},
 		{&CourseEntitlement{}, "CourseEntitlement"},
 		{&MonthlySubscriptionCycle{}, "MonthlySubscriptionCycle"},
@@ -425,6 +430,9 @@ func migrateDBFast() error {
 		}
 	}
 	if err := MigrateCilaiV1Contracts(); err != nil {
+		return err
+	}
+	if err := MigrateProductTemplates(); err != nil {
 		return err
 	}
 	common.SysLog("database migrated")
@@ -574,6 +582,7 @@ func ensureSubscriptionPlanTableSQLite() error {
 ` + "`max_upstream_cost`" + ` text,
 ` + "`fallback_allowed`" + ` numeric DEFAULT 0,
 ` + "`course_eligible`" + ` numeric DEFAULT 0,
+` + "`template_id`" + ` bigint NOT NULL DEFAULT 0,
 ` + "`created_at`" + ` bigint,
 ` + "`updated_at`" + ` bigint,
 PRIMARY KEY (` + "`id`" + `)
@@ -625,6 +634,7 @@ PRIMARY KEY (` + "`id`" + `)
 		{Name: "max_upstream_cost", DDL: "`max_upstream_cost` text"},
 		{Name: "fallback_allowed", DDL: "`fallback_allowed` numeric DEFAULT 0"},
 		{Name: "course_eligible", DDL: "`course_eligible` numeric DEFAULT 0"},
+		{Name: "template_id", DDL: "`template_id` bigint NOT NULL DEFAULT 0"},
 		{Name: "created_at", DDL: "`created_at` bigint"},
 		{Name: "updated_at", DDL: "`updated_at` bigint"},
 	}
