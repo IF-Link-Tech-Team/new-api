@@ -57,7 +57,7 @@ func ReconcileBillingRefunds(ctx context.Context) (BillingRefundReconciliation, 
 	if err != nil {
 		return result, err
 	}
-	result.Pending, err = model.CountPendingBillingRefunds()
+	result.Pending, err = model.CountPendingBillingRefunds(common.GetTimestamp())
 	if err != nil {
 		return result, err
 	}

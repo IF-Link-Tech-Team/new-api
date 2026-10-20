@@ -119,3 +119,19 @@ func TestBillingRefundQuotaOverflowRemainsPendingWithoutPartialCredit(t *testing
 	require.NoError(t, DB.First(&token, 101).Error)
 	assert.Equal(t, 900, token.RemainQuota)
 }
+
+// 处于正常退避窗口的凭据不应计为待办,否则周期任务每分钟误报且清理永不执行。
+func TestCountPendingBillingRefundsIgnoresFutureBackoff(t *testing.T) {
+	receipt := seedWalletRefundReceipt(t)
+	now := time.Now().Unix()
+	pending, err := CountPendingBillingRefunds(now)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, pending)
+	require.NoError(t, DB.Model(&BillingRefund{}).Where("id = ?", receipt.ID).Update("next_retry_at", now+3600).Error)
+	pending, err = CountPendingBillingRefunds(now)
+	require.NoError(t, err)
+	assert.Zero(t, pending)
+	pending, err = CountPendingBillingRefunds(now + 7200)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, pending)
+}
