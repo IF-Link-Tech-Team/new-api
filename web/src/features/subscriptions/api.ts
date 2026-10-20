@@ -32,6 +32,7 @@ import type {
   SelfSubscriptionData,
   SubscriptionOrderStatus,
   ProductRedemptionResult,
+  ProductTemplate,
 } from './types'
 
 // ============================================================================
@@ -65,6 +66,27 @@ export async function patchPlanStatus(
   const res = await api.patch(`/api/subscription/admin/plans/${id}`, {
     enabled,
   })
+  return res.data
+}
+
+// The full plan editor (PUT) deliberately preserves redemption_enabled; the
+// PATCH endpoint is authoritative for it, so the drawer syncs it separately.
+export async function patchPlanFlags(
+  id: number,
+  flags: { listed?: boolean; redemption_enabled?: boolean }
+): Promise<ApiResponse> {
+  const res = await api.patch(`/api/subscription/admin/plans/${id}`, flags)
+  return res.data
+}
+
+// ============================================================================
+// Admin Product Templates
+// ============================================================================
+
+export async function getAdminProductTemplates(): Promise<
+  ApiResponse<ProductTemplate[]>
+> {
+  const res = await api.get('/api/subscription/admin/templates')
   return res.data
 }
 

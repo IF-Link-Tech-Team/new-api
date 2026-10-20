@@ -17,8 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { CalendarClock, CreditCard, RefreshCw, Settings2 } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import {
+  CalendarClock,
+  CreditCard,
+  Package,
+  RefreshCw,
+  Settings2,
+} from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 import { useForm, type Resolver } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -31,6 +38,7 @@ import {
   sideDrawerHeaderClassName,
   sideDrawerSwitchItemClassName,
 } from '@/components/drawer-layout'
+import { MultiSelect } from '@/components/multi-select'
 import { Button } from '@/components/ui/button'
 import {
   Form,
@@ -61,12 +69,15 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
+import { getEnabledModels } from '@/features/channels/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 
 import {
   createPlan,
   updatePlan,
+  patchPlanFlags,
   getGroups,
+  getAdminProductTemplates,
   createWaffoPancakeSubscriptionProduct,
   listWaffoPancakeSubscriptionProductOptions,
 } from '../api'
@@ -76,6 +87,10 @@ import {
   PLAN_FORM_DEFAULTS,
   planToFormValues,
   formValuesToPlanPayload,
+  findTemplateForProductType,
+  filterModelScopeOptions,
+  formatTemplatePriceRules,
+  parseTemplateModelScope,
   type PlanFormValues,
 } from '../lib'
 import type { PlanRecord } from '../types'
@@ -153,6 +168,39 @@ export function SubscriptionsMutateDrawer({
     watchedTitle.trim().length > 0 &&
     Number(watchedPrice ?? 0) > 0
 
+  // Product contract data: templates drive the read-only constraint hints and
+  // the model scope filter; enabled models feed the MultiSelect options.
+  const { data: templatesData } = useQuery({
+    queryKey: ['admin-product-templates'],
+    queryFn: getAdminProductTemplates,
+    enabled: open,
+  })
+  const templates = useMemo(() => templatesData?.data || [], [templatesData])
+  const { data: enabledModelsData } = useQuery({
+    queryKey: ['channel_models_enabled'],
+    queryFn: getEnabledModels,
+    enabled: open,
+  })
+  const enabledModels = useMemo(
+    () => enabledModelsData?.data || [],
+    [enabledModelsData]
+  )
+
+  const watchedProductType = form.watch('product_type')
+  const selectedTemplate = findTemplateForProductType(
+    templates,
+    watchedProductType || ''
+  )
+  const modelScopeOptions = useMemo(
+    () =>
+      filterModelScopeOptions(enabledModels, selectedTemplate).map(
+        (modelName) => ({ value: modelName, label: modelName })
+      ),
+    [enabledModels, selectedTemplate]
+  )
+  const templatePriceSummary = formatTemplatePriceRules(selectedTemplate)
+  const templateModelScope = parseTemplateModelScope(selectedTemplate)
+
   const onSubmit = async (values: PlanFormValues) => {
     setIsSubmitting(true)
     try {
@@ -160,6 +208,16 @@ export function SubscriptionsMutateDrawer({
       if (isEdit && currentRow?.plan?.id) {
         const res = await updatePlan(currentRow.plan.id, payload)
         if (res.success) {
+          // PUT preserves redemption_enabled (PATCH is authoritative for it);
+          // sync it here when the operator flipped the switch in the drawer.
+          if (
+            values.redemption_enabled !==
+            (currentRow.plan.redemption_enabled !== false)
+          ) {
+            await patchPlanFlags(currentRow.plan.id, {
+              redemption_enabled: values.redemption_enabled,
+            })
+          }
           toast.success(t('Update succeeded'))
           onOpenChange(false)
           triggerRefresh()
@@ -172,8 +230,16 @@ export function SubscriptionsMutateDrawer({
           triggerRefresh()
         }
       }
-    } catch {
-      toast.error(t('Request failed'))
+    } catch (err) {
+      // The axios interceptor already toasts the server's error message (e.g.
+      // template contract validation failures); only fall back to a generic
+      // toast when the error carries no server message.
+      const serverMessage = (
+        err as { response?: { data?: { message?: string } } }
+      )?.response?.data?.message
+      if (!serverMessage) {
+        toast.error(t('Request failed'))
+      }
     } finally {
       setIsSubmitting(false)
     }
@@ -497,9 +563,7 @@ export function SubscriptionsMutateDrawer({
                       >
                         <FormControl>
                           <SelectTrigger>
-                            <SelectValue
-                              placeholder={t('Traffic Pack')}
-                            />
+                            <SelectValue placeholder={t('Traffic Pack')} />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent alignItemWithTrigger={false}>
@@ -616,6 +680,357 @@ export function SubscriptionsMutateDrawer({
                     <FormItem className={sideDrawerSwitchItemClassName()}>
                       <FormLabel className='!mt-0'>
                         {t('Allow wallet balance after quota used up')}
+                      </FormLabel>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+              </div>
+            </SideDrawerSection>
+
+            {/* Product Contract */}
+            <SideDrawerSection>
+              <h3 className='flex items-center gap-2 text-sm font-medium'>
+                <IconBadge tone='chart-3' size='xs'>
+                  <Package />
+                </IconBadge>
+                {t('Product Contract')}
+              </h3>
+
+              <FormField
+                control={form.control}
+                name='product_type'
+                render={({ field }) => {
+                  const items = templates.map((template) => ({
+                    value: template.product_type,
+                    label: template.display_name
+                      ? `${template.display_name} (${template.product_type})`
+                      : template.product_type,
+                  }))
+                  if (
+                    field.value &&
+                    !templates.some(
+                      (template) => template.product_type === field.value
+                    )
+                  ) {
+                    items.push({ value: field.value, label: field.value })
+                  }
+                  return (
+                    <FormItem>
+                      <FormLabel>{t('Product Type')}</FormLabel>
+                      {isEdit ? (
+                        <FormControl>
+                          <Input
+                            value={field.value || t('None (legacy plan)')}
+                            disabled
+                          />
+                        </FormControl>
+                      ) : (
+                        <Select
+                          items={[
+                            {
+                              value: '__none__',
+                              label: t('None (legacy plan)'),
+                            },
+                            ...items,
+                          ]}
+                          onValueChange={(v) =>
+                            field.onChange(v === '__none__' ? '' : v)
+                          }
+                          value={field.value || '__none__'}
+                        >
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue
+                                placeholder={t('None (legacy plan)')}
+                              />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent alignItemWithTrigger={false}>
+                            <SelectGroup>
+                              <SelectItem value='__none__'>
+                                {t('None (legacy plan)')}
+                              </SelectItem>
+                              {items.map((item) => (
+                                <SelectItem key={item.value} value={item.value}>
+                                  {item.label}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                      )}
+                      <FormDescription>
+                        {t(
+                          'Product type binds the plan to a product template contract. It can only be chosen at creation time.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )
+                }}
+              />
+
+              {selectedTemplate && (
+                <div className='text-muted-foreground bg-muted/50 flex flex-col gap-1 rounded-md px-3 py-2 text-xs'>
+                  <span className='text-foreground font-medium'>
+                    {t('Template constraints')}
+                    {selectedTemplate.locked
+                      ? ` · ${t('Locked template')}`
+                      : ''}
+                  </span>
+                  {templatePriceSummary && (
+                    <span>
+                      {t('Allowed prices for this type: {{prices}}', {
+                        prices: templatePriceSummary,
+                      })}
+                    </span>
+                  )}
+                  {selectedTemplate.duration_days > 0 && (
+                    <span>
+                      {t('Fixed duration: {{days}} days', {
+                        days: selectedTemplate.duration_days,
+                      })}
+                    </span>
+                  )}
+                  {selectedTemplate.billing_multiplier > 0 && (
+                    <span>
+                      {t('Billing multiplier: {{value}}', {
+                        value: selectedTemplate.billing_multiplier,
+                      })}
+                    </span>
+                  )}
+                  {templateModelScope.length > 0 && (
+                    <span>
+                      {t('Allowed models: {{models}}', {
+                        models: templateModelScope.join(', '),
+                      })}
+                    </span>
+                  )}
+                  {selectedTemplate.max_purchase_per_user > 0 && (
+                    <span>
+                      {t('Max purchases per user: {{count}}', {
+                        count: selectedTemplate.max_purchase_per_user,
+                      })}
+                    </span>
+                  )}
+                  {selectedTemplate.price_version && (
+                    <span>
+                      {t('Price version: {{version}}', {
+                        version: selectedTemplate.price_version,
+                      })}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                <FormField
+                  control={form.control}
+                  name='product_code'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Product Code')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          disabled={isEdit}
+                          placeholder={t('e.g. deepseek-bigfish-lite-20261017')}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Unique product code; cannot be changed after creation'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='product_tier'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Product Tier')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='number'
+                          min={0}
+                          onChange={(e) =>
+                            field.onChange(
+                              Number.parseInt(e.target.value, 10) || 0
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Tier index used by tiered templates; 0 when unused'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='product_family'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Product Family')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          placeholder={t('e.g. deepseek_classroom')}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='price_version'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Price Version')}</FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder='v2026-10' />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='billing_multiplier'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Billing Multiplier')}</FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='number'
+                          step='0.01'
+                          min={0}
+                          onChange={(e) =>
+                            field.onChange(
+                              Number.parseFloat(e.target.value) || 0
+                            )
+                          }
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Plan-level billing multiplier; 0 lets the server apply the template default.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <FormField
+                control={form.control}
+                name='model_scope'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{t('Model Scope')}</FormLabel>
+                    <FormControl>
+                      <MultiSelect
+                        options={modelScopeOptions}
+                        selected={field.value}
+                        onChange={field.onChange}
+                        placeholder={t('Select models allowed by this plan')}
+                        emptyText={t('No models available for this template')}
+                        maxVisibleChips={6}
+                        copyChipOnClick
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Restricts which models may consume this plan. Empty means every model. Options are filtered to the template scope when one is selected.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <div className='flex flex-col gap-3'>
+                <FormField
+                  control={form.control}
+                  name='listed'
+                  render={({ field }) => (
+                    <FormItem className={sideDrawerSwitchItemClassName()}>
+                      <FormLabel className='!mt-0'>
+                        {t('Listed in catalog')}
+                      </FormLabel>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='redemption_enabled'
+                  render={({ field }) => (
+                    <FormItem className={sideDrawerSwitchItemClassName()}>
+                      <FormLabel className='!mt-0'>
+                        {t('Allow redemption codes')}
+                      </FormLabel>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='course_eligible'
+                  render={({ field }) => (
+                    <FormItem className={sideDrawerSwitchItemClassName()}>
+                      <FormLabel className='!mt-0'>
+                        {t('Course eligible')}
+                      </FormLabel>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='fallback_allowed'
+                  render={({ field }) => (
+                    <FormItem className={sideDrawerSwitchItemClassName()}>
+                      <FormLabel className='!mt-0'>
+                        {t('Allow route fallback')}
                       </FormLabel>
                       <FormControl>
                         <Switch

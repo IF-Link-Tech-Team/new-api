@@ -30,6 +30,7 @@ import {
   Radio,
   ServerCog,
   Settings,
+  Tags,
   Ticket,
   User,
   Users,
@@ -37,7 +38,7 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { type SidebarData } from '@/components/layout/types'
+import type { SidebarData } from '@/components/layout/types'
 import { ROLE } from '@/lib/roles'
 
 /**
@@ -154,6 +155,11 @@ export function useSidebarData(): SidebarData {
             title: t('Subscriptions'),
             url: '/subscriptions',
             icon: CreditCard,
+          },
+          {
+            title: t('Product Prices'),
+            url: '/product-prices',
+            icon: Tags,
           },
           {
             title: t('System Info'),
