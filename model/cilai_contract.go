@@ -370,6 +370,81 @@ func (p *SubscriptionPlan) validateV1ContractTx(tx *gorm.DB) error {
 	if p.TotalAmount != int64(expectedQuota) {
 		return fmt.Errorf("V1 total_amount must equal the paid face value (%d quota units)", expectedQuota)
 	}
+	return p.validatePlanMarginTx(tx, template, policy)
+}
+
+// validatePlanMarginTx enforces the product template's gross-margin floor on
+// plans that are currently on sale: for every model in scope, each cost
+// component of the plan's max_upstream_cost snapshot must not exceed the
+// corresponding user-selling component of the immutable price row scaled by
+// (1 - min_margin_percent/100). Templates with a zero floor skip the check
+// entirely (wallet), and disabled draft plans are never blocked.
+//
+// A missing or sale-disabled price row skips the model here instead of
+// failing: bootstrap validates desired plans before their price rows are
+// inserted, and the order path (createSubscriptionOrderTx) runs
+// validateV1ProductPriceCatalogTx first, which fails closed on absent or
+// disabled rows before any sale — so this check is strict exactly where a
+// sellable configuration already exists.
+func (p *SubscriptionPlan) validatePlanMarginTx(tx *gorm.DB, template *ProductTemplate, policy *ProductRoutePolicy) error {
+	if p == nil || template == nil || policy == nil {
+		return nil
+	}
+	if !p.Enabled || !(template.MinMarginPercent > 0) {
+		return nil
+	}
+	query := DB
+	if tx != nil {
+		query = tx
+	}
+	if query == nil {
+		return errors.New("database is nil")
+	}
+	floor := 1 - template.MinMarginPercent/100
+	const epsilon = 1e-9
+	var violations []string
+	for _, modelName := range explicitModelIds(p.ModelScope) {
+		cost, ok := policy.MaxUpstreamCost[modelName]
+		if !ok {
+			continue // the route policy checks above already require this entry
+		}
+		var price ProductPrice
+		err := query.Where("product_type = ? AND model = ? AND price_version = ?", p.ProductType, modelName, p.PriceVersion).
+			First(&price).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			return fmt.Errorf("cannot verify gross margin for model %q: %w", modelName, err)
+		}
+		if !price.Enabled {
+			continue
+		}
+		var sale PriceComponents
+		if err := common.UnmarshalJsonStr(strings.TrimSpace(price.UserSellingPrice), &sale); err != nil {
+			return fmt.Errorf("cannot verify gross margin for model %q: invalid user_selling_price: %w", modelName, err)
+		}
+		components := []struct {
+			name      string
+			costValue float64
+			saleValue float64
+		}{
+			{"input", cost.Input, sale.Input},
+			{"cached_input", cost.CachedInput, sale.CachedInput},
+			{"cache_creation", cost.CacheCreation, sale.CacheCreation},
+			{"output", cost.Output, sale.Output},
+		}
+		for _, component := range components {
+			if component.costValue > component.saleValue*floor+epsilon {
+				violations = append(violations, fmt.Sprintf("model %q component %s: cost %.6g exceeds sale %.6g x (1 - %.2f%%)",
+					modelName, component.name, component.costValue, component.saleValue, template.MinMarginPercent))
+			}
+		}
+	}
+	if len(violations) > 0 {
+		return fmt.Errorf("%s gross margin below the %.2f%% template floor: %s",
+			p.ProductType, template.MinMarginPercent, strings.Join(violations, "; "))
+	}
 	return nil
 }
 

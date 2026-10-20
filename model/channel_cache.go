@@ -138,7 +138,11 @@ func GetRandomSatisfiedChannelWithPolicy(group string, model string, retry int, 
 		normalizedModel := ratio_setting.RoutingMatchModelName(model)
 		for channelId := range policy.AllowedChannelIds {
 			channel, ok := channelsIDM[channelId]
-			if !ok || channel.Status != common.ChannelStatusEnabled || !ChannelSatisfiesPolicy(channel, model, policy) {
+			if !ok || channel.Status != common.ChannelStatusEnabled {
+				continue
+			}
+			if !ChannelSatisfiesPolicy(channel, model, policy) {
+				noteCostPolicyExclusion(channel, model, policy)
 				continue
 			}
 			for _, channelGroup := range channel.GetGroups() {

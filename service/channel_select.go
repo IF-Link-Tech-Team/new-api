@@ -111,6 +111,7 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 			AllowedChannelIds: allowed,
 			MaxUpstreamCost:   maxCost,
 			RequireCost:       true,
+			ProductType:       productType,
 		}, nil
 	}
 	if !model.RequiresStrictV1RoutePolicy(productType) {
@@ -162,6 +163,7 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 		AllowedChannelIds: allowed,
 		MaxUpstreamCost:   maxCost,
 		RequireCost:       true,
+		ProductType:       productType,
 	}, nil
 }
 

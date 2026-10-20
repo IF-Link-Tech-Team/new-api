@@ -176,9 +176,14 @@ func GetChannelWithPolicy(group string, model string, retry int, filters []dto.C
 		}
 		allowed := make(map[int]struct{}, len(candidates))
 		for _, candidate := range candidates {
-			if candidate.Status == common.ChannelStatusEnabled && ChannelSatisfiesPolicy(candidate, model, policy) {
-				allowed[candidate.Id] = struct{}{}
+			if candidate.Status != common.ChannelStatusEnabled {
+				continue
 			}
+			if !ChannelSatisfiesPolicy(candidate, model, policy) {
+				noteCostPolicyExclusion(candidate, model, policy)
+				continue
+			}
+			allowed[candidate.Id] = struct{}{}
 		}
 		filtered := make([]Ability, 0, len(abilities))
 		for _, ability := range abilities {
