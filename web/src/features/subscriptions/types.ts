@@ -60,6 +60,50 @@ export const subscriptionPlanSchema = z.object({
 
 export type SubscriptionPlan = z.infer<typeof subscriptionPlanSchema>
 
+// ============================================================================
+// Product Template Schema & Types
+// ============================================================================
+
+export const productTemplatePriceRuleSchema = z.object({
+  product_code: z.string().optional(),
+  tier: z.number().optional(),
+  price_amount: z.number(),
+  total_amount: z.number().optional(),
+})
+
+export type ProductTemplatePriceRule = z.infer<
+  typeof productTemplatePriceRuleSchema
+>
+
+export const productTemplateSchema = z.object({
+  id: z.number(),
+  product_type: z.string(),
+  display_name: z.string().optional(),
+  category: z.string().optional(),
+  currency: z.string().optional(),
+  duration_days: z.number(),
+  billing_multiplier: z.number(),
+  model_scope: z.string().optional(),
+  allowed_channels: z.string().optional(),
+  max_upstream_cost: z.string().optional(),
+  fallback_allowed: z.boolean().optional(),
+  max_purchase_per_user: z.number(),
+  allow_balance_pay: z.boolean().optional(),
+  allow_wallet_overflow: z.boolean().optional(),
+  course_eligible: z.boolean().optional(),
+  redemption_allowed: z.boolean().optional(),
+  price_rules: z.string().optional(),
+  product_family: z.string().optional(),
+  price_version: z.string().optional(),
+  min_margin_percent: z.number().optional(),
+  display_metadata: z.string().optional(),
+  locked: z.boolean(),
+  created_at: z.number().optional(),
+  updated_at: z.number().optional(),
+})
+
+export type ProductTemplate = z.infer<typeof productTemplateSchema>
+
 export interface PlanRecord {
   plan: SubscriptionPlan
   product_id: string
