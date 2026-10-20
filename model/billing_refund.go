@@ -323,9 +323,11 @@ func CountBillingRefundAlerts(now int64) (int64, error) {
 	return count, err
 }
 
-func CountPendingBillingRefunds() (int64, error) {
+// CountPendingBillingRefunds 只统计已到重试时间却仍待处理的凭据；
+// 处于正常退避窗口(next_retry_at 在未来)的凭据不算待办,避免周期任务误报并阻塞清理。
+func CountPendingBillingRefunds(now int64) (int64, error) {
 	var count int64
-	err := DB.Model(&BillingRefund{}).Where("status IN ?", []string{BillingRefundPending, BillingRefundFailed, BillingRefundCachePending}).Count(&count).Error
+	err := DB.Model(&BillingRefund{}).Where("status IN ? AND next_retry_at <= ?", []string{BillingRefundPending, BillingRefundFailed, BillingRefundCachePending}, now).Count(&count).Error
 	return count, err
 }
 
