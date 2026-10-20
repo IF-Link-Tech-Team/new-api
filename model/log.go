@@ -769,6 +769,33 @@ func SumUsedToken(logType int, startTimestamp int64, endTimestamp int64, modelNa
 	return token
 }
 
+// MarginReportConsumeRow is the minimal consume-log projection scanned by the
+// daily margin report.
+type MarginReportConsumeRow struct {
+	Id               int
+	Quota            int
+	ModelName        string
+	ChannelId        int
+	PromptTokens     int
+	CompletionTokens int
+	Other            string
+}
+
+// FindConsumeLogBatchForMarginReport pages consume logs at or after `since`
+// in id order so the margin report can stream a 24h window without loading it
+// into memory at once.
+func FindConsumeLogBatchForMarginReport(ctx context.Context, since int64, afterId int, limit int) ([]MarginReportConsumeRow, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	var rows []MarginReportConsumeRow
+	err := LOG_DB.WithContext(ctx).Model(&Log{}).
+		Select("id", "quota", "model_name", "channel_id", "prompt_tokens", "completion_tokens", "other").
+		Where("type = ? AND created_at >= ? AND id > ?", LogTypeConsume, since, afterId).
+		Order("id asc").Limit(limit).Scan(&rows).Error
+	return rows, err
+}
+
 func CountOldLog(ctx context.Context, targetTimestamp int64) (int64, error) {
 	var total int64
 	if err := LOG_DB.WithContext(ctx).Model(&Log{}).Where("created_at < ?", targetTimestamp).Count(&total).Error; err != nil {

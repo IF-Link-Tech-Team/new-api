@@ -53,6 +53,11 @@ type Channel struct {
 	// UpstreamCosts is an exact-model JSON map of actual settlement price
 	// components. It is configuration/ledger data, never an inferred discount.
 	UpstreamCosts string `json:"upstream_costs" gorm:"type:text"`
+	// CostVerifiedAt/CostVerifiedBy record when an admin last changed
+	// UpstreamCosts through the channel edit endpoint and who did it. They are
+	// server-stamped provenance fields; clients can never set them directly.
+	CostVerifiedAt int64 `json:"cost_verified_at" gorm:"bigint"`
+	CostVerifiedBy int   `json:"cost_verified_by"`
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
@@ -68,6 +73,9 @@ type ChannelSelectionPolicy struct {
 	AllowedChannelIds map[int]struct{}
 	MaxUpstreamCost   PriceComponents
 	RequireCost       bool
+	// ProductType identifies the product whose route policy is enforced; it is
+	// only used to make cost-exclusion operator alerts attributable.
+	ProductType string
 }
 
 func (channel *Channel) GetUpstreamCost(modelName string) (PriceComponents, bool) {
@@ -102,6 +110,40 @@ func ChannelSatisfiesPolicy(channel *Channel, modelName string, policy *ChannelS
 	cap := policy.MaxUpstreamCost
 	return cost.Input <= cap.Input && cost.CachedInput <= cap.CachedInput &&
 		cost.CacheCreation <= cap.CacheCreation && cost.Output <= cap.Output
+}
+
+// costPolicyExclusionAlerts throttles the operator alert emitted when a
+// policy-allowed channel is dropped over its upstream cost: at most one
+// SysError per product_type/model/channel per interval.
+var costPolicyExclusionAlerts sync.Map
+
+const costPolicyExclusionAlertIntervalSeconds = 3600
+
+// noteCostPolicyExclusion alerts (throttled) when a channel that an immutable
+// product route policy explicitly allows is dropped because its upstream cost
+// is missing or exceeds the policy ceiling. Call it only for channels that are
+// enabled and in the policy's allowed set, so the alert always means "a
+// reviewed route was actually lost". Returns true when an alert was emitted.
+func noteCostPolicyExclusion(channel *Channel, modelName string, policy *ChannelSelectionPolicy) bool {
+	if channel == nil || policy == nil || !policy.RequireCost {
+		return false
+	}
+	key := fmt.Sprintf("%s|%s|%d", policy.ProductType, modelName, channel.Id)
+	now := common.GetTimestamp()
+	if last, ok := costPolicyExclusionAlerts.Load(key); ok && now-last.(int64) < costPolicyExclusionAlertIntervalSeconds {
+		return false
+	}
+	costPolicyExclusionAlerts.Store(key, now)
+	reason := "no upstream cost configured"
+	if cost, ok := channel.GetUpstreamCost(modelName); ok {
+		cap := policy.MaxUpstreamCost
+		reason = fmt.Sprintf("cost input=%g cached_input=%g cache_creation=%g output=%g exceeds ceiling input=%g cached_input=%g cache_creation=%g output=%g",
+			cost.Input, cost.CachedInput, cost.CacheCreation, cost.Output,
+			cap.Input, cap.CachedInput, cap.CacheCreation, cap.Output)
+	}
+	common.SysError(fmt.Sprintf("product route policy dropped an allowed channel over upstream cost: product_type=%s model=%s channel=%d (%s)",
+		policy.ProductType, modelName, channel.Id, reason))
+	return true
 }
 
 type ChannelInfo struct {

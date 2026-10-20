@@ -69,7 +69,9 @@ type ProductTemplate struct {
 	ProductFamily string `json:"product_family" gorm:"type:varchar(64);not null;default:''"`
 	PriceVersion  string `json:"price_version" gorm:"type:varchar(64);not null;default:''"`
 
-	// MinMarginPercent is reserved for the Phase 2 gross-margin check.
+	// MinMarginPercent is the gross-margin floor enforced by
+	// validatePlanMarginTx when a plan of this product type is enabled.
+	// 0 disables the check (wallet).
 	MinMarginPercent float64 `json:"min_margin_percent" gorm:"type:decimal(5,2);not null;default:0"`
 	// DisplayMetadata is reserved JSON (card copy, images, badges, ordering,
 	// zones) for the Phase 4 storefront.
@@ -357,7 +359,7 @@ func desiredProductTemplates() ([]ProductTemplate, error) {
 		return nil, err
 	}
 	walletCosts, err := encode(map[string]PriceComponents{
-		ClassroomModelV41: {Input: 1, CachedInput: 0.02, Output: 4},
+		ClassroomModelV41:  {Input: 1, CachedInput: 0.02, Output: 4},
 		ClassroomModelV4GA: {Input: 1.5, CachedInput: 0.05, Output: 4.5},
 	})
 	if err != nil {
@@ -554,7 +556,7 @@ func desiredProductTemplates() ([]ProductTemplate, error) {
 			ModelScope: monthlyScope, AllowedChannels: monthlyChannels, MaxUpstreamCost: monthlyCosts,
 			FallbackAllowed: false, MaxPurchasePerUser: 0,
 			AllowBalancePay: false, AllowWalletOverflow: false, CourseEligible: true, RedemptionAllowed: true,
-			PriceRules: monthlyRulesJSON,
+			PriceRules:    monthlyRulesJSON,
 			ProductFamily: MonthlyProductFamily, PriceVersion: MonthlyPriceVersion,
 			DisplayMetadata: "{}", Locked: true,
 		},
@@ -565,7 +567,7 @@ func desiredProductTemplates() ([]ProductTemplate, error) {
 			ModelScope: packDSGLMScope, AllowedChannels: packDSGLMChannels, MaxUpstreamCost: packDSGLMCosts,
 			FallbackAllowed: false, MaxPurchasePerUser: 0,
 			AllowBalancePay: true, AllowWalletOverflow: false, CourseEligible: false, RedemptionAllowed: true,
-			PriceRules: smallPackRules,
+			PriceRules:      smallPackRules,
 			DisplayMetadata: "{}", Locked: true,
 		},
 		{
@@ -575,7 +577,7 @@ func desiredProductTemplates() ([]ProductTemplate, error) {
 			ModelScope: packQwenScope, AllowedChannels: packQwenChannels, MaxUpstreamCost: packQwenCosts,
 			FallbackAllowed: false, MaxPurchasePerUser: 0,
 			AllowBalancePay: true, AllowWalletOverflow: false, CourseEligible: false, RedemptionAllowed: true,
-			PriceRules: smallPackRules,
+			PriceRules:      smallPackRules,
 			DisplayMetadata: "{}", Locked: true,
 		},
 		{
@@ -585,7 +587,7 @@ func desiredProductTemplates() ([]ProductTemplate, error) {
 			ModelScope: packK3Scope, AllowedChannels: packK3Channels, MaxUpstreamCost: packK3Costs,
 			FallbackAllowed: false, MaxPurchasePerUser: 0,
 			AllowBalancePay: true, AllowWalletOverflow: false, CourseEligible: false, RedemptionAllowed: true,
-			PriceRules: k3PackRules,
+			PriceRules:      k3PackRules,
 			DisplayMetadata: "{}", Locked: true,
 		},
 		{
@@ -595,7 +597,7 @@ func desiredProductTemplates() ([]ProductTemplate, error) {
 			ModelScope: classroomScope, AllowedChannels: classroomChannels, MaxUpstreamCost: classroomCosts,
 			FallbackAllowed: false, MaxPurchasePerUser: 1,
 			AllowBalancePay: false, AllowWalletOverflow: false, CourseEligible: false, RedemptionAllowed: true,
-			PriceRules: classroomRules,
+			PriceRules:    classroomRules,
 			ProductFamily: "deepseek_classroom", PriceVersion: ClassroomPriceVersion,
 			DisplayMetadata: "{}", Locked: true,
 		},
@@ -606,7 +608,7 @@ func desiredProductTemplates() ([]ProductTemplate, error) {
 			ModelScope: bigfishScope, AllowedChannels: bigfishChannels, MaxUpstreamCost: bigfishCosts,
 			FallbackAllowed: false, MaxPurchasePerUser: 1,
 			AllowBalancePay: false, AllowWalletOverflow: false, CourseEligible: false, RedemptionAllowed: false,
-			PriceRules: bigfishRulesJSON,
+			PriceRules:    bigfishRulesJSON,
 			ProductFamily: BigfishProductFamily, PriceVersion: BigfishPriceVersion,
 			DisplayMetadata: "{}", Locked: true,
 		},
@@ -674,5 +676,48 @@ func MigrateProductTemplates() error {
 	if err := SeedProductTemplates(); err != nil {
 		return err
 	}
-	return BackfillSubscriptionPlanTemplateIds()
+	if err := BackfillSubscriptionPlanTemplateIds(); err != nil {
+		return err
+	}
+	return migrateProductTemplateMinMargins()
+}
+
+// marginGuardFloorPercent is the Phase 2 gross-margin floor enforced by
+// validatePlanMarginTx for the strict V1 products. Wallet keeps 0 (check
+// disabled): wallet sale prices track official reference prices and its margin
+// is governed by the price catalog directly.
+const marginGuardFloorPercent = 10
+
+// migrateProductTemplateMinMargins converges the locked core templates onto
+// the margin-guard floor. Locked rows can only change through this migration
+// path, so running it on every boot is idempotent and self-healing. The seed
+// definitions keep MinMarginPercent 0 (they stay byte-identical to the frozen
+// contract constants); this migration is the deliberate value change.
+func migrateProductTemplateMinMargins() error {
+	if DB == nil {
+		return errors.New("database is nil")
+	}
+	strictTypes := []string{
+		ProductTypeMonthlySubscription,
+		ProductTypePackDSGLM,
+		ProductTypePackQwen,
+		ProductTypePackK3,
+		ProductTypePackDeepSeekClassroom,
+		ProductTypePackDeepSeekBigfish,
+	}
+	for _, productType := range strictTypes {
+		var template ProductTemplate
+		if err := DB.Where("product_type = ?", productType).First(&template).Error; err != nil {
+			return err
+		}
+		if template.MinMarginPercent == marginGuardFloorPercent {
+			continue
+		}
+		updated := template
+		updated.MinMarginPercent = marginGuardFloorPercent
+		if err := MigrateLockedProductTemplate(&updated); err != nil {
+			return err
+		}
+	}
+	return nil
 }
