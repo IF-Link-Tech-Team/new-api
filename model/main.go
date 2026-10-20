@@ -379,6 +379,7 @@ func migrateDB() error {
 		&SubscriptionPreConsumeRecord{},
 		&BillingRefund{},
 		&ProductPrice{},
+		&ProductTemplate{},
 		&SubscriptionKeyBinding{},
 		&CourseEntitlement{},
 		&MonthlySubscriptionCycle{},
@@ -420,7 +421,7 @@ func migrateDB() error {
 	if err := MigrateCilaiV1Contracts(); err != nil {
 		return err
 	}
-	return nil
+	return MigrateProductTemplates()
 }
 
 func migrateLOGDB() error {

@@ -2,7 +2,7 @@ package model
 
 import (
 	"errors"
-	"math"
+	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -15,29 +15,22 @@ const (
 
 // Bigfish is a separate, one-time promotion. It cannot inherit the classroom
 // SKU's duration or the monthly tier/upgrade contract, despite similar names.
-func validateBigfishPlan(plan *SubscriptionPlan, policy *ProductRoutePolicy) error {
-	prices := map[string]float64{
-		"deepseek-bigfish-lite-20261017": 9.9,
-		"deepseek-bigfish-pro-20261017":  19.9,
-		"deepseek-bigfish-max-20261017":  39.9,
-	}
-	price, ok := prices[plan.ProductCode]
-	if !ok || math.Abs(plan.PriceAmount-price) > 0.000001 {
-		return errors.New("bigfish requires a distinct Lite/Pro/Max product code and price")
-	}
-	if plan.ProductFamily != BigfishProductFamily || plan.PriceVersion != BigfishPriceVersion || plan.ProductTier != 0 {
+// The contract numbers come from the product template; validateBigfishPlan
+// adds the promotion-specific switch, identity and exact-route checks.
+func validateBigfishPlan(plan *SubscriptionPlan, policy *ProductRoutePolicy, template *ProductTemplate, templateModels []string, templateChannels map[string][]int) error {
+	if plan.ProductFamily != template.ProductFamily || plan.PriceVersion != template.PriceVersion || plan.ProductTier != 0 {
 		return errors.New("bigfish requires an independent promotion family and price version; no monthly tier")
 	}
-	if plan.MaxPurchasePerUser != 1 || plan.RedemptionEnabled || plan.AllowBalancePay == nil || *plan.AllowBalancePay || plan.UpgradeGroup != "" || plan.DowngradeGroup != "" {
+	if plan.AllowBalancePay == nil || *plan.AllowBalancePay || plan.UpgradeGroup != "" || plan.DowngradeGroup != "" {
 		return errors.New("bigfish is purchase-once, without redemption, balance payment or group changes")
 	}
-	if !sameStringSet(explicitModelIds(plan.ModelScope), []string{ClassroomModelV4GA, ClassroomModelV41}) || len(policy.AllowedChannels) != 2 || len(policy.MaxUpstreamCost) != 2 {
+	if !sameStringSet(explicitModelIds(plan.ModelScope), templateModels) ||
+		len(policy.AllowedChannels) != len(templateModels) || len(policy.MaxUpstreamCost) != len(templateModels) {
 		return errors.New("all bigfish tiers must share exactly the two audited Flash models")
 	}
-	for _, modelName := range []string{ClassroomModelV4GA, ClassroomModelV41} {
-		channels := policy.AllowedChannels[modelName]
-		if len(channels) != 1 || channels[0] != 15 {
-			return errors.New("bigfish Flash models must be restricted to channel 15")
+	for _, modelName := range templateModels {
+		if !sameChannelSet(policy.AllowedChannels[modelName], templateChannels[modelName]) {
+			return fmt.Errorf("bigfish model %s channel binding differs from its product template", modelName)
 		}
 	}
 	return nil

@@ -161,22 +161,54 @@ func ExpectedProductPriceBillingMultiplier(productType string, modelName string,
 
 // ValidateV1Contract validates only plans that opt in to the frozen CILAI V1
 // contract by setting product_type. Legacy upstream plans remain readable, but
-// cannot accidentally masquerade as a V1 product.
+// cannot accidentally masquerade as a V1 product. Strict product types are
+// validated against their product_templates row, which now carries the
+// contract numbers that used to be frozen code constants.
 func (p *SubscriptionPlan) ValidateV1Contract() error {
+	return p.validateV1ContractTx(nil)
+}
+
+// validateV1ContractTx is the transaction-aware form; callers already holding
+// a transaction must pass it so the template lookup reuses its connection.
+func (p *SubscriptionPlan) validateV1ContractTx(tx *gorm.DB) error {
 	if p == nil {
 		return errors.New("plan is nil")
 	}
 	p.ProductType = strings.TrimSpace(p.ProductType)
-	if p.ProductType == "" {
-		return nil
-	}
-	if p.ProductType == ProductTypeLegacySubscription {
+	if p.ProductType == "" || p.ProductType == ProductTypeLegacySubscription {
 		// Legacy plans retain their historical model scope and billing path. They
-		// are explicitly classified, but never opt into strict V1 validation.
+		// are explicitly classified, but never opt into strict V1 validation and
+		// must not carry a template link.
+		if p.TemplateId != 0 {
+			return errors.New("template_id requires a V1 product_type")
+		}
 		return nil
 	}
 	if !RequiresStrictV1RoutePolicy(p.ProductType) {
 		return fmt.Errorf("unsupported product_type %q", p.ProductType)
+	}
+	template, err := getProductTemplateByTypeTx(tx, p.ProductType)
+	if err != nil {
+		return fmt.Errorf("unknown product_type %q: product template is not configured", p.ProductType)
+	}
+	if p.TemplateId == 0 {
+		// Pin the template link while validating so every save path (bootstrap,
+		// admin upsert, order snapshot rebuild) carries it.
+		p.TemplateId = int64(template.Id)
+	} else if p.TemplateId != int64(template.Id) {
+		return fmt.Errorf("template_id %d does not match product_type %s", p.TemplateId, p.ProductType)
+	}
+	templateModels, err := template.modelSet()
+	if err != nil {
+		return err
+	}
+	templateChannels, err := template.channelPolicy()
+	if err != nil {
+		return err
+	}
+	priceRules, err := template.priceRuleList()
+	if err != nil {
+		return err
 	}
 	if strings.TrimSpace(p.ProductCode) == "" {
 		return errors.New("product_code is required for a V1 product")
@@ -187,25 +219,30 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 	if strings.TrimSpace(p.PriceVersion) == "" {
 		return errors.New("price_version is required for a V1 product")
 	}
-	if p.Currency != "CNY" {
-		return errors.New("V1 products must use CNY")
+	if p.Currency != template.Currency {
+		return fmt.Errorf("%s must use %s", p.ProductType, template.Currency)
 	}
-	expectedDurationDays := 30
-	if p.ProductType == ProductTypePackDeepSeekClassroom {
-		expectedDurationDays = 10
-	}
-	if p.ProductType == ProductTypePackDeepSeekBigfish {
-		expectedDurationDays = 15
-	}
-	if p.DurationUnit != SubscriptionDurationDay || p.DurationValue != expectedDurationDays {
-		return fmt.Errorf("%s must have a fixed %d-day duration", p.ProductType, expectedDurationDays)
+	if template.DurationDays > 0 && (p.DurationUnit != SubscriptionDurationDay || p.DurationValue != template.DurationDays) {
+		return fmt.Errorf("%s must have a fixed %d-day duration", p.ProductType, template.DurationDays)
 	}
 	if strings.TrimSpace(p.ModelScope) == "" {
 		return errors.New("V1 products require an explicit allowed_models list")
 	}
-	for _, modelName := range explicitModelIds(p.ModelScope) {
+	planModels := explicitModelIds(p.ModelScope)
+	for _, modelName := range planModels {
 		if strings.ContainsAny(modelName, "*?") {
 			return fmt.Errorf("allowed_models must use exact model IDs, got %q", modelName)
+		}
+	}
+	if len(templateModels) > 0 {
+		allowedModels := make(map[string]struct{}, len(templateModels))
+		for _, modelName := range templateModels {
+			allowedModels[modelName] = struct{}{}
+		}
+		for _, modelName := range planModels {
+			if _, ok := allowedModels[modelName]; !ok {
+				return fmt.Errorf("%s model %q is not allowed by its product template", p.ProductType, modelName)
+			}
 		}
 	}
 	if strings.TrimSpace(p.AllowedChannels) == "" {
@@ -214,14 +251,14 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 	if strings.TrimSpace(p.MaxUpstreamCost) == "" {
 		return errors.New("V1 products require a max_upstream_cost policy snapshot")
 	}
-	if p.FallbackAllowed {
+	if p.FallbackAllowed && !template.FallbackAllowed {
 		return errors.New("V1 products must fail closed and cannot enable route fallback")
 	}
 	policy, err := ParseProductRoutePolicy(p.AllowedChannels, p.MaxUpstreamCost, p.FallbackAllowed)
 	if err != nil {
 		return err
 	}
-	for _, modelName := range explicitModelIds(p.ModelScope) {
+	for _, modelName := range planModels {
 		channels := policy.AllowedChannels[modelName]
 		if len(channels) == 0 {
 			return fmt.Errorf("allowed_channels must explicitly configure model %q", modelName)
@@ -236,90 +273,91 @@ func (p *SubscriptionPlan) ValidateV1Contract() error {
 			}
 			seenChannels[channelId] = struct{}{}
 		}
+		if allowed, ok := templateChannels[modelName]; ok && len(allowed) > 0 {
+			allowedSet := make(map[int]struct{}, len(allowed))
+			for _, channelId := range allowed {
+				allowedSet[channelId] = struct{}{}
+			}
+			for _, channelId := range channels {
+				if _, ok := allowedSet[channelId]; !ok {
+					return fmt.Errorf("%s model %q channel %d is not allowed by its product template", p.ProductType, modelName, channelId)
+				}
+			}
+		}
 		cost, ok := policy.MaxUpstreamCost[modelName]
 		if !ok || !validPositivePriceComponents(cost) {
 			return fmt.Errorf("max_upstream_cost must explicitly configure positive input/output costs for model %q", modelName)
 		}
 	}
-	expectedPlanMultiplier, hasExpectedPlanMultiplier := ExpectedV1BillingMultiplier(p.ProductType)
-	if p.ProductType == ProductTypeMonthlySubscription && p.PriceVersion == MonthlyPriceVersion {
-		// A mixed-model monthly entitlement has no meaningful single discount.
-		// Keep the plan/token snapshot neutral; the exact immutable ProductPrice
-		// row is authoritative and must exist before the product can be enabled.
-		expectedPlanMultiplier = 1
-		hasExpectedPlanMultiplier = true
+	if template.BillingMultiplier > 0 {
+		expectedPlanMultiplier := template.BillingMultiplier
+		if p.ProductType == ProductTypeMonthlySubscription && p.PriceVersion == template.PriceVersion {
+			// A mixed-model monthly entitlement has no meaningful single discount.
+			// Keep the plan/token snapshot neutral; the exact immutable ProductPrice
+			// row is authoritative and must exist before the product can be enabled.
+			expectedPlanMultiplier = 1
+		}
+		if math.Abs(p.BillingMultiplier-expectedPlanMultiplier) > 0.000001 {
+			return fmt.Errorf("billing_multiplier for %s must be %.2f", p.ProductType, expectedPlanMultiplier)
+		}
 	}
-	if hasExpectedPlanMultiplier && math.Abs(p.BillingMultiplier-expectedPlanMultiplier) > 0.000001 {
-		return fmt.Errorf("billing_multiplier for %s must be %.2f", p.ProductType, expectedPlanMultiplier)
-	}
-	if p.AllowWalletOverflow == nil || *p.AllowWalletOverflow {
+	if !template.AllowWalletOverflow && (p.AllowWalletOverflow == nil || *p.AllowWalletOverflow) {
 		return errors.New("V1 products must disable wallet overflow")
 	}
+	if !template.RedemptionAllowed && p.RedemptionEnabled {
+		return fmt.Errorf("%s does not allow redemption", p.ProductType)
+	}
+	if template.MaxPurchasePerUser > 0 && p.MaxPurchasePerUser != template.MaxPurchasePerUser {
+		return fmt.Errorf("%s max_purchase_per_user must be %d", p.ProductType, template.MaxPurchasePerUser)
+	}
 	if p.ProductType == ProductTypeMonthlySubscription {
-		if p.Category != SubscriptionCategorySubscription {
+		if p.Category != template.Category {
 			return errors.New("monthly_subscription must use subscription category")
 		}
 		if p.ProductTier <= 0 {
 			return errors.New("monthly_subscription requires a positive product_tier")
 		}
-		expectedPrice := map[int]float64{1: 19.9, 2: 49.9, 3: 99.9}[p.ProductTier]
-		if expectedPrice == 0 || math.Abs(p.PriceAmount-expectedPrice) > 0.000001 {
-			return errors.New("monthly_subscription tier/price must be 1=19.9, 2=49.9, or 3=99.9")
+		if !matchTemplatePriceRule(priceRules, p) {
+			return fmt.Errorf("monthly_subscription tier/price must match the product template price rules")
 		}
-		if p.PriceVersion == MonthlyPriceVersion {
+		if p.PriceVersion == template.PriceVersion {
 			if p.CourseEligible {
 				return errors.New("monthly unified tiers cannot attach differentiated course eligibility")
 			}
 		} else if p.CourseEligible != (p.ProductTier >= 2) {
 			return errors.New("legacy monthly course eligibility is required for tiers 2/3 and forbidden for tier 1")
 		}
-	} else if p.Category != SubscriptionCategoryPackage {
-		return errors.New("V1 packs must use package category")
 	} else {
-		if p.CourseEligible {
+		if p.Category != template.Category {
+			return fmt.Errorf("%s must use %s category", p.ProductType, template.Category)
+		}
+		if !template.CourseEligible && p.CourseEligible {
 			return errors.New("course eligibility is only available on monthly tiers 2/3")
 		}
+		if !matchTemplatePriceRule(priceRules, p) {
+			return fmt.Errorf("%s price is not allowed by the product template price rules", p.ProductType)
+		}
 		switch p.ProductType {
-		case ProductTypePackDSGLM, ProductTypePackQwen:
-			if math.Abs(p.PriceAmount-19.9) > 0.000001 {
-				return fmt.Errorf("%s price must be 19.9", p.ProductType)
-			}
-		case ProductTypePackK3:
-			if math.Abs(p.PriceAmount-49.9) > 0.000001 && math.Abs(p.PriceAmount-99.9) > 0.000001 && math.Abs(p.PriceAmount-199.9) > 0.000001 {
-				return errors.New("pack_k3 price must be 49.9, 99.9, or 199.9")
-			}
 		case ProductTypePackDeepSeekClassroom:
-			if math.Abs(p.PriceAmount-5.0) > 0.000001 {
-				return errors.New("pack_deepseek_classroom price must be 5.0")
+			if template.ProductFamily != "" && p.ProductFamily != template.ProductFamily {
+				return fmt.Errorf("pack_deepseek_classroom product_family must be %s", template.ProductFamily)
 			}
-			if p.ProductFamily != "deepseek_classroom" {
-				return errors.New("pack_deepseek_classroom product_family must be deepseek_classroom")
-			}
-			expectedModels := []string{ClassroomModelV41, ClassroomModelV4GA, ClassroomModelQwen}
+			expectedModels := templateModels
 			if p.PriceVersion == ClassroomLegacyPriceVersion {
 				expectedModels = []string{ClassroomModelV41, ClassroomModelV4GA}
 			}
-			if !sameStringSet(explicitModelIds(p.ModelScope), expectedModels) {
+			if !sameStringSet(planModels, expectedModels) {
 				return errors.New("pack_deepseek_classroom model scope does not match its price version")
 			}
-			if p.MaxPurchasePerUser != 1 {
-				return errors.New("pack_deepseek_classroom max_purchase_per_user must be 1")
-			}
 			for _, modelName := range expectedModels {
-				channels := policy.AllowedChannels[modelName]
-				expectedChannel := 15
-				if modelName == ClassroomModelQwen {
-					expectedChannel = 14
-				}
-				if len(channels) != 1 || channels[0] != expectedChannel {
-					return fmt.Errorf("pack_deepseek_classroom model %s must be restricted to channel %d", modelName, expectedChannel)
+				if !sameChannelSet(policy.AllowedChannels[modelName], templateChannels[modelName]) {
+					return fmt.Errorf("pack_deepseek_classroom model %s channel binding differs from its product template", modelName)
 				}
 			}
-		}
-	}
-	if p.ProductType == ProductTypePackDeepSeekBigfish {
-		if err := validateBigfishPlan(p, policy); err != nil {
-			return err
+		case ProductTypePackDeepSeekBigfish:
+			if err := validateBigfishPlan(p, policy, template, templateModels, templateChannels); err != nil {
+				return err
+			}
 		}
 	}
 	if NormalizeResetPeriod(p.QuotaResetPeriod) != SubscriptionResetNever {
