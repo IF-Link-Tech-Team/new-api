@@ -22,5 +22,14 @@ export {
   PLAN_FORM_DEFAULTS,
   planToFormValues,
   formValuesToPlanPayload,
+  splitModelScope,
+  joinModelScope,
   type PlanFormValues,
 } from './plan-form'
+export {
+  findTemplateForProductType,
+  parseTemplateModelScope,
+  parseTemplatePriceRules,
+  filterModelScopeOptions,
+  formatTemplatePriceRules,
+} from './template-hints'

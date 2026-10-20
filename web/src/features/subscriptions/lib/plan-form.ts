@@ -51,6 +51,17 @@ export function getPlanFormSchema(t: TFunction) {
     stripe_price_id: z.string().optional(),
     creem_product_id: z.string().optional(),
     waffo_pancake_product_id: z.string().optional(),
+    product_type: z.string().optional(),
+    product_code: z.string().optional(),
+    product_family: z.string().optional(),
+    product_tier: z.coerce.number().min(0),
+    billing_multiplier: z.coerce.number().min(0),
+    price_version: z.string().optional(),
+    model_scope: z.array(z.string()),
+    course_eligible: z.boolean(),
+    fallback_allowed: z.boolean(),
+    listed: z.boolean(),
+    redemption_enabled: z.boolean(),
   })
 }
 
@@ -77,6 +88,33 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   stripe_price_id: '',
   creem_product_id: '',
   waffo_pancake_product_id: '',
+  product_type: '',
+  product_code: '',
+  product_family: '',
+  product_tier: 0,
+  billing_multiplier: 0,
+  price_version: '',
+  model_scope: [],
+  course_eligible: false,
+  fallback_allowed: false,
+  listed: true,
+  redemption_enabled: true,
+}
+
+// Plan model_scope is a comma-separated string on the wire; the form edits it
+// as a string array for the MultiSelect chips.
+export function splitModelScope(scope: string | undefined): string[] {
+  return (scope || '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean)
+}
+
+export function joinModelScope(models: string[]): string {
+  return models
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .join(',')
 }
 
 export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
@@ -101,6 +139,17 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     stripe_price_id: plan.stripe_price_id || '',
     creem_product_id: plan.creem_product_id || '',
     waffo_pancake_product_id: plan.waffo_pancake_product_id || '',
+    product_type: plan.product_type || '',
+    product_code: plan.product_code || '',
+    product_family: plan.product_family || '',
+    product_tier: Number(plan.product_tier || 0),
+    billing_multiplier: Number(plan.billing_multiplier || 0),
+    price_version: plan.price_version || '',
+    model_scope: splitModelScope(plan.model_scope),
+    course_eligible: plan.course_eligible === true,
+    fallback_allowed: plan.fallback_allowed === true,
+    listed: plan.listed !== false,
+    redemption_enabled: plan.redemption_enabled !== false,
   }
 }
 
@@ -123,6 +172,17 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
       upgrade_group: values.upgrade_group || '',
       category: values.category || 'package',
       downgrade_group: values.downgrade_group || '',
+      product_type: values.product_type || '',
+      product_code: values.product_code?.trim() || '',
+      product_family: values.product_family || '',
+      product_tier: Number(values.product_tier || 0),
+      billing_multiplier: Number(values.billing_multiplier || 0),
+      price_version: values.price_version || '',
+      model_scope: joinModelScope(values.model_scope),
+      course_eligible: values.course_eligible,
+      fallback_allowed: values.fallback_allowed,
+      listed: values.listed,
+      redemption_enabled: values.redemption_enabled,
     },
   }
 }
