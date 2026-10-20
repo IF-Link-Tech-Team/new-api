@@ -81,10 +81,11 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.Channel{}, &model.Ability{},
 		&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.BillingRefund{},
-		&model.ProductPrice{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
+		&model.ProductPrice{}, &model.ProductTemplate{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
 		&model.SubscriptionKeyBinding{},
 	))
 	require.NoError(t, model.EnsureEntitlementKeyUniqueIndex())
+	require.NoError(t, model.SeedProductTemplates())
 
 	var upstreamCalls atomic.Int32
 	var forbiddenChannelCalls atomic.Int32
