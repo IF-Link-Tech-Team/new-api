@@ -140,6 +140,7 @@ func InvalidateSubscriptionPlanCache(planId int) {
 	_, _ = cache.DeleteMany([]string{subscriptionPlanCacheKey(planId)})
 	infoCache := getSubscriptionPlanInfoCache()
 	_ = infoCache.Purge()
+	invalidateStorefrontCatalogCache()
 }
 
 // Subscription plan
@@ -222,6 +223,11 @@ type SubscriptionPlan struct {
 	// during ValidateV1Contract and backfilled for existing plans by the
 	// product template migration.
 	TemplateId int64 `json:"template_id" gorm:"type:bigint;not null;default:0;index"`
+
+	// DisplayMetadata is reserved JSON for storefront rendering (card copy,
+	// badges, benefits, images, featured/recommended markers, preview flag).
+	// It is display-only: purchase gates keep reading enabled/listed.
+	DisplayMetadata string `json:"display_metadata" gorm:"type:text"`
 
 	CreatedAt int64 `json:"created_at" gorm:"bigint"`
 	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`

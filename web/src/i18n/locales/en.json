@@ -7514,6 +7514,7 @@
     "Template billing multiplier: {{value}}": "Template billing multiplier: {{value}}",
     "After disabling, this price version stops selling, but historical purchases keep their settled price. Continue?": "After disabling, this price version stops selling, but historical purchases keep their settled price. Continue?",
     "After enabling, this price version becomes sellable. Continue?": "After enabling, this price version becomes sellable. Continue?",
-    "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "Billing refund reconciliation: receipt={{receipt}} action={{action}}"
+    "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "Billing refund reconciliation: receipt={{receipt}} action={{action}}",
+    "Not on sale yet": "Not on sale yet"
   }
 }
