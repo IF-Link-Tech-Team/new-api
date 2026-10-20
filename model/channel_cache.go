@@ -133,7 +133,11 @@ func GetRandomSatisfiedChannelWithPolicy(group string, model string, retry int, 
 		channels = make([]int, 0, len(policy.AllowedChannelIds))
 		for channelId := range policy.AllowedChannelIds {
 			channel, ok := channelsIDM[channelId]
-			if !ok || channel.Status != common.ChannelStatusEnabled || !ChannelSatisfiesPolicy(channel, model, policy) {
+			if !ok || channel.Status != common.ChannelStatusEnabled {
+				continue
+			}
+			if !ChannelSatisfiesPolicy(channel, model, policy) {
+				noteCostPolicyExclusion(channel, model, policy)
 				continue
 			}
 			enabledForModel := false
