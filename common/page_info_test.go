@@ -37,3 +37,16 @@ func TestGetPageQueryCapsLargePageSize(t *testing.T) {
 	require.Equal(t, 2, page.Page)
 	require.Equal(t, 100, page.PageSize)
 }
+
+func TestGetPageQueryCapsLargePageNumber(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	request := httptest.NewRequest("GET", "/list?p=2147483647&page_size=100", nil)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = request
+
+	page := GetPageQuery(context)
+
+	require.Equal(t, maxPageNumber, page.Page)
+	require.Equal(t, 100, page.PageSize)
+	require.GreaterOrEqual(t, page.GetStartIdx(), 0)
+}
