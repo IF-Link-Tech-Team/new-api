@@ -32,7 +32,8 @@ type StorefrontCatalogItemDTO struct {
 
 // GetSubscriptionPublicCatalog serves the landing-page product catalog to
 // anonymous visitors. Listed products and display_metadata.preview drafts are
-// included; checkout keeps enforcing enabled/listed server-side.
+// included; paid checkout enforces Enabled server-side while Listed controls
+// catalog discovery and RedemptionEnabled independently controls code claims.
 func GetSubscriptionPublicCatalog(c *gin.Context) {
 	items, err := model.GetStorefrontCatalog()
 	if err != nil {

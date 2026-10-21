@@ -176,6 +176,24 @@ func TestBigfishIFLinkPaySharedPoolKeyExpiryAndCrossTierLimit(t *testing.T) {
 	}
 }
 
+func TestHiddenEnabledPlanRemainsDirectlyPurchasable(t *testing.T) {
+	plans := setupBigfishProductsTest(t)
+	plan := plans[0]
+	require.False(t, plan.Listed)
+	require.True(t, plan.Enabled)
+
+	user := createV1ContractUser(t, "bigfish-hidden-purchase-user")
+	order, _, err := CreateSubscriptionOrder(user.Id, plan.Id, "bigfish-hidden-enabled", PaymentMethodIFLinkPay, PaymentProviderIFLinkPay, true)
+	require.NoError(t, err)
+	require.Equal(t, common.TopUpStatusPending, order.Status)
+
+	require.NoError(t, DB.Model(&SubscriptionPlan{}).Where("id = ?", plan.Id).Update("enabled", false).Error)
+	InvalidateSubscriptionPlanCache(plan.Id)
+	disabledUser := createV1ContractUser(t, "bigfish-disabled-purchase-user")
+	_, _, err = CreateSubscriptionOrder(disabledUser.Id, plan.Id, "bigfish-hidden-disabled", PaymentMethodIFLinkPay, PaymentProviderIFLinkPay, true)
+	require.ErrorContains(t, err, "套餐未启用")
+}
+
 func TestBigfishConcurrentOrdersCannotReserveDifferentTiers(t *testing.T) {
 	plans := setupBigfishProductsTest(t)
 	user := createV1ContractUser(t, "bigfish-concurrent-user")
