@@ -32,7 +32,8 @@ type StorefrontCatalogItemDTO struct {
 
 // GetSubscriptionPublicCatalog serves the landing-page product catalog to
 // anonymous visitors. Listed products and display_metadata.preview drafts are
-// included; checkout keeps enforcing enabled/listed server-side.
+// included; paid checkout enforces Enabled server-side while Listed controls
+// catalog discovery and RedemptionEnabled independently controls code claims.
 func GetSubscriptionPublicCatalog(c *gin.Context) {
 	items, err := model.GetStorefrontCatalog()
 	if err != nil {
@@ -42,10 +43,7 @@ func GetSubscriptionPublicCatalog(c *gin.Context) {
 	result := make([]StorefrontCatalogItemDTO, 0, len(items))
 	for _, item := range items {
 		plan := item.Plan
-		metadata := json.RawMessage("{}")
-		if trimmed := strings.TrimSpace(plan.DisplayMetadata); trimmed != "" {
-			metadata = json.RawMessage(trimmed)
-		}
+		metadata := storefrontDisplayMetadata(plan.DisplayMetadata)
 		result = append(result, StorefrontCatalogItemDTO{
 			ProductID:       subscriptionPlanProductID(plan),
 			Title:           plan.Title,
@@ -64,4 +62,27 @@ func GetSubscriptionPublicCatalog(c *gin.Context) {
 		})
 	}
 	common.ApiSuccess(c, result)
+}
+
+func storefrontDisplayMetadata(raw string) json.RawMessage {
+	var input map[string]any
+	if err := common.Unmarshal([]byte(strings.TrimSpace(raw)), &input); err != nil {
+		return json.RawMessage("{}")
+	}
+	allowed := map[string]struct{}{
+		"badges": {}, "benefits": {}, "button_label": {}, "recommended": {},
+		"featured": {}, "reference_price": {}, "models_display": {}, "zone": {},
+		"image": {}, "image_alt": {}, "preview": {},
+	}
+	filtered := make(map[string]any, len(input))
+	for key, value := range input {
+		if _, ok := allowed[key]; ok {
+			filtered[key] = value
+		}
+	}
+	encoded, err := common.Marshal(filtered)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return json.RawMessage(encoded)
 }

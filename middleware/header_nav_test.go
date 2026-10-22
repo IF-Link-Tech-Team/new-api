@@ -105,6 +105,14 @@ func TestHeaderNavModuleAuthRequiresLoginForPricing(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, recorder.Code)
 }
 
+func TestHeaderNavModulePublicIgnoresRequireAuthButHonorsEnabled(t *testing.T) {
+	withHeaderNavModules(t, `{"pricing":{"enabled":true,"requireAuth":true}}`)
+	require.Equal(t, http.StatusOK, performHeaderNavRequest(t, HeaderNavModulePublic("pricing"), false).Code)
+
+	withHeaderNavModules(t, `{"pricing":{"enabled":false,"requireAuth":false}}`)
+	require.Equal(t, http.StatusForbidden, performHeaderNavRequest(t, HeaderNavModulePublic("pricing"), false).Code)
+}
+
 func TestHeaderNavModuleAuthRequiresLoginForRankings(t *testing.T) {
 	raw := `{"rankings":{"enabled":true,"requireAuth":true}}`
 	withHeaderNavModules(t, raw)
