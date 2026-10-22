@@ -85,6 +85,7 @@ describe('plan form model scope conversion', () => {
 
     const payload = formValuesToPlanPayload(values)
     assert.equal(payload.plan.product_type, 'pack_k3')
+    assert.equal(payload.plan.currency, 'CNY')
     assert.equal(payload.plan.product_code, 'k3-pack-49')
     assert.equal(payload.plan.product_family, 'kimi_k3')
     assert.equal(payload.plan.product_tier, 2)
@@ -110,6 +111,11 @@ describe('plan form defaults for legacy plans', () => {
     assert.equal(values.fallback_allowed, false)
     assert.equal(values.listed, true)
     assert.equal(values.redemption_enabled, true)
+  })
+
+  test('preserves the existing currency when editing a legacy plan', () => {
+    const values = planToFormValues(buildPlan({ currency: 'USD' }))
+    assert.equal(formValuesToPlanPayload(values).plan.currency, 'USD')
   })
 
   test('payload of defaults carries an empty legacy product contract', () => {

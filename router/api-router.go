@@ -166,7 +166,9 @@ func SetApiRouter(router *gin.Engine) {
 			{
 				adminRoute.GET("/", controller.GetAllUsers)
 				adminRoute.GET("/topup", controller.GetAllTopUps)
-				adminRoute.POST("/topup/complete", controller.AdminCompleteTopUp)
+				// Manual balance crediting is a financial correction, not a routine
+				// admin action. Keep it at the same Root boundary as refund review.
+				adminRoute.POST("/topup/complete", middleware.RootAuth(), controller.AdminCompleteTopUp)
 				adminRoute.GET("/search", controller.SearchUsers)
 				adminRoute.GET("/:id/oauth/bindings", controller.GetUserOAuthBindingsByAdmin)
 				adminRoute.DELETE("/:id/oauth/bindings/:provider_id", controller.UnbindCustomOAuthByAdmin)
@@ -187,7 +189,7 @@ func SetApiRouter(router *gin.Engine) {
 		// Subscription billing (plans, purchase, admin management)
 		// Anonymous landing-page storefront catalog: trimmed DTO, follows the
 		// pricing module's header-nav visibility toggle.
-		apiRouter.GET("/subscription/public/catalog", middleware.HeaderNavModuleAuth("pricing"), controller.GetSubscriptionPublicCatalog)
+		apiRouter.GET("/subscription/public/catalog", middleware.HeaderNavModulePublic("pricing"), controller.GetSubscriptionPublicCatalog)
 		subscriptionRoute := apiRouter.Group("/subscription")
 		subscriptionRoute.Use(middleware.UserAuth())
 		{

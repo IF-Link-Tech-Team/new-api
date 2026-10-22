@@ -69,7 +69,7 @@ func setupStorefrontCatalogTest(t *testing.T) *gin.Engine {
 	model.InvalidateSubscriptionPlanCache(1)
 
 	router := gin.New()
-	router.GET("/api/subscription/public/catalog", middleware.HeaderNavModuleAuth("pricing"), GetSubscriptionPublicCatalog)
+	router.GET("/api/subscription/public/catalog", middleware.HeaderNavModulePublic("pricing"), GetSubscriptionPublicCatalog)
 	return router
 }
 
@@ -114,6 +114,14 @@ func decodeStorefrontCatalog(t *testing.T, body []byte) []map[string]any {
 
 func TestStorefrontCatalogServesAnonymousRequestsWithoutCostFields(t *testing.T) {
 	router := setupStorefrontCatalogTest(t)
+	func() {
+		common.OptionMapRWMutex.Lock()
+		defer common.OptionMapRWMutex.Unlock()
+		if common.OptionMap == nil {
+			common.OptionMap = make(map[string]string)
+		}
+		common.OptionMap["HeaderNavModules"] = `{"pricing":{"enabled":true,"requireAuth":true}}`
+	}()
 	createStorefrontCatalogPlan(t, model.SubscriptionPlan{
 		Title:           "Pro",
 		Subtitle:        "适合稳定使用与高频开发",
@@ -129,7 +137,7 @@ func TestStorefrontCatalogServesAnonymousRequestsWithoutCostFields(t *testing.T)
 		SortOrder:       10,
 		AllowedChannels: `{"deepseek-v4-flash-ga-260731":[7]}`,
 		MaxUpstreamCost: `{"deepseek-v4-flash-ga-260731":{"input":9.99}}`,
-		DisplayMetadata: `{"badges":[{"label":"主推","tone":"accent"}],"recommended":true}`,
+		DisplayMetadata: `{"badges":[{"label":"主推","tone":"accent"}],"recommended":true,"internal_note":"do not expose"}`,
 	})
 
 	code, body := requestStorefrontCatalog(t, router)
@@ -152,6 +160,7 @@ func TestStorefrontCatalogServesAnonymousRequestsWithoutCostFields(t *testing.T)
 	metadata, ok := item["display_metadata"].(map[string]any)
 	require.True(t, ok, "display_metadata must decode to an object: %v", item["display_metadata"])
 	assert.Equal(t, true, metadata["recommended"])
+	assert.NotContains(t, metadata, "internal_note")
 
 	for _, forbidden := range []string{
 		"allowed_channels", "max_upstream_cost", "fallback_allowed",
@@ -162,6 +171,36 @@ func TestStorefrontCatalogServesAnonymousRequestsWithoutCostFields(t *testing.T)
 		assert.NotContains(t, string(body), `"`+forbidden+`"`, "catalog DTO must not expose %s", forbidden)
 	}
 	assert.NotContains(t, string(body), "9.99", "upstream settlement cost must never leak")
+}
+
+func TestPreserveUnsubmittedSubscriptionPlanFields(t *testing.T) {
+	existing := model.SubscriptionPlan{
+		Currency: "CNY", AllowedChannels: `{"model":[1]}`,
+		MaxUpstreamCost: `{"model":{"input":1}}`, DisplayMetadata: `{"recommended":true}`,
+	}
+	updated := model.SubscriptionPlan{Title: "Updated"}
+	preserveUnsubmittedSubscriptionPlanFields(&updated, existing)
+
+	require.Equal(t, existing.Currency, updated.Currency)
+	require.Equal(t, existing.AllowedChannels, updated.AllowedChannels)
+	require.Equal(t, existing.MaxUpstreamCost, updated.MaxUpstreamCost)
+	require.Equal(t, existing.DisplayMetadata, updated.DisplayMetadata)
+}
+
+func TestStorefrontCatalogRedactsUnknownDisplayMetadata(t *testing.T) {
+	router := setupStorefrontCatalogTest(t)
+	createStorefrontCatalogPlan(t, model.SubscriptionPlan{
+		Title: "Pro", ProductCode: "pro", Listed: true, Enabled: true,
+		DisplayMetadata: `{"button_label":"Buy","internal_note":"secret","allowed_channels":{"model":[7]}}`,
+	})
+
+	_, body := requestStorefrontCatalog(t, router)
+	items := decodeStorefrontCatalog(t, body)
+	require.Len(t, items, 1)
+	metadata := items[0]["display_metadata"].(map[string]any)
+	require.Equal(t, "Buy", metadata["button_label"])
+	assert.NotContains(t, metadata, "internal_note")
+	assert.NotContains(t, metadata, "allowed_channels")
 }
 
 func TestStorefrontCatalogIncludesPreviewDraftsAndHidesUnlistedDrafts(t *testing.T) {

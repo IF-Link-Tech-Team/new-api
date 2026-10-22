@@ -6,6 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const maxPageNumber = 1_000_000
+
 type PageInfo struct {
 	Page     int `json:"page"`      // page num 页码
 	PageSize int `json:"page_size"` // page size 页大小
@@ -48,13 +50,9 @@ func GetPageQuery(c *gin.Context) *PageInfo {
 		pageInfo.PageSize = pageSize
 	}
 	if pageInfo.Page < 1 {
-		// 兼容
-		page, _ := strconv.Atoi(c.Query("p"))
-		if page != 0 {
-			pageInfo.Page = page
-		} else {
-			pageInfo.Page = 1
-		}
+		pageInfo.Page = 1
+	} else if pageInfo.Page > maxPageNumber {
+		pageInfo.Page = maxPageNumber
 	}
 
 	if pageInfo.PageSize == 0 {
@@ -74,7 +72,9 @@ func GetPageQuery(c *gin.Context) *PageInfo {
 		}
 	}
 
-	if pageInfo.PageSize > 100 {
+	if pageInfo.PageSize < 1 {
+		pageInfo.PageSize = ItemsPerPage
+	} else if pageInfo.PageSize > 100 {
 		pageInfo.PageSize = 100
 	}
 

@@ -141,6 +141,25 @@ func TestValidateV1ContractRejectsFrozenRuleDrift(t *testing.T) {
 	require.ErrorContains(t, broken.ValidateV1Contract(), "fail closed")
 }
 
+func TestLimitedPlanRejectsAnotherPendingPurchase(t *testing.T) {
+	truncateTables(t)
+	user := createV1ContractUser(t, "limited-pending-user")
+	plan := v1MonthlyPlanFixture(t, "monthly-limited", 2, 49.9)
+	plan.MaxPurchasePerUser = 1
+	require.NoError(t, DB.Create(plan).Error)
+	InvalidateSubscriptionPlanCache(plan.Id)
+
+	first, _, err := CreateSubscriptionOrder(user.Id, plan.Id, "limited-pending-first", PaymentMethodAlipay, PaymentProviderAlipay, true)
+	require.NoError(t, err)
+	require.Equal(t, common.TopUpStatusPending, first.Status)
+	_, _, err = CreateSubscriptionOrder(user.Id, plan.Id, "limited-pending-second", PaymentMethodAlipay, PaymentProviderAlipay, true)
+	require.ErrorContains(t, err, "待支付")
+
+	var count int64
+	require.NoError(t, DB.Model(&SubscriptionOrder{}).Where("user_id = ? AND plan_id = ? AND status = ?", user.Id, plan.Id, common.TopUpStatusPending).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+}
+
 func TestWalletProductPriceResolvesCurrentImmutableVersion(t *testing.T) {
 	truncateTables(t)
 	now := GetDBTimestamp()

@@ -61,11 +61,16 @@ func ReconcileBillingRefunds(ctx context.Context) (BillingRefundReconciliation, 
 	if err != nil {
 		return result, err
 	}
+	// Retention is independent from the current retry/alert backlog. A single
+	// ambiguous receipt must not prevent terminal receipts from being removed
+	// after the configured retention period.
+	if _, err = model.CleanupBillingRefunds(30 * 24 * 3600); err != nil {
+		return result, err
+	}
 	if result.Failed > 0 || result.Alerts > 0 || result.Pending > 0 {
 		return result, fmt.Errorf("billing refund reconciliation requires attention: failed=%d alerts=%d pending=%d; inspect /api/billing-refund", result.Failed, result.Alerts, result.Pending)
 	}
-	_, err = model.CleanupBillingRefunds(30 * 24 * 3600)
-	return result, err
+	return result, nil
 }
 
 func (billingRefundHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {

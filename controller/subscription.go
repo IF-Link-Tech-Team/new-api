@@ -462,6 +462,21 @@ func normalizeAdminSubscriptionPlan(plan *model.SubscriptionPlan) error {
 	return plan.ValidateV1Contract()
 }
 
+func preserveUnsubmittedSubscriptionPlanFields(plan *model.SubscriptionPlan, existing model.SubscriptionPlan) {
+	if plan.Currency == "" {
+		plan.Currency = existing.Currency
+	}
+	if plan.AllowedChannels == "" {
+		plan.AllowedChannels = existing.AllowedChannels
+	}
+	if plan.MaxUpstreamCost == "" {
+		plan.MaxUpstreamCost = existing.MaxUpstreamCost
+	}
+	if plan.DisplayMetadata == "" {
+		plan.DisplayMetadata = existing.DisplayMetadata
+	}
+}
+
 func ensureUniqueProductCode(planId int, productCode string) error {
 	productCode = strings.TrimSpace(productCode)
 	if productCode == "" {
@@ -601,6 +616,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			return
 		}
 	}
+	preserveUnsubmittedSubscriptionPlanFields(&req.Plan, existingPlan)
 	if err := normalizeAdminSubscriptionPlan(&req.Plan); err != nil {
 		common.ApiError(c, err)
 		return
@@ -647,14 +663,14 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"product_tier":               req.Plan.ProductTier,
 			"billing_multiplier":         req.Plan.BillingMultiplier,
 			"price_version":              req.Plan.PriceVersion,
-			"allowed_channels":           req.Plan.AllowedChannels,
-			"max_upstream_cost":          req.Plan.MaxUpstreamCost,
 			"fallback_allowed":           req.Plan.FallbackAllowed,
 			"course_eligible":            req.Plan.CourseEligible,
 			"template_id":                req.Plan.TemplateId,
-			"display_metadata":           req.Plan.DisplayMetadata,
 			"updated_at":                 common.GetTimestamp(),
 		}
+		updateMap["allowed_channels"] = req.Plan.AllowedChannels
+		updateMap["max_upstream_cost"] = req.Plan.MaxUpstreamCost
+		updateMap["display_metadata"] = req.Plan.DisplayMetadata
 		if req.Plan.AllowBalancePay != nil {
 			updateMap["allow_balance_pay"] = *req.Plan.AllowBalancePay
 		}

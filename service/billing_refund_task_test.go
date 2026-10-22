@@ -227,6 +227,11 @@ func TestBillingRefundReconciliationUsesExistingTaskAndRecordsFailure(t *testing
 	receipt := &model.BillingRefund{UserID: 701, WalletQuota: 100}
 	require.NoError(t, model.CreateBillingRefundReceipt(receipt))
 	require.NoError(t, model.DB.Model(receipt).Update("updated_at", time.Now().Unix()-7*3600).Error)
+	terminal := &model.BillingRefund{UserID: 701, RequestID: "terminal-cleanup", WalletQuota: 1}
+	require.NoError(t, model.CreateBillingRefundReceipt(terminal))
+	require.NoError(t, model.DB.Model(terminal).Updates(map[string]any{
+		"status": model.BillingRefundSucceeded, "updated_at": time.Now().Unix() - 40*24*3600,
+	}).Error)
 	withSystemTaskRegistry(t, billingRefundHandler{})
 	runSystemTaskScheduler()
 	task, err := model.GetActiveSystemTask("billing_refund")
@@ -241,6 +246,9 @@ func TestBillingRefundReconciliationUsesExistingTaskAndRecordsFailure(t *testing
 	assert.Equal(t, model.SystemTaskStatusFailed, after.Status)
 	assert.Contains(t, after.Error, "alerts=1")
 	assert.Contains(t, after.Result, "\"alerts\":1")
+	var terminalCount int64
+	require.NoError(t, model.DB.Model(&model.BillingRefund{}).Where("id = ?", terminal.ID).Count(&terminalCount).Error)
+	assert.Zero(t, terminalCount, "terminal refund retention must run even when another receipt needs attention")
 	var users int64
 	require.NoError(t, model.DB.Model(&model.User{}).Count(&users).Error)
 	assert.Zero(t, users, "ambiguous reservations must not create accounts or credit money")

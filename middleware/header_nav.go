@@ -127,6 +127,22 @@ func HeaderNavModuleAuth(module string) gin.HandlerFunc {
 	}
 }
 
+// HeaderNavModulePublic keeps a public endpoint available regardless of the
+// module's navigation login preference while still honoring its enabled flag.
+func HeaderNavModulePublic(module string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !getHeaderNavAccess(module).Enabled {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("%s is disabled", module),
+			})
+			c.Abort()
+			return
+		}
+		TryUserAuth()(c)
+	}
+}
+
 func HeaderNavModulePublicOrUserAuth(module string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		access := getHeaderNavAccess(module)

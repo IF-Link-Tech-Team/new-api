@@ -538,6 +538,17 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 			return nil, nil, errors.New("已有待支付的大肥鱼活动订单，请完成原订单或联系管理员取消后再选档")
 		}
 	}
+	if plan.ProductType == ProductTypeMonthlySubscription {
+		var pendingCount int64
+		if err := tx.Model(&SubscriptionOrder{}).
+			Where("user_id = ? AND product_family = ? AND order_type = ? AND status = ?", userId, plan.ProductFamily, SubscriptionOrderTypePurchase, common.TopUpStatusPending).
+			Count(&pendingCount).Error; err != nil {
+			return nil, nil, err
+		}
+		if pendingCount > 0 {
+			return nil, nil, errors.New("已有待支付的月套餐订单")
+		}
+	}
 
 	order := &SubscriptionOrder{
 		UserId:             userId,
@@ -604,7 +615,7 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		}
 	}
 
-	if order.OrderType == SubscriptionOrderTypePurchase && plan.MaxPurchasePerUser > 0 {
+	if order.OrderType == SubscriptionOrderTypePurchase && plan.MaxPurchasePerUser > 0 && plan.ProductType != ProductTypePackDeepSeekBigfish {
 		var count int64
 		if err := tx.Model(&UserSubscription{}).
 			Where("user_id = ? AND plan_id = ?", userId, plan.Id).
@@ -613,6 +624,20 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		}
 		if count >= int64(plan.MaxPurchasePerUser) {
 			return nil, nil, errors.New("已达到该套餐购买上限")
+		}
+		var pendingCount int64
+		pendingQuery := tx.Model(&SubscriptionOrder{}).
+			Where("user_id = ? AND order_type = ? AND status = ?", userId, SubscriptionOrderTypePurchase, common.TopUpStatusPending)
+		if plan.ProductType == ProductTypeMonthlySubscription {
+			pendingQuery = pendingQuery.Where("product_family = ?", plan.ProductFamily)
+		} else {
+			pendingQuery = pendingQuery.Where("plan_id = ?", plan.Id)
+		}
+		if err := pendingQuery.Count(&pendingCount).Error; err != nil {
+			return nil, nil, err
+		}
+		if pendingCount > 0 {
+			return nil, nil, errors.New("该套餐已有待支付订单")
 		}
 	}
 	if err := tx.Create(order).Error; err != nil {
