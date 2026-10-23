@@ -42,7 +42,7 @@ func TestProductPriceBookMigration(t *testing.T) {
 			sqlDB, err := db.DB()
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
-			tables := []any{&PriceBookPrice{}, &ProductPrice{}, &SubscriptionPlan{}, &SubscriptionOrder{}, &UserSubscription{}}
+			tables := []any{&PriceBookPrice{}, &ProductPrice{}, &SubscriptionPlan{}, &SubscriptionOrder{}, &UserSubscription{}, &Token{}}
 			require.NoError(t, db.Migrator().DropTable(tables...))
 			t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(tables...)) })
 
@@ -81,6 +81,10 @@ func TestProductPriceBookMigration(t *testing.T) {
 			sub := UserSubscription{PlanId: 43, ProductType: ProductTypePackK3, PriceVersion: historical.PriceVersion,
 				ModelScope: pack.Model, AmountTotal: 9_000_000_000_000, AmountUsed: 1_234_567}
 			require.NoError(t, db.Create(&sub).Error)
+			boundToken := Token{UserId: 1, Key: "entitlement-key", UserSubscriptionId: sub.Id, ProductType: ProductTypePackK3}
+			require.NoError(t, db.Create(&boundToken).Error)
+			walletToken := Token{UserId: 2, Key: "wallet-key", ProductType: ProductTypeWallet}
+			require.NoError(t, db.Create(&walletToken).Error)
 			order := SubscriptionOrder{PlanId: 44, ProductType: ProductTypePackK3, PriceVersion: historical.PriceVersion,
 				ModelScope: pack.Model, TradeNo: "price-book-history", Money: 19.9}
 			require.NoError(t, db.Create(&order).Error)
@@ -104,10 +108,17 @@ func TestProductPriceBookMigration(t *testing.T) {
 			}
 			var afterSub UserSubscription
 			require.NoError(t, db.First(&afterSub, sub.Id).Error)
+			sub.PriceBook = "product:43"
 			assert.Equal(t, sub, afterSub)
 			var afterOrder SubscriptionOrder
 			require.NoError(t, db.First(&afterOrder, order.Id).Error)
+			order.PriceBook = "product:44"
 			assert.Equal(t, order, afterOrder)
+			var afterBoundToken, afterWalletToken Token
+			require.NoError(t, db.First(&afterBoundToken, boundToken.Id).Error)
+			require.NoError(t, db.First(&afterWalletToken, walletToken.Id).Error)
+			assert.Equal(t, "product:43", afterBoundToken.PriceBook)
+			assert.Equal(t, WalletPriceBook, afterWalletToken.PriceBook)
 			var legacyCount int64
 			require.NoError(t, db.Model(&ProductPrice{}).Count(&legacyCount).Error)
 			assert.EqualValues(t, 4, legacyCount)
@@ -209,8 +220,14 @@ func TestProductionPriceBookBackfill(t *testing.T) {
 	// Never log production records (including statements expanded by assert).
 	require.True(t, reflect.DeepEqual(legacyBefore, legacyAfter), "legacy catalog changed")
 	require.True(t, reflect.DeepEqual(plansBefore, plansAfter), "plans changed")
-	require.True(t, reflect.DeepEqual(ordersBefore, ordersAfter), "orders changed")
-	require.True(t, reflect.DeepEqual(subscriptionsBefore, subscriptionsAfter), "entitlements changed")
+	for i := range ordersBefore {
+		ordersBefore[i].PriceBook = ordersAfter[i].PriceBook
+	}
+	for i := range subscriptionsBefore {
+		subscriptionsBefore[i].PriceBook = subscriptionsAfter[i].PriceBook
+	}
+	require.True(t, reflect.DeepEqual(ordersBefore, ordersAfter), "orders changed beyond the new price_book snapshot")
+	require.True(t, reflect.DeepEqual(subscriptionsBefore, subscriptionsAfter), "entitlements changed beyond the new price_book snapshot")
 	var count int64
 	require.NoError(t, DB.Model(&PriceBookPrice{}).Count(&count).Error)
 	require.Positive(t, count)

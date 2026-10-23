@@ -27,6 +27,7 @@ const (
 	ContextKeyTokenProductType        ContextKey = "token_product_type"
 	ContextKeyTokenBillingMultiplier  ContextKey = "token_billing_multiplier"
 	ContextKeyTokenPriceVersion       ContextKey = "token_price_version"
+	ContextKeyTokenPriceBook          ContextKey = "token_price_book"
 	ContextKeyTokenAllowedChannels    ContextKey = "token_allowed_channels"
 	ContextKeyTokenMaxUpstreamCost    ContextKey = "token_max_upstream_cost"
 	ContextKeyTokenFallbackAllowed    ContextKey = "token_fallback_allowed"

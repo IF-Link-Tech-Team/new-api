@@ -319,6 +319,7 @@ type SubscriptionOrder struct {
 	TargetTier         int     `json:"target_tier" gorm:"type:int;default:0"`
 	BillingMultiplier  float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
 	PriceVersion       string  `json:"price_version" gorm:"type:varchar(64);default:''"`
+	PriceBook          string  `json:"-" gorm:"type:varchar(64);default:'';index"`
 	ModelScope         string  `json:"model_scope" gorm:"type:text"`
 	AllowedChannels    string  `json:"allowed_channels" gorm:"type:text"`
 	MaxUpstreamCost    string  `json:"max_upstream_cost" gorm:"type:text"`
@@ -388,6 +389,10 @@ func (o *SubscriptionOrder) SnapshotPlan(plan *SubscriptionPlan) {
 	o.TargetTier = plan.ProductTier
 	o.BillingMultiplier = plan.BillingMultiplier
 	o.PriceVersion = strings.TrimSpace(plan.PriceVersion)
+	o.PriceBook = ""
+	if RequiresStrictV1RoutePolicy(plan.ProductType) && plan.Id > 0 {
+		o.PriceBook = fmt.Sprintf("product:%d", plan.Id)
+	}
 	o.ModelScope = strings.TrimSpace(plan.ModelScope)
 	o.AllowedChannels = strings.TrimSpace(plan.AllowedChannels)
 	o.MaxUpstreamCost = strings.TrimSpace(plan.MaxUpstreamCost)
@@ -691,6 +696,7 @@ type UserSubscription struct {
 	ProductTier         int     `json:"product_tier" gorm:"type:int;default:0"`
 	BillingMultiplier   float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
 	PriceVersion        string  `json:"price_version" gorm:"type:varchar(64);default:''"`
+	PriceBook           string  `json:"-" gorm:"type:varchar(64);default:'';index"`
 	AllowedChannels     string  `json:"allowed_channels" gorm:"type:text"`
 	MaxUpstreamCost     string  `json:"max_upstream_cost" gorm:"type:text"`
 	FallbackAllowed     bool    `json:"fallback_allowed"`
@@ -996,6 +1002,13 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if plan.AllowWalletOverflow != nil {
 		allowWalletOverflow = *plan.AllowWalletOverflow
 	}
+	priceBook := ""
+	if RequiresStrictV1RoutePolicy(plan.ProductType) {
+		priceBook, err = ProductPriceBook(plan.Id)
+		if err != nil {
+			return nil, err
+		}
+	}
 	sub := &UserSubscription{
 		UserId:              userId,
 		PlanId:              plan.Id,
@@ -1018,6 +1031,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		ProductTier:         plan.ProductTier,
 		BillingMultiplier:   plan.BillingMultiplier,
 		PriceVersion:        strings.TrimSpace(plan.PriceVersion),
+		PriceBook:           priceBook,
 		AllowedChannels:     strings.TrimSpace(plan.AllowedChannels),
 		MaxUpstreamCost:     strings.TrimSpace(plan.MaxUpstreamCost),
 		FallbackAllowed:     plan.FallbackAllowed,
@@ -1144,6 +1158,7 @@ func createBoundTokenForSubscriptionTx(tx *gorm.DB, userId int, subscriptionId i
 			return 1
 		}(),
 		PriceVersion:    sub.PriceVersion,
+		PriceBook:       sub.PriceBook,
 		AllowedChannels: sub.AllowedChannels,
 		MaxUpstreamCost: sub.MaxUpstreamCost,
 		FallbackAllowed: sub.FallbackAllowed,
@@ -1243,6 +1258,10 @@ func upgradeMonthlySubscriptionTx(tx *gorm.DB, order *SubscriptionOrder, targetP
 	if order.OrderType != SubscriptionOrderTypeUpgrade || targetPlan.ProductType != ProductTypeMonthlySubscription {
 		return nil, errors.New("order is not a monthly upgrade")
 	}
+	priceBook, err := ProductPriceBook(targetPlan.Id)
+	if err != nil {
+		return nil, err
+	}
 	now := getDBTimestampTx(tx)
 	var sub UserSubscription
 	if err := lockForUpdate(tx).Where("id = ? AND user_id = ?", *order.UserSubscriptionId, order.UserId).First(&sub).Error; err != nil {
@@ -1279,6 +1298,7 @@ func upgradeMonthlySubscriptionTx(tx *gorm.DB, order *SubscriptionOrder, targetP
 	sub.ProductTier = targetPlan.ProductTier
 	sub.BillingMultiplier = targetPlan.BillingMultiplier
 	sub.PriceVersion = strings.TrimSpace(targetPlan.PriceVersion)
+	sub.PriceBook = priceBook
 	sub.AllowedChannels = strings.TrimSpace(targetPlan.AllowedChannels)
 	sub.MaxUpstreamCost = strings.TrimSpace(targetPlan.MaxUpstreamCost)
 	sub.FallbackAllowed = targetPlan.FallbackAllowed
@@ -1306,6 +1326,7 @@ func upgradeMonthlySubscriptionTx(tx *gorm.DB, order *SubscriptionOrder, targetP
 	token.ProductType = ProductTypeMonthlySubscription
 	token.BillingMultiplier = targetPlan.BillingMultiplier
 	token.PriceVersion = strings.TrimSpace(targetPlan.PriceVersion)
+	token.PriceBook = sub.PriceBook
 	token.AllowedChannels = strings.TrimSpace(targetPlan.AllowedChannels)
 	token.MaxUpstreamCost = strings.TrimSpace(targetPlan.MaxUpstreamCost)
 	token.FallbackAllowed = targetPlan.FallbackAllowed

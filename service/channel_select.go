@@ -75,20 +75,32 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 		return nil, nil
 	}
 	productType := common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)
-	if productType == model.ProductTypeWallet {
-		configured, err := model.HasProductPriceConfiguration(productType, modelName)
-		if err != nil {
-			return nil, fmt.Errorf("cannot inspect wallet product pricing: %w", err)
+	priceBook := common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceBook)
+	if priceBook == model.WalletPriceBook || (priceBook == "" && productType == model.ProductTypeWallet) {
+		var price *model.PriceBookPrice
+		var err error
+		if priceBook == model.WalletPriceBook {
+			price, err = model.ResolvePriceBookPrice(model.DB, priceBook, modelName, "")
+			if err != nil {
+				return nil, fmt.Errorf("cannot resolve wallet price book: %w", err)
+			}
 		}
 		// Wallet product pricing is opt-in. Existing installations that have no
 		// wallet price row must retain the legacy global pricing/routing path.
 		// Once any row exists, however, disabled or future-only rows fail closed.
-		if !configured {
-			return nil, nil
-		}
-		price, err := model.GetCurrentProductPriceSnapshot(productType, modelName)
-		if err != nil {
-			return nil, fmt.Errorf("product price is disabled or not yet effective: %w", err)
+		if price == nil {
+			configured, err := model.HasProductPriceConfiguration(productType, modelName)
+			if err != nil {
+				return nil, fmt.Errorf("cannot inspect legacy wallet pricing: %w", err)
+			}
+			if !configured {
+				return nil, nil
+			}
+			legacyPrice, err := model.GetCurrentProductPriceSnapshot(productType, modelName)
+			if err != nil {
+				return nil, fmt.Errorf("legacy wallet price is disabled or not yet effective: %w", err)
+			}
+			price = &model.PriceBookPrice{AllowedChannels: legacyPrice.AllowedChannels, MaxUpstreamCost: legacyPrice.MaxUpstreamCost, BillingMultiplier: legacyPrice.BillingMultiplier, PriceVersion: legacyPrice.PriceVersion, FallbackAllowed: legacyPrice.FallbackAllowed}
 		}
 		var channelIds []int
 		if err := common.UnmarshalJsonStr(price.AllowedChannels, &channelIds); err != nil {
@@ -113,6 +125,30 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 			RequireCost:       true,
 			ProductType:       productType,
 		}, nil
+	}
+	if strings.HasPrefix(priceBook, "product:") {
+		version := common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceVersion)
+		price, err := model.ResolvePriceBookPrice(model.DB, priceBook, modelName, version)
+		if err != nil {
+			return nil, fmt.Errorf("product price book unavailable: %w", err)
+		}
+		if price == nil {
+			return nil, fmt.Errorf("product price book %s has no configured model %s", priceBook, modelName)
+		}
+		policySnapshot, err := model.ParseProductRoutePolicy(price.AllowedChannels, price.MaxUpstreamCost, price.FallbackAllowed)
+		if err != nil {
+			return nil, err
+		}
+		channelIds := policySnapshot.AllowedChannels[modelName]
+		maxCost, ok := policySnapshot.MaxUpstreamCost[modelName]
+		if len(channelIds) == 0 || !ok {
+			return nil, fmt.Errorf("model %s has no compliant product route", modelName)
+		}
+		allowed := make(map[int]struct{}, len(channelIds))
+		for _, channelId := range channelIds {
+			allowed[channelId] = struct{}{}
+		}
+		return &model.ChannelSelectionPolicy{AllowedChannelIds: allowed, MaxUpstreamCost: maxCost, RequireCost: true, ProductType: productType}, nil
 	}
 	if !model.RequiresStrictV1RoutePolicy(productType) {
 		return nil, nil

@@ -42,6 +42,7 @@ type Token struct {
 	ProductType        string         `json:"product_type" gorm:"type:varchar(32);default:'wallet';index"`
 	BillingMultiplier  float64        `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
 	PriceVersion       string         `json:"price_version" gorm:"type:varchar(64);default:''"`
+	PriceBook          string         `json:"-" gorm:"type:varchar(64);default:'';index"`
 	AllowedChannels    string         `json:"allowed_channels" gorm:"type:text"`
 	MaxUpstreamCost    string         `json:"max_upstream_cost" gorm:"type:text"`
 	FallbackAllowed    bool           `json:"fallback_allowed"`

@@ -81,6 +81,52 @@ func TestModelPriceHelperUsesWalletVersionedSnapshot(t *testing.T) {
 	require.Equal(t, 1.0, info.TieredBillingSnapshot.ProductMultiplier)
 }
 
+func TestModelPriceHelperUsesProductPriceBookSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.PriceBookPrice{}))
+	model.DB = db
+	t.Cleanup(func() { model.DB = oldDB })
+
+	oldQuotaPerUnit := common.QuotaPerUnit
+	common.QuotaPerUnit = 500_000
+	oldGroupRatios := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	t.Cleanup(func() {
+		common.QuotaPerUnit = oldQuotaPerUnit
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldGroupRatios))
+	})
+
+	price := &model.PriceBookPrice{
+		PriceBook: "product:91", Model: "booked-model", PriceVersion: "book-v1",
+		OfficialReferencePrice:  `{"input":2,"cached_input":0.4,"output":8}`,
+		UserSellingPrice:        `{"input":2,"cached_input":0.4,"output":8}`,
+		UpstreamSettlementPrice: `{"input":1,"cached_input":0.2,"output":4}`,
+		BillingExpression:       `tier("book", p * 2)`, BillingMultiplier: 0.73,
+		AllowedChannels: `[31]`, MaxUpstreamCost: `{"input":1.5,"cached_input":0.3,"output":6}`,
+		FallbackAllowed: true, Enabled: true,
+	}
+	require.NoError(t, db.Create(price).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Set("group", "default")
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "booked-model", UserGroup: "default", UsingGroup: "default",
+		ProductType: model.ProductTypePackK3, ProductPriceBook: "product:91", ProductPriceVersion: "book-v1",
+		BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)},
+	}
+
+	priceData, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	require.Equal(t, 730, priceData.QuotaToPreConsume)
+	require.NotNil(t, info.TieredBillingSnapshot)
+	require.Equal(t, 0.73, info.TieredBillingSnapshot.ProductMultiplier)
+}
+
 func TestModelPriceHelperUsesImmutableModelMultiplierForMixedClassroomPrice(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	oldDB := model.DB

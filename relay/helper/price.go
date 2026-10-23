@@ -66,18 +66,42 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
-	if model.UsesVersionedProductPricing(info.ProductType) && strings.TrimSpace(info.ProductPriceVersion) != "" {
-		productPrice, err := model.GetProductPriceSnapshot(info.ProductType, info.OriginModelName, info.ProductPriceVersion)
+	if info.ProductPriceBook != "" {
+		bookPrice, err := model.ResolvePriceBookPrice(model.DB, info.ProductPriceBook, info.OriginModelName, info.ProductPriceVersion)
 		if err != nil {
-			return hosttypes.PriceData{}, fmt.Errorf("V1 product price unavailable: %w", err)
+			return hosttypes.PriceData{}, fmt.Errorf("price book price unavailable: %w", err)
+		}
+		if bookPrice == nil {
+			if info.ProductPriceBook == model.WalletPriceBook {
+				legacyPrice, legacyErr := model.GetProductPriceSnapshot(model.ProductTypeWallet, info.OriginModelName, info.ProductPriceVersion)
+				if legacyErr == nil {
+					bookPrice = &model.PriceBookPrice{BillingMultiplier: legacyPrice.BillingMultiplier, BillingExpression: legacyPrice.BillingExpression}
+				}
+			}
+		}
+		if bookPrice == nil {
+			return hosttypes.PriceData{}, errors.New("frozen price book row is unavailable")
 		}
 		// The immutable product/model/version row is authoritative. This permits
 		// IF.Learn to share one entitlement pool while DeepSeek settles at 0.60
 		// and Qwen settles at 1.00, without stacking a token/global multiplier.
-		info.ProductBillingMultiplier = productPrice.BillingMultiplier
-		common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, productPrice.BillingMultiplier)
+		info.ProductBillingMultiplier = bookPrice.BillingMultiplier
+		common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, bookPrice.BillingMultiplier)
 		groupRatioInfo := HandleGroupRatio(c, info)
-		return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, groupRatioInfo, productPrice.BillingExpression)
+		return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, groupRatioInfo, bookPrice.BillingExpression)
+	}
+	if model.UsesVersionedProductPricing(info.ProductType) && strings.TrimSpace(info.ProductPriceVersion) != "" {
+		legacyPrice, err := model.GetProductPriceSnapshot(info.ProductType, info.OriginModelName, info.ProductPriceVersion)
+		if err != nil {
+			return hosttypes.PriceData{}, fmt.Errorf("legacy product price unavailable during migration: %w", err)
+		}
+		info.ProductBillingMultiplier = legacyPrice.BillingMultiplier
+		common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, legacyPrice.BillingMultiplier)
+		groupRatioInfo := HandleGroupRatio(c, info)
+		return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, groupRatioInfo, legacyPrice.BillingExpression)
+	}
+	if info.TokenUserSubscriptionId > 0 && model.RequiresStrictV1RoutePolicy(info.ProductType) {
+		return hosttypes.PriceData{}, errors.New("product price book and frozen version are required")
 	}
 	if model.RequiresStrictV1RoutePolicy(info.ProductType) {
 		return hosttypes.PriceData{}, errors.New("V1 product price version is required")

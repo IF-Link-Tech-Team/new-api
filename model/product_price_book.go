@@ -43,6 +43,16 @@ func ProductPriceBook(planId int) (string, error) {
 	return "product:" + strconv.Itoa(planId), nil
 }
 
+func legacyPriceBook(productType string, planId int) (string, error) {
+	if productType == ProductTypeWallet {
+		return WalletPriceBook, nil
+	}
+	if !RequiresStrictV1RoutePolicy(productType) {
+		return "", nil
+	}
+	return ProductPriceBook(planId)
+}
+
 func (p *PriceBookPrice) Validate() error {
 	if p == nil {
 		return errors.New("price book price is nil")
@@ -187,6 +197,9 @@ func BackfillProductPriceBooks(db *gorm.DB) error {
 		// scopes. A type-wide catalog must not silently broaden its model set.
 		books := map[string]map[string]map[string]bool{ProductTypeWallet: {WalletPriceBook: nil}}
 		for _, item := range assignments {
+			if item.ProductType == ProductTypeWallet {
+				continue
+			}
 			if !RequiresStrictV1RoutePolicy(item.ProductType) {
 				continue // upstream/global-price legacy plans need explicit conversion later
 			}
@@ -255,6 +268,69 @@ func BackfillProductPriceBooks(db *gorm.DB) error {
 				}
 			}
 		}
+		if err := backfillPriceBookSnapshots(tx, &SubscriptionOrder{}, "id", "plan_id", "product_type"); err != nil {
+			return err
+		}
+		if err := backfillPriceBookSnapshots(tx, &UserSubscription{}, "id", "plan_id", "product_type"); err != nil {
+			return err
+		}
+		var subscriptions []UserSubscription
+		if err := tx.Select("id, price_book").Find(&subscriptions).Error; err != nil {
+			return err
+		}
+		for _, sub := range subscriptions {
+			if sub.PriceBook == "" {
+				continue
+			}
+			if err := tx.Model(&Token{}).Where("user_subscription_id = ? AND (price_book = '' OR price_book IS NULL)", sub.Id).
+				UpdateColumn("price_book", sub.PriceBook).Error; err != nil {
+				return err
+			}
+			var mismatches int64
+			if err := tx.Model(&Token{}).Where("user_subscription_id = ? AND price_book <> ?", sub.Id, sub.PriceBook).Count(&mismatches).Error; err != nil {
+				return err
+			}
+			if mismatches > 0 {
+				return fmt.Errorf("token price book conflicts with subscription %d", sub.Id)
+			}
+		}
+		if err := tx.Model(&Token{}).Where("user_subscription_id = 0 AND (price_book = '' OR price_book IS NULL) AND product_type = ?", ProductTypeWallet).
+			UpdateColumn("price_book", WalletPriceBook).Error; err != nil {
+			return err
+		}
 		return nil
 	})
+}
+
+func backfillPriceBookSnapshots(tx *gorm.DB, record any, idColumn, planColumn, productTypeColumn string) error {
+	type snapshot struct {
+		Id          int
+		PlanId      int
+		ProductType string
+		PriceBook   string
+	}
+	var rows []snapshot
+	if err := tx.Model(record).Select(idColumn + " AS id, " + planColumn + " AS plan_id, " + productTypeColumn + " AS product_type, price_book").
+		Order(idColumn).Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		book, err := legacyPriceBook(row.ProductType, row.PlanId)
+		if err != nil {
+			return fmt.Errorf("snapshot %d price book: %w", row.Id, err)
+		}
+		if book == "" {
+			continue
+		}
+		if row.PriceBook != "" && row.PriceBook != book {
+			return fmt.Errorf("snapshot %d price book conflicts with its legacy product identity", row.Id)
+		}
+		if row.PriceBook == "" {
+			if err := tx.Model(record).Where(idColumn+" = ? AND (price_book = '' OR price_book IS NULL)", row.Id).
+				UpdateColumn("price_book", book).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
