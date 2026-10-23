@@ -1,0 +1,260 @@
+package model
+
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"strconv"
+	"strings"
+
+	"github.com/QuantumNous/new-api/common"
+	"gorm.io/gorm"
+)
+
+const WalletPriceBook = "wallet"
+
+// PriceBookPrice is the expansion-stage successor of ProductPrice. The old
+// catalog stays intact until orders, keys and relay reads have been migrated.
+// Price and route data share the same immutable version.
+type PriceBookPrice struct {
+	Id           int    `json:"id"`
+	PriceBook    string `json:"price_book" gorm:"type:varchar(64);not null;uniqueIndex:idx_price_book_version,priority:1"`
+	Model        string `json:"model" gorm:"type:varchar(255);not null;uniqueIndex:idx_price_book_version,priority:2"`
+	PriceVersion string `json:"price_version" gorm:"type:varchar(64);not null;uniqueIndex:idx_price_book_version,priority:3"`
+	EffectiveAt  int64  `json:"effective_at" gorm:"bigint;index"`
+
+	OfficialReferencePrice  string  `json:"official_reference_price" gorm:"type:text;not null"`
+	UserSellingPrice        string  `json:"user_selling_price" gorm:"type:text;not null"`
+	UpstreamSettlementPrice string  `json:"upstream_settlement_price" gorm:"type:text;not null"`
+	BillingExpression       string  `json:"billing_expression" gorm:"type:text"`
+	BillingMultiplier       float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null"`
+	AllowedChannels         string  `json:"allowed_channels" gorm:"type:text;not null"`
+	MaxUpstreamCost         string  `json:"max_upstream_cost" gorm:"type:text;not null"`
+	FallbackAllowed         bool    `json:"fallback_allowed"`
+	Enabled                 bool    `json:"enabled"`
+	CreatedAt               int64   `json:"created_at" gorm:"bigint;autoCreateTime:false"`
+	UpdatedAt               int64   `json:"updated_at" gorm:"bigint;autoUpdateTime:false"`
+}
+
+func ProductPriceBook(planId int) (string, error) {
+	if planId <= 0 {
+		return "", errors.New("price book requires a positive plan id")
+	}
+	return "product:" + strconv.Itoa(planId), nil
+}
+
+func (p *PriceBookPrice) Validate() error {
+	if p == nil {
+		return errors.New("price book price is nil")
+	}
+	if strings.TrimSpace(p.Model) != p.Model || len(p.Model) > 255 ||
+		strings.TrimSpace(p.PriceVersion) != p.PriceVersion || len(p.PriceVersion) > 64 {
+		return errors.New("model and price_version must fit their storage limits without surrounding whitespace")
+	}
+	if p.PriceBook != WalletPriceBook {
+		id, err := strconv.Atoi(strings.TrimPrefix(p.PriceBook, "product:"))
+		if err != nil || id <= 0 || p.PriceBook != "product:"+strconv.Itoa(id) {
+			return errors.New("price_book must be wallet or product:<plan_id>")
+		}
+	}
+	terms := p.productPrice()
+	return terms.validatePriceTerms()
+}
+
+func (p *PriceBookPrice) productPrice() ProductPrice {
+	return ProductPrice{
+		Model: p.Model, PriceVersion: p.PriceVersion, EffectiveAt: p.EffectiveAt,
+		OfficialReferencePrice: p.OfficialReferencePrice, UserSellingPrice: p.UserSellingPrice,
+		UpstreamSettlementPrice: p.UpstreamSettlementPrice, BillingExpression: p.BillingExpression,
+		BillingMultiplier: p.BillingMultiplier, AllowedChannels: p.AllowedChannels,
+		MaxUpstreamCost: p.MaxUpstreamCost, FallbackAllowed: p.FallbackAllowed,
+		Enabled: p.Enabled, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
+	}
+}
+
+func (p *PriceBookPrice) BeforeCreate(tx *gorm.DB) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	now := common.GetTimestamp()
+	if p.CreatedAt == 0 {
+		p.CreatedAt = now
+	}
+	if p.UpdatedAt == 0 {
+		p.UpdatedAt = now
+	}
+	return nil
+}
+
+// ResolvePriceBookPrice returns nil only for an unconfigured wallet model,
+// which retains upstream global pricing. A configured but unavailable wallet
+// model and every missing product version fail closed. Historical versions
+// remain readable after their sale switch is disabled.
+func ResolvePriceBookPrice(db *gorm.DB, priceBook, modelName, priceVersion string) (*PriceBookPrice, error) {
+	if modelName == "" || strings.TrimSpace(modelName) != modelName || strings.ContainsAny(modelName, "*?") {
+		return nil, errors.New("price book requires an exact model id")
+	}
+	key := PriceBookPrice{PriceBook: priceBook}
+	if priceBook != WalletPriceBook {
+		id, err := strconv.Atoi(strings.TrimPrefix(priceBook, "product:"))
+		if err != nil || id <= 0 || priceBook != "product:"+strconv.Itoa(id) {
+			return nil, errors.New("invalid price book")
+		}
+		if strings.TrimSpace(priceVersion) == "" {
+			return nil, errors.New("product price book requires a frozen version")
+		}
+	}
+	query := db.Where("price_book = ? AND model = ?", priceBook, modelName)
+	if priceVersion == "" {
+		var count int64
+		if err := query.Model(&PriceBookPrice{}).Count(&count).Error; err != nil {
+			return nil, err
+		}
+		if count == 0 {
+			return nil, nil
+		}
+		query = query.Where("enabled = ? AND (effective_at = 0 OR effective_at <= ?)", true, GetDBTimestamp()).Order("effective_at desc, id desc")
+	} else {
+		query = query.Where("price_version = ?", priceVersion)
+	}
+	if err := query.First(&key).Error; err != nil {
+		return nil, fmt.Errorf("price book version is unavailable: %w", err)
+	}
+	if err := key.Validate(); err != nil {
+		return nil, err
+	}
+	return &key, nil
+}
+
+// Published versions may only change their sale switch. Disabled historical
+// rows remain available to already-paid entitlements.
+func (p *PriceBookPrice) BeforeUpdate(tx *gorm.DB) error {
+	if p.Id <= 0 {
+		return errors.New("price book update requires an individual version id")
+	}
+	var existing PriceBookPrice
+	if err := lockForUpdate(tx).First(&existing, p.Id).Error; err != nil {
+		return err
+	}
+	if updates, ok := tx.Statement.Dest.(map[string]any); ok {
+		for field := range updates {
+			if field != "enabled" && field != "Enabled" {
+				return errors.New("price book versions are immutable; create a new version")
+			}
+		}
+	} else {
+		candidate := *p
+		candidate.Enabled = existing.Enabled
+		candidate.UpdatedAt = existing.UpdatedAt
+		if !reflect.DeepEqual(candidate, existing) {
+			return errors.New("price book versions are immutable; create a new version")
+		}
+	}
+	tx.Statement.SetColumn("UpdatedAt", common.GetTimestamp())
+	return nil
+}
+
+// BackfillProductPriceBooks copies the old catalog without changing its read
+// path. Run with application writers stopped, then verify again immediately
+// before read cutover. It is deliberately not a startup migration: until the
+// dual-write release, old administrators still write only ProductPrice.
+// Historical order/entitlement types are included even if a plan was changed or
+// deleted. Conflicting frozen versions abort the whole data transaction.
+func BackfillProductPriceBooks(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		type assignment struct {
+			PlanId       int
+			ProductType  string
+			ModelScope   string
+			PriceVersion string
+		}
+		var assignments []assignment
+		for _, source := range []struct {
+			model         any
+			selectColumns string
+		}{
+			{&SubscriptionPlan{}, "id AS plan_id, product_type, model_scope, price_version"},
+			{&SubscriptionOrder{}, "plan_id, product_type, model_scope, price_version"},
+			{&UserSubscription{}, "plan_id, product_type, model_scope, price_version"},
+		} {
+			var rows []assignment
+			if err := tx.Model(source.model).Select(source.selectColumns).Distinct().Find(&rows).Error; err != nil {
+				return err
+			}
+			assignments = append(assignments, rows...)
+		}
+		// Each product keeps the union of its current and historical model
+		// scopes. A type-wide catalog must not silently broaden its model set.
+		books := map[string]map[string]map[string]bool{ProductTypeWallet: {WalletPriceBook: nil}}
+		for _, item := range assignments {
+			if !RequiresStrictV1RoutePolicy(item.ProductType) {
+				continue // upstream/global-price legacy plans need explicit conversion later
+			}
+			book, err := ProductPriceBook(item.PlanId)
+			if err != nil {
+				return err
+			}
+			if books[item.ProductType] == nil {
+				books[item.ProductType] = map[string]map[string]bool{}
+			}
+			if books[item.ProductType][book] == nil {
+				books[item.ProductType][book] = map[string]bool{}
+			}
+			if strings.TrimSpace(item.PriceVersion) == "" || len(explicitModelIds(item.ModelScope)) == 0 {
+				return fmt.Errorf("price book migration requires explicit model/version for plan %d", item.PlanId)
+			}
+			for _, modelName := range explicitModelIds(item.ModelScope) {
+				books[item.ProductType][book][modelName] = true
+				var count int64
+				if err := tx.Model(&ProductPrice{}).Where("product_type = ? AND model = ? AND price_version = ?",
+					item.ProductType, modelName, item.PriceVersion).Count(&count).Error; err != nil {
+					return err
+				}
+				if count != 1 {
+					return fmt.Errorf("price book migration missing price: %s/%s/%s", book, modelName, item.PriceVersion)
+				}
+			}
+		}
+		var prices []ProductPrice
+		if err := tx.Order("id").Find(&prices).Error; err != nil {
+			return err
+		}
+		for _, price := range prices {
+			if err := price.ValidateV1(); err != nil {
+				return fmt.Errorf("legacy price %d: %w", price.Id, err)
+			}
+			for book, models := range books[price.ProductType] {
+				if book != WalletPriceBook && !models[price.Model] {
+					continue
+				}
+				entry := PriceBookPrice{
+					PriceBook: book, Model: price.Model, PriceVersion: price.PriceVersion, EffectiveAt: price.EffectiveAt,
+					OfficialReferencePrice: price.OfficialReferencePrice, UserSellingPrice: price.UserSellingPrice,
+					UpstreamSettlementPrice: price.UpstreamSettlementPrice, BillingExpression: price.BillingExpression,
+					BillingMultiplier: price.BillingMultiplier, AllowedChannels: price.AllowedChannels,
+					MaxUpstreamCost: price.MaxUpstreamCost, FallbackAllowed: price.FallbackAllowed,
+					Enabled: price.Enabled, CreatedAt: price.CreatedAt, UpdatedAt: price.UpdatedAt,
+				}
+				var existing PriceBookPrice
+				err := tx.Where("price_book = ? AND model = ? AND price_version = ?", book, price.Model, price.PriceVersion).First(&existing).Error
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					if err := entry.Validate(); err != nil {
+						return err
+					}
+					if err := tx.Session(&gorm.Session{SkipHooks: true}).Create(&entry).Error; err != nil {
+						return err
+					}
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				entry.Id = existing.Id
+				if !reflect.DeepEqual(entry, existing) {
+					return fmt.Errorf("price book backfill conflict: %s/%s/%s", book, price.Model, price.PriceVersion)
+				}
+			}
+		}
+		return nil
+	})
+}

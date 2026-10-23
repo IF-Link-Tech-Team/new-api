@@ -508,6 +508,41 @@ func (p *ProductPrice) ValidateV1() error {
 	if !ok || math.Abs(expectedMultiplier-p.BillingMultiplier) > 0.000001 {
 		return fmt.Errorf("product price billing_multiplier for %s must be %.2f", p.ProductType, expectedMultiplier)
 	}
+	if p.ProductType == ProductTypePackDeepSeekClassroom || p.ProductType == ProductTypePackDeepSeekBigfish {
+		var channelIds []int
+		if err := common.UnmarshalJsonStr(strings.TrimSpace(p.AllowedChannels), &channelIds); err != nil {
+			return errors.New("allowed_channels must be a JSON channel ID list")
+		}
+		if p.ProductType == ProductTypePackDeepSeekClassroom {
+			if p.Model != ClassroomModelV41 && p.Model != ClassroomModelV4GA && p.Model != ClassroomModelQwen {
+				return errors.New("classroom product price model is not allowed")
+			}
+			expectedChannel := 15
+			if p.Model == ClassroomModelQwen {
+				expectedChannel = 14
+			}
+			if len(channelIds) != 1 || channelIds[0] != expectedChannel {
+				return fmt.Errorf("classroom product price for %s must be restricted to channel %d", p.Model, expectedChannel)
+			}
+		}
+		if p.ProductType == ProductTypePackDeepSeekBigfish {
+			if p.PriceVersion != BigfishPriceVersion || (p.Model != ClassroomModelV4GA && p.Model != ClassroomModelV41) || len(channelIds) != 1 || channelIds[0] != 15 {
+				return errors.New("bigfish prices require the audited Flash IDs, channel 15 and independent price version")
+			}
+		}
+	}
+	return p.validatePriceTerms()
+}
+
+// validatePriceTerms checks economic and routing data without selecting a
+// product template, model family, channel number, or commercial multiplier.
+func (p *ProductPrice) validatePriceTerms() error {
+	if p.Model == "" || p.PriceVersion == "" || strings.ContainsAny(p.Model, "*?") {
+		return errors.New("exact model and price_version are required")
+	}
+	if p.BillingMultiplier <= 0 || math.IsNaN(p.BillingMultiplier) || math.IsInf(p.BillingMultiplier, 0) {
+		return errors.New("billing_multiplier must be finite and positive")
+	}
 	for field, raw := range map[string]string{
 		"official_reference_price":  p.OfficialReferencePrice,
 		"user_selling_price":        p.UserSellingPrice,
@@ -537,23 +572,6 @@ func (p *ProductPrice) ValidateV1() error {
 			return errors.New("allowed_channels contains a duplicate channel ID")
 		}
 		seen[channelId] = struct{}{}
-	}
-	if p.ProductType == ProductTypePackDeepSeekClassroom {
-		if p.Model != ClassroomModelV41 && p.Model != ClassroomModelV4GA && p.Model != ClassroomModelQwen {
-			return errors.New("classroom product price model is not allowed")
-		}
-		expectedChannel := 15
-		if p.Model == ClassroomModelQwen {
-			expectedChannel = 14
-		}
-		if len(channelIds) != 1 || channelIds[0] != expectedChannel {
-			return fmt.Errorf("classroom product price for %s must be restricted to channel %d", p.Model, expectedChannel)
-		}
-	}
-	if p.ProductType == ProductTypePackDeepSeekBigfish {
-		if p.PriceVersion != BigfishPriceVersion || (p.Model != ClassroomModelV4GA && p.Model != ClassroomModelV41) || len(channelIds) != 1 || channelIds[0] != 15 {
-			return errors.New("bigfish prices require the audited Flash IDs, channel 15 and independent price version")
-		}
 	}
 	var cost PriceComponents
 	if err := common.UnmarshalJsonStr(strings.TrimSpace(p.MaxUpstreamCost), &cost); err != nil || !validPositivePriceComponents(cost) {

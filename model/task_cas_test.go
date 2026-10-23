@@ -53,6 +53,19 @@ func TestMain(m *testing.M) {
 		sqlDB.SetMaxOpenConns(1)
 	}
 	if os.Getenv("CILAI_TEST_FULL_MIGRATION") == "1" {
+		if postgresDSN != "" {
+			// OpenPostgres has validated the disposable target. Full startup
+			// rehearsals must also use the production migration dialector and
+			// prepared-statement configuration, not the generic test driver.
+			if err := sqlDB.Close(); err != nil {
+				panic(err)
+			}
+			db, _, err = chooseDB("CILAI_TEST_POSTGRES_DSN", false)
+			if err != nil {
+				panic(err)
+			}
+			DB, LOG_DB = db, db
+		}
 		if err := migrateDB(); err != nil {
 			panic("failed to migrate production snapshot: " + err.Error())
 		}
