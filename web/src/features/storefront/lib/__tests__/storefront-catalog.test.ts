@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+
+import { test } from 'vitest'
 
 import {
   formatStorefrontPeriod,
@@ -87,7 +88,10 @@ test('badge tone falls back to neutral for unknown tones', () => {
 })
 
 test('image paths must be site-relative without markup characters', () => {
-  assert.equal(sanitizeStorefrontImagePath('/branding/bigfish-lite.webp'), '/branding/bigfish-lite.webp')
+  assert.equal(
+    sanitizeStorefrontImagePath('/branding/bigfish-lite.webp'),
+    '/branding/bigfish-lite.webp'
+  )
   assert.equal(sanitizeStorefrontImagePath('//evil.example/x.webp'), '')
   assert.equal(sanitizeStorefrontImagePath('https://evil.example/x.webp'), '')
   assert.equal(sanitizeStorefrontImagePath('branding/x.webp'), '')
@@ -96,9 +100,18 @@ test('image paths must be site-relative without markup characters', () => {
 })
 
 test('only enabled non-preview items are purchasable', () => {
-  assert.equal(isStorefrontItemPurchasable({ enabled: true, preview: false }), true)
-  assert.equal(isStorefrontItemPurchasable({ enabled: true, preview: true }), false)
-  assert.equal(isStorefrontItemPurchasable({ enabled: false, preview: false }), false)
+  assert.equal(
+    isStorefrontItemPurchasable({ enabled: true, preview: false }),
+    true
+  )
+  assert.equal(
+    isStorefrontItemPurchasable({ enabled: true, preview: true }),
+    false
+  )
+  assert.equal(
+    isStorefrontItemPurchasable({ enabled: false, preview: false }),
+    false
+  )
 })
 
 test('mount filtering splits plans, packs, and zone-scoped drafts', () => {
@@ -136,7 +149,9 @@ test('mount filtering splits plans, packs, and zone-scoped drafts', () => {
     ['deepseek-bigfish-lite-20261017']
   )
   assert.deepEqual(
-    storefrontItemsForMount(items, 'zones', 'deepseek-zone').map((item) => item.product_id),
+    storefrontItemsForMount(items, 'zones', 'deepseek-zone').map(
+      (item) => item.product_id
+    ),
     ['deepseek-bigfish-lite-20261017']
   )
   assert.deepEqual(storefrontItemsForMount(items, 'zones', 'other-zone'), [])

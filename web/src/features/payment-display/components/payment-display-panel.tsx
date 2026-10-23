@@ -38,12 +38,12 @@ export function PaymentDisplayPanel(props: PaymentDisplayPanelProps) {
           <span className='text-muted-foreground text-sm'>
             {t('Product Name')}
           </span>
-          <span className='max-w-[240px] text-right text-sm font-medium break-words'>
+          <span className='max-w-[260px] text-right text-sm font-medium break-words'>
             {props.productName}
           </span>
         </div>
         <div className='flex items-center justify-between gap-4 border-t pt-3'>
-          <span className='text-sm font-medium'>{t('Amount Due (RMB)')}</span>
+          <span className='text-sm font-medium'>{t('List price')}</span>
           <span className='text-primary text-xl font-bold'>{props.amount}</span>
         </div>
       </div>
@@ -66,7 +66,7 @@ export function PaymentDisplayPanel(props: PaymentDisplayPanelProps) {
           >
             <QrCode className='h-10 w-10' aria-hidden='true' />
             <span className='text-sm font-medium'>
-              {t('Alipay QR code pending')}
+              {t('Payment QR code is not available yet')}
             </span>
           </div>
         )}

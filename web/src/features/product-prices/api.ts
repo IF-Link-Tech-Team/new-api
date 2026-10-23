@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   ApiResponse,
@@ -38,14 +39,14 @@ export async function getAdminProductPrices(
   const res = await api.get(
     `/api/subscription/admin/product-prices${query ? `?${query}` : ''}`
   )
-  return res.data
+  return requireServerSuccess(res.data)
 }
 
 export async function createProductPrice(
   data: ProductPricePayload
 ): Promise<ApiResponse<ProductPrice>> {
   const res = await api.post('/api/subscription/admin/product-prices', data)
-  return res.data
+  return requireServerSuccess(res.data)
 }
 
 // The only permitted mutation on an existing price row: the sale switch.
@@ -56,5 +57,5 @@ export async function setProductPriceEnabled(
   const res = await api.patch(`/api/subscription/admin/product-prices/${id}`, {
     enabled,
   })
-  return res.data
+  return requireServerSuccess(res.data)
 }

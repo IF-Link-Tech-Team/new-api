@@ -7,37 +7,8 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import assert from 'node:assert/strict'
-import { after as afterAll, afterEach, test } from 'node:test'
 
-import { Window } from 'happy-dom'
-
-const domWindow = new Window({ url: 'https://token.iflink.tech/checkout' })
-const domGlobals = [
-  'window',
-  'self',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'HTMLInputElement',
-  'HTMLImageElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'MouseEvent',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
+import { afterEach, test } from 'vitest'
 
 const { QueryClient, QueryClientProvider } =
   await import('@tanstack/react-query')
@@ -71,8 +42,6 @@ afterEach(async () => {
   host = null
   document.body.replaceChildren()
 })
-
-afterAll(() => domWindow.close())
 
 test('redeems the selected product when online payment is unavailable', async () => {
   const requests: Array<{ method?: string; url?: string; data?: unknown }> = []
@@ -150,7 +119,6 @@ test('redeems the selected product when online payment is unavailable', async ()
     routeTree: rootRoute,
     history: createMemoryHistory({ initialEntries: ['/'] }),
   })
-  await router.load()
   await act(async () => {
     root?.render(
       <QueryClientProvider client={queryClient}>

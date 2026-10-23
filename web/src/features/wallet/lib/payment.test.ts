@@ -16,8 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import assert from 'node:assert/strict'
-import { describe, test } from 'node:test'
+import { describe, expect, test } from 'vitest'
 
 import { PAYMENT_TYPES } from '../constants'
 import {
@@ -32,18 +31,18 @@ import {
 
 describe('payment type classification', () => {
   test('keeps Waffo and Waffo Pancake on their dedicated flows', () => {
-    assert.equal(isWaffoPayment(PAYMENT_TYPES.WAFFO), true)
-    assert.equal(isWaffoPayment(PAYMENT_TYPES.WAFFO_PANCAKE), false)
-    assert.equal(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO_PANCAKE), true)
-    assert.equal(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO), false)
-    assert.equal(isStripePayment(PAYMENT_TYPES.STRIPE), true)
+    expect(isWaffoPayment(PAYMENT_TYPES.WAFFO)).toBe(true)
+    expect(isWaffoPayment(PAYMENT_TYPES.WAFFO_PANCAKE)).toBe(false)
+    expect(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO_PANCAKE)).toBe(true)
+    expect(isWaffoPancakePayment(PAYMENT_TYPES.WAFFO)).toBe(false)
+    expect(isStripePayment(PAYMENT_TYPES.STRIPE)).toBe(true)
   })
 
   test('keeps IFLinkPay on its dedicated redirect flow', () => {
-    assert.equal(isIFLinkPayPayment(PAYMENT_TYPES.IFLINKPAY), true)
-    assert.equal(isIFLinkPayPayment(PAYMENT_TYPES.ALIPAY), false)
-    assert.equal(isIFLinkPayPayment(PAYMENT_TYPES.STRIPE), false)
-    assert.equal(isStripePayment(PAYMENT_TYPES.IFLINKPAY), false)
+    expect(isIFLinkPayPayment(PAYMENT_TYPES.IFLINKPAY)).toBe(true)
+    expect(isIFLinkPayPayment(PAYMENT_TYPES.ALIPAY)).toBe(false)
+    expect(isIFLinkPayPayment(PAYMENT_TYPES.STRIPE)).toBe(false)
+    expect(isStripePayment(PAYMENT_TYPES.IFLINKPAY)).toBe(false)
   })
 })
 
@@ -70,8 +69,8 @@ describe('payment dispatch', () => {
       }
     )
 
-    assert.equal(success, true)
-    assert.deepEqual(calls, ['waffo:120:3'])
+    expect(success).toBe(true)
+    expect(calls).toEqual(['waffo:120:3'])
   })
 
   test('does not create a Waffo order without a selected method index', async () => {
@@ -90,8 +89,8 @@ describe('payment dispatch', () => {
       }
     )
 
-    assert.equal(success, false)
-    assert.equal(called, false)
+    expect(success).toBe(false)
+    expect(called).toBe(false)
   })
 })
 
@@ -114,13 +113,12 @@ describe('payment method availability', () => {
   }
 
   test('hides configured but disabled gateways', () => {
-    assert.deepEqual(
-      getAvailablePaymentMethods(baseInfo).map((method) => method.type),
-      [PAYMENT_TYPES.IFLINKPAY]
-    )
+    expect(
+      getAvailablePaymentMethods(baseInfo).map((method) => method.type)
+    ).toEqual([PAYMENT_TYPES.IFLINKPAY])
   })
 
   test('chooses the first actually enabled method as the default', () => {
-    assert.equal(getDefaultPaymentType(baseInfo), PAYMENT_TYPES.IFLINKPAY)
+    expect(getDefaultPaymentType(baseInfo)).toBe(PAYMENT_TYPES.IFLINKPAY)
   })
 })

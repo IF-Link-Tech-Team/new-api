@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { Gift, ExternalLink, Loader2, Receipt, WalletCards } from 'lucide-react'
 import { useState, useEffect } from 'react'
-import { useTranslation } from 'react-i18next'
+import { Trans, useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -126,10 +126,8 @@ export function RechargeFormCard({
 
   const handleAmountChange = (value: string) => {
     setLocalAmount(value)
-    // 允许任意金额(最多两位小数), IFLinkPay 通道依赖小数输入;
-    // 仅接受整数的通道(支付宝/epay)仍由各自后端校验拦截。
     const numValue = Number.parseFloat(value) || 0
-    if (numValue >= 0) {
+    if (Number.isFinite(numValue) && numValue >= 0) {
       onTopupAmountChange(Math.round(numValue * 100) / 100)
     }
   }
@@ -138,11 +136,11 @@ export function RechargeFormCard({
     topupInfo?.enable_online_topup ||
     topupInfo?.enable_stripe_topup ||
     topupInfo?.enable_iflinkpay_topup ||
+    topupInfo?.enable_alipay_topup ||
     enableWaffoTopup ||
     enableWaffoPancakeTopup
   const hasAnyTopup = hasConfigurableTopup || enableCreemTopup
-  const standardPaymentMethods: PaymentMethod[] =
-    getAvailablePaymentMethods(topupInfo)
+  const standardPaymentMethods = getAvailablePaymentMethods(topupInfo)
   const hasStandardPaymentMethods = standardPaymentMethods.length > 0
   const hasWaffoPaymentMethods =
     Array.isArray(waffoPayMethods) && waffoPayMethods.length > 0
@@ -285,17 +283,27 @@ export function RechargeFormCard({
                             </div>
                             {hasDiscount && (
                               <div className='text-xs font-medium text-green-600'>
-                                {getDiscountLabel(discount)}
+                                {getDiscountLabel(discount, t)}
                               </div>
                             )}
                           </div>
                           <div className='text-muted-foreground mt-1.5 w-full text-xs sm:mt-2'>
-                            Pay {formatCurrency(actualPrice)}
-                            {hasDiscount && savedAmount > 0 && (
-                              <span className='text-green-600'>
-                                {' '}
-                                • Save {formatCurrency(savedAmount)}
-                              </span>
+                            {hasDiscount && savedAmount > 0 ? (
+                              <Trans
+                                t={t}
+                                i18nKey='Pay {{amount}} <savings>• Save {{saved}}</savings>'
+                                values={{
+                                  amount: formatCurrency(actualPrice),
+                                  saved: formatCurrency(savedAmount),
+                                }}
+                                components={{
+                                  savings: <span className='text-green-600' />,
+                                }}
+                              />
+                            ) : (
+                              t('Pay {{amount}}', {
+                                amount: formatCurrency(actualPrice),
+                              })
                             )}
                           </div>
                         </Button>
@@ -316,10 +324,11 @@ export function RechargeFormCard({
                   <Input
                     id='topup-amount'
                     type='number'
+                    step='0.01'
                     value={localAmount}
                     onChange={(e) => handleAmountChange(e.target.value)}
                     min={minTopup}
-                    placeholder={`Minimum ${minTopup}`}
+                    placeholder={t('Minimum {{amount}}', { amount: minTopup })}
                     className='h-9 text-base sm:h-10 sm:text-lg'
                   />
                   <div className='bg-muted/30 flex min-h-9 items-center justify-between gap-2 rounded-md border px-3 lg:min-w-52'>

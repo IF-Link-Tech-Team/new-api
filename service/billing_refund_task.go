@@ -86,10 +86,10 @@ func (billingRefundHandler) Run(ctx context.Context, task *model.SystemTask, run
 	}
 	// Save the durable operator alert before attempting any external delivery.
 	if err != nil {
-		if root := model.GetRootUser(); root != nil && root.Id > 0 {
-			if notifyErr := NotifyUser(root.Id, root.Email, root.GetSetting(), dto.NewNotify("billing_refund_failure", "Billing refund reconciliation requires attention", message, nil)); notifyErr != nil {
-				logger.LogError(ctx, fmt.Sprintf("refund alert delivery failed: task=%s error=%v", task.TaskID, notifyErr))
-			}
-		}
+		notifyAdmins("billing_refund_failure", func(role int, _ dto.UserSetting) bool {
+			return role == common.RoleRootUser
+		}, func(_ string) (string, string) {
+			return "Billing refund reconciliation requires attention", message
+		})
 	}
 }

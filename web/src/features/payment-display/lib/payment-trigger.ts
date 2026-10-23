@@ -50,3 +50,17 @@ export function paymentSelectionFromEventPath(
 
   return null
 }
+
+export function consumePaymentSelection(
+  event: MouseEvent
+): PaymentDisplaySelection | null {
+  // A portal in the shadow root and its host can both dispatch React handlers
+  // for the same native click. Claim it before starting checkout or login.
+  if (event.defaultPrevented) return null
+
+  let path = event.target ? [event.target] : []
+  if (typeof event.composedPath === 'function') path = event.composedPath()
+  const selection = paymentSelectionFromEventPath(path)
+  if (selection) event.preventDefault()
+  return selection
+}

@@ -18,12 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
-import { buildCheckoutPath } from '../checkout-path'
+import { test } from 'vitest'
 
-const bunTestModule = 'bun:test'
-const { test } = (await import(bunTestModule)) as {
-  test: typeof import('node:test').test
-}
+import { buildCheckoutPath } from '../checkout-path'
 
 test('builds a return-safe checkout path with only the product id', () => {
   assert.equal(

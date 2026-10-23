@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -45,6 +44,6 @@ func ReviewBillingRefund(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	model.RecordLog(reviewer, model.LogTypeManage, fmt.Sprintf("billing refund reconciliation: receipt=%d action=%s", id, body.Action))
+	model.RecordLog(reviewer, model.LogTypeManage, common.NewMessage("Billing refund reconciliation: receipt={{receipt}} action={{action}}", map[string]any{"receipt": id, "action": body.Action}))
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }

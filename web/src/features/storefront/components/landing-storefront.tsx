@@ -34,10 +34,7 @@ import {
   storefrontItemsForMount,
 } from '../lib/storefront-catalog'
 import { readStorefrontMounts } from '../lib/storefront-mounts'
-import type {
-  StorefrontCatalogItem,
-  StorefrontMount,
-} from '../types'
+import type { StorefrontCatalogItem, StorefrontMount } from '../types'
 
 function StorefrontBadges(props: { item: StorefrontCatalogItem }) {
   const badges = props.item.display_metadata.badges ?? []
@@ -94,8 +91,12 @@ function StorefrontPlanCard(props: { item: StorefrontCatalogItem }) {
       <h3>{item.title}</h3>
       <p className='card-description'>{item.subtitle}</p>
       <p className='plan-price'>
-        <strong>{formatStorefrontPrice(item.price_amount, item.currency)}</strong>
-        <span>{formatStorefrontPeriod(item.duration_unit, item.duration_value)}</span>
+        <strong>
+          {formatStorefrontPrice(item.price_amount, item.currency)}
+        </strong>
+        <span>
+          {formatStorefrontPeriod(item.duration_unit, item.duration_value)}
+        </span>
       </p>
       {benefits.length > 0 && (
         <ul className='benefit-list'>
@@ -120,11 +121,17 @@ function StorefrontPackCard(props: { item: StorefrontCatalogItem }) {
     item.currency.toUpperCase() === 'CNY'
       ? formatComputePoints(cnyToComputePoints(item.price_amount))
       : ''
-  const validity = formatStorefrontValidity(item.duration_unit, item.duration_value)
-  const models = metadata.models_display ?? item.model_scope.split(',').join(' / ')
+  const validity = formatStorefrontValidity(
+    item.duration_unit,
+    item.duration_value
+  )
+  const models =
+    metadata.models_display ?? item.model_scope.split(',').join(' / ')
   return (
     <article
-      className={metadata.featured ? 'pack-card pack-card--featured' : 'pack-card'}
+      className={
+        metadata.featured ? 'pack-card pack-card--featured' : 'pack-card'
+      }
     >
       <StorefrontBadges item={item} />
       <h3>{item.title}</h3>
@@ -150,7 +157,9 @@ function StorefrontPackCard(props: { item: StorefrontCatalogItem }) {
         )}
       </dl>
       <div className='pack-price'>
-        <strong>{formatStorefrontPrice(item.price_amount, item.currency)}</strong>
+        <strong>
+          {formatStorefrontPrice(item.price_amount, item.currency)}
+        </strong>
         {metadata.reference_price && <s>{metadata.reference_price}</s>}
       </div>
       <StorefrontAction
@@ -169,7 +178,10 @@ function StorefrontZonePackCard(props: { item: StorefrontCatalogItem }) {
     item.currency.toUpperCase() === 'CNY'
       ? formatComputePoints(cnyToComputePoints(item.price_amount))
       : ''
-  const validity = formatStorefrontValidity(item.duration_unit, item.duration_value)
+  const validity = formatStorefrontValidity(
+    item.duration_unit,
+    item.duration_value
+  )
   const tier = item.title.trim().split(/\s+/).pop() ?? item.title
   const price = `¥${item.price_amount.toFixed(2)}`
   return (
@@ -203,13 +215,21 @@ function StorefrontZonePackCard(props: { item: StorefrontCatalogItem }) {
         item={item}
         activeClassName='iflink-button starter-purchase bigfish-purchase'
         idleClassName='iflink-button starter-purchase bigfish-purchase'
-        label={metadata.button_label ?? (isStorefrontItemPurchasable(item) ? `购买 ${tier} · ${price}` : undefined)}
+        label={
+          metadata.button_label ??
+          (isStorefrontItemPurchasable(item)
+            ? `购买 ${tier} · ${price}`
+            : undefined)
+        }
       />
     </article>
   )
 }
 
-function storefrontCards(mount: StorefrontMount, items: StorefrontCatalogItem[]) {
+function storefrontCards(
+  mount: StorefrontMount,
+  items: StorefrontCatalogItem[]
+) {
   const scoped = storefrontItemsForMount(items, mount.kind, mount.zone)
   if (mount.kind === 'plans') {
     return scoped.map((item) => (

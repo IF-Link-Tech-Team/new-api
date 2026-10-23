@@ -112,9 +112,9 @@ func TestBillingRefundCannotReplaySettlementOrGuessAmbiguousDebit(t *testing.T) 
 
 func TestBillingRefundQuotaOverflowRemainsPendingWithoutPartialCredit(t *testing.T) {
 	receipt := seedWalletRefundReceipt(t)
-	require.NoError(t, DB.Model(&User{}).Where("id = ?", 101).Update("quota", common.MaxQuota).Error)
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", 101).Update("quota", common.MaxWalletQuota).Error)
 	require.Error(t, ProcessBillingRefund(receipt.ID))
-	assert.Equal(t, common.MaxQuota, getUserQuotaForPaymentGuardTest(t, 101))
+	assert.Equal(t, common.MaxWalletQuota, getUserQuotaForPaymentGuardTest(t, 101))
 	var token Token
 	require.NoError(t, DB.First(&token, 101).Error)
 	assert.Equal(t, 900, token.RemainQuota)

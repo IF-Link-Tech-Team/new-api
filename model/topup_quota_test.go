@@ -27,6 +27,7 @@ func TestTopUpCallbackAndManualCompletionUseTheSameQuotaUnits(t *testing.T) {
 		{"iflinkpay rounded up display", PaymentProviderIFLinkPay, 2, 1.5, 750_000},
 		{"stripe stored monetary units", PaymentProviderStripe, 99, 2.5, 1_250_000},
 		{"creem raw quota", PaymentProviderCreem, 12_345, 9.99, 12_345},
+		{"creem wallet above single-request ceiling", PaymentProviderCreem, int64(common.MaxQuota) + 1, 9.99, common.MaxQuota + 1},
 		{"waffo display units", PaymentProviderWaffo, 2, 9.99, 1_000_000},
 		{"pancake display units", PaymentProviderWaffoPancake, 2, 9.99, 1_000_000},
 	} {
@@ -78,7 +79,7 @@ func TestTopUpOverflowRollsBackOrderAndWallet(t *testing.T) {
 			name   string
 			amount int64
 			money  float64
-		}{{"quota column overflow", int64(common.MaxQuota) + 1, float64(common.MaxQuota) + 1}, {"integer conversion overflow", math.MaxInt64, 1e30}} {
+		}{{"quota column overflow", int64(common.MaxWalletQuota) + 1, float64(common.MaxWalletQuota) + 1}, {"integer conversion overflow", math.MaxInt64, 1e30}} {
 			t.Run(provider+"/"+boundary.name, func(t *testing.T) {
 				truncateTables(t)
 				insertUserForPaymentGuardTest(t, 101, 100)

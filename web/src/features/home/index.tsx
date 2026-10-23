@@ -32,7 +32,7 @@ import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
 import { LoginRequiredDialog } from '@/features/checkout/components/login-required-dialog'
 import { buildCheckoutPath } from '@/features/checkout/lib/checkout-path'
-import { paymentSelectionFromEventPath } from '@/features/payment-display/lib/payment-trigger'
+import { consumePaymentSelection } from '@/features/payment-display/lib/payment-trigger'
 import { LandingStorefront } from '@/features/storefront/components/landing-storefront'
 import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
@@ -75,17 +75,11 @@ export function Home() {
 
   const handleCustomHomeClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
-      const nativeEvent = event.nativeEvent
-      const path =
-        typeof nativeEvent.composedPath === 'function'
-          ? nativeEvent.composedPath()
-          : [event.target]
-      const selection = paymentSelectionFromEventPath(path)
+      const selection = consumePaymentSelection(event.nativeEvent)
       if (!selection) {
         return
       }
 
-      event.preventDefault()
       if (!isAuthenticated) {
         setPendingProductId(selection.productId)
         return

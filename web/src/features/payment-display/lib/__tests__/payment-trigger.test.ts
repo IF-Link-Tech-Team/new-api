@@ -18,13 +18,9 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
-import { paymentSelectionFromEventPath } from '../payment-trigger'
+import { describe, test } from 'vitest'
 
-const bunTestModule = 'bun:test'
-const { describe, test } = (await import(bunTestModule)) as {
-  describe: typeof import('node:test').describe
-  test: typeof import('node:test').test
-}
+import { paymentSelectionFromEventPath } from '../payment-trigger'
 
 function trigger(attributes: Record<string, string>): EventTarget {
   return {

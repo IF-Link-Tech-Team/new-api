@@ -17,43 +17,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
-import { after, afterEach, test } from 'node:test'
 
-import { Window } from 'happy-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, render, waitFor } from '@testing-library/react'
+import { createInstance } from 'i18next'
+import { act, createRef } from 'react'
+import { I18nextProvider, initReactI18next } from 'react-i18next'
+import { afterEach, expect, test } from 'vitest'
 
-const domWindow = new Window({ url: 'https://token.iflink.tech/' })
-for (const key of [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'Node',
-  'Element',
-  'Event',
-  'MouseEvent',
-  'MutationObserver',
-] as const) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
-Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-  configurable: true,
-  value: true,
-})
-const { QueryClient, QueryClientProvider } =
-  await import('@tanstack/react-query')
-const { act, createRef } = await import('react')
-const { createRoot } = await import('react-dom/client')
-const { createInstance } = await import('i18next')
-const { I18nextProvider, initReactI18next } = await import('react-i18next')
-const { HtmlContent } = await import('@/components/html-content')
-const { api } = await import('@/lib/api')
-const { paymentSelectionFromEventPath } = await import(
-  '@/features/payment-display/lib/payment-trigger'
-)
-const { LandingStorefront } = await import('../landing-storefront')
+import { HtmlContent } from '@/components/html-content'
+import { consumePaymentSelection } from '@/features/payment-display/lib/payment-trigger'
+import { api } from '@/lib/api'
+
+import { LandingStorefront } from '../landing-storefront'
 
 const i18n = createInstance()
 await i18n
@@ -117,53 +93,43 @@ const content = `<section>
 <div data-storefront="packs"></div>
 </section>`
 
-let root: ReturnType<typeof createRoot> | undefined
 let queryClient: InstanceType<typeof QueryClient>
 let host: HTMLDivElement
 let requests: string[]
 let clicks: Array<string | null>
 
-async function flush() {
-  for (let index = 0; index < 6; index += 1) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    })
-  }
-}
-
 async function mount() {
   host = document.createElement('div')
   document.body.append(host)
   const ref = createRef<HTMLDivElement>()
-  root = createRoot(host)
-  await act(async () =>
-    root?.render(
-      <QueryClientProvider client={queryClient}>
-        <I18nextProvider i18n={i18n}>
-          <div
-            ref={ref}
-            onClick={(event) => {
-              const selection = paymentSelectionFromEventPath(
-                event.nativeEvent.composedPath()
-              )
-              if (selection) {
-                event.preventDefault()
-                clicks.push(selection.productId)
-              }
-            }}
-          >
-            <HtmlContent
-              content={content}
-              variant='isolated'
-              className='custom-home-content'
-            />
-            <LandingStorefront containerRef={ref} content={content} />
-          </div>
-        </I18nextProvider>
-      </QueryClientProvider>
+  render(
+    <QueryClientProvider client={queryClient}>
+      <I18nextProvider i18n={i18n}>
+        <div
+          ref={ref}
+          onClick={(event) => {
+            const selection = consumePaymentSelection(event.nativeEvent)
+            if (selection) {
+              clicks.push(selection.productId)
+            }
+          }}
+        >
+          <HtmlContent
+            content={content}
+            variant='isolated'
+            className='custom-home-content'
+          />
+          <LandingStorefront containerRef={ref} content={content} />
+        </div>
+      </I18nextProvider>
+    </QueryClientProvider>,
+    { container: host }
+  )
+  await waitFor(() =>
+    expect(['success', 'error']).toContain(
+      queryClient.getQueryState(['storefront-catalog'])?.status
     )
   )
-  await flush()
   const shadow = host.querySelector('.custom-home-content')?.shadowRoot
   assert.ok(shadow)
   return shadow
@@ -187,14 +153,12 @@ function setUp() {
   })
 }
 
-afterEach(async () => {
-  if (root) await act(async () => root?.unmount())
-  root = undefined
+afterEach(() => {
+  cleanup()
   queryClient?.clear()
   api.defaults.adapter = originalAdapter
   document.body.replaceChildren()
 })
-after(() => domWindow.close())
 
 test('anonymous visitors get live plan cards and disabled preview drafts', async () => {
   setUp()
@@ -238,17 +202,31 @@ test('anonymous visitors get live plan cards and disabled preview drafts', async
   assert.equal(packsMount.children.length, 0)
 })
 
-test('buy clicks inside the shadow portal bubble to the wrapper handler', async () => {
+test('a shadow portal buy click starts checkout once and a later click still works', async () => {
   setUp()
   const shadow = await mount()
   const buy = shadow.querySelector('a[data-payment-product-id="pro"]')
   assert.ok(buy)
   await act(async () => {
     buy.dispatchEvent(
-      new MouseEvent('click', { bubbles: true, composed: true })
+      new MouseEvent('click', {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
     )
   })
   assert.deepEqual(clicks, ['pro'])
+  await act(async () => {
+    buy.dispatchEvent(
+      new MouseEvent('click', {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    )
+  })
+  assert.deepEqual(clicks, ['pro', 'pro'])
 })
 
 test('catalog failure leaves mounts empty instead of rendering stale cards', async () => {

@@ -30,14 +30,14 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 	// Keep body for debugging consistency (like RequestCreemPay)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		logger.LogError(c.Request.Context(), fmt.Sprintf("Creem 订阅支付请求读取失败 error=%q", err.Error()))
+		logger.LogError(c.Request.Context(), common.LogText("Creem failed to read subscription payment request error=%q", err.Error()))
 		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "read query error"})
 		return
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 
 	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
-		c.JSON(http.StatusOK, gin.H{"message": "error", "data": "参数错误"})
+		paymentError(c, common.NewMessage("Invalid parameters"))
 		return
 	}
 
@@ -47,15 +47,15 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 		return
 	}
 	if !plan.Enabled {
-		common.ApiErrorMsg(c, "套餐未启用")
+		common.ApiErrorT(c, "Subscription plan is not enabled")
 		return
 	}
 	if plan.CreemProductId == "" {
-		common.ApiErrorMsg(c, "该套餐未配置 CreemProductId")
+		common.ApiErrorT(c, "CreemProductId is not configured for this plan")
 		return
 	}
 	if setting.CreemWebhookSecret == "" && !setting.CreemTestMode {
-		common.ApiErrorMsg(c, "Creem Webhook 未配置")
+		common.ApiErrorT(c, "Creem webhook is not configured")
 		return
 	}
 
@@ -66,7 +66,7 @@ func SubscriptionRequestCreemPay(c *gin.Context) {
 		return
 	}
 	if user == nil {
-		common.ApiErrorMsg(c, "用户不存在")
+		common.ApiErrorT(c, "User does not exist")
 		return
 	}
 

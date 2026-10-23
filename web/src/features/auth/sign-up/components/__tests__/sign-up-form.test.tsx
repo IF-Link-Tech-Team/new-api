@@ -18,68 +18,33 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
-import { Window } from 'happy-dom'
-
-const bunTestModule = 'bun:test'
-const { afterAll, afterEach, mock, test } = (await import(bunTestModule)) as {
-  afterAll: typeof import('node:test').after
-  afterEach: typeof import('node:test').afterEach
-  mock: { module: (specifier: string, factory: () => unknown) => void }
-  test: typeof import('node:test').test
-}
-
-const domWindow = new Window({ url: 'https://token.iflink.tech/' })
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'localStorage',
-  'HTMLElement',
-  'HTMLInputElement',
-  'HTMLButtonElement',
-  'HTMLFormElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'KeyboardEvent',
-  'PointerEvent',
-  'MouseEvent',
-  'FocusEvent',
-  'CustomEvent',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
+import { afterEach, test, vi } from 'vitest'
 
 // Mutable fixture state read by the mocked hooks below.
-let currentStatus: Record<string, unknown> | null = null
-let turnstileEnabled = false
+const fixture = vi.hoisted(() => ({
+  currentStatus: null as Record<string, unknown> | null,
+  turnstileEnabled: false,
+}))
 
 // External boundaries only: status/network hooks, the register API, the
 // axios-based auth-session stack, and the Turnstile script loader.
-mock.module('@/hooks/use-status', () => ({
-  useStatus: () => ({ status: currentStatus, loading: false, error: null }),
+vi.mock('@/hooks/use-status', () => ({
+  useStatus: () => ({
+    status: fixture.currentStatus,
+    loading: false,
+    error: null,
+  }),
 }))
-mock.module('@/features/auth/hooks/use-turnstile', () => ({
+vi.mock('@/features/auth/hooks/use-turnstile', () => ({
   useTurnstile: () => ({
-    isTurnstileEnabled: turnstileEnabled,
-    turnstileSiteKey: turnstileEnabled ? 'test-site-key' : '',
+    isTurnstileEnabled: fixture.turnstileEnabled,
+    turnstileSiteKey: fixture.turnstileEnabled ? 'test-site-key' : '',
     turnstileToken: '',
     setTurnstileToken: () => undefined,
     validateTurnstile: () => true,
   }),
 }))
-mock.module('@/features/auth/hooks/use-email-verification', () => ({
+vi.mock('@/features/auth/hooks/use-email-verification', () => ({
   useEmailVerification: () => ({
     isSending: false,
     secondsLeft: 0,
@@ -87,26 +52,26 @@ mock.module('@/features/auth/hooks/use-email-verification', () => ({
     sendCode: async () => false,
   }),
 }))
-mock.module('@/features/auth/hooks/use-auth-redirect', () => ({
+vi.mock('@/features/auth/hooks/use-auth-redirect', () => ({
   useAuthRedirect: () => ({
     redirectToLogin: () => undefined,
-    handleLoginSuccess: async () => undefined,
+    handleLoginResult: async () => undefined,
   }),
 }))
-mock.module('@/features/auth/api', () => ({
+vi.mock('@/features/auth/api', () => ({
   register: async () => ({ success: false }),
   wechatLoginByCode: async () => ({ success: false }),
 }))
-mock.module('@/lib/api', () => ({
+vi.mock('@/lib/api', () => ({
   isAuthBundle: () => false,
 }))
-mock.module('@/components/turnstile', () => ({
+vi.mock('@/components/turnstile', () => ({
   Turnstile: () => <div data-testid='turnstile-widget' />,
 }))
 // OAuthProviders cascades into the router and login dialogs (useOAuthLogin,
 // TelegramLoginDialog); per the task scope it is replaced with a minimal
 // placeholder that only marks the OAuth section.
-mock.module('@/features/auth/components/oauth-providers', () => ({
+vi.mock('@/features/auth/components/oauth-providers', () => ({
   OAuthProviders: () => (
     <div data-testid='oauth-providers'>OAuth providers</div>
   ),
@@ -171,21 +136,17 @@ afterEach(async () => {
   host?.remove()
   root = null
   host = null
-  currentStatus = null
-  turnstileEnabled = false
+  fixture.currentStatus = null
+  fixture.turnstileEnabled = false
   document.body.replaceChildren()
 })
 
-afterAll(() => {
-  domWindow.close()
-})
-
 test('hides password fields, email verification, turnstile and the submit button when password registration is disabled', async () => {
-  currentStatus = {
+  fixture.currentStatus = {
     password_register_enabled: false,
     email_verification: true,
   }
-  turnstileEnabled = true
+  fixture.turnstileEnabled = true
 
   await renderSignUpForm()
 
@@ -202,11 +163,11 @@ test('hides password fields, email verification, turnstile and the submit button
 })
 
 test('shows password fields, email verification, turnstile and the submit button when password registration is enabled', async () => {
-  currentStatus = {
+  fixture.currentStatus = {
     password_register_enabled: true,
     email_verification: true,
   }
-  turnstileEnabled = true
+  fixture.turnstileEnabled = true
 
   await renderSignUpForm()
 
@@ -220,8 +181,8 @@ test('shows password fields, email verification, turnstile and the submit button
 })
 
 test('shows password fields and the submit button by default when status omits password_register_enabled', async () => {
-  currentStatus = {}
-  turnstileEnabled = false
+  fixture.currentStatus = {}
+  fixture.turnstileEnabled = false
 
   await renderSignUpForm()
 

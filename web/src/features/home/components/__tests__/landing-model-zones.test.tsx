@@ -7,31 +7,8 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import assert from 'node:assert/strict'
-import { after, afterEach, test } from 'node:test'
+import { afterEach, test } from 'vitest'
 
-import { Window } from 'happy-dom'
-
-const domWindow = new Window({ url: 'https://token.iflink.tech/' })
-for (const key of [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'Node',
-  'Element',
-  'Event',
-  'MouseEvent',
-  'MutationObserver',
-] as const) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
-Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
-  configurable: true,
-  value: true,
-})
 const { QueryClient, QueryClientProvider } =
   await import('@tanstack/react-query')
 const { act, createRef } = await import('react')
@@ -160,7 +137,6 @@ afterEach(async () => {
   useAuthStore.getState().auth.reset()
   document.body.replaceChildren()
 })
-after(() => domWindow.close())
 
 test('guest sees pricing links without an authenticated API request', async () => {
   setUp()

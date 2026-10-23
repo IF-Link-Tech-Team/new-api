@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -202,7 +201,7 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 	require.Equal(t, int64(1), subscriptionCount)
 	require.Equal(t, int64(1), keyCount)
 
-	encoded, err := json.Marshal(completed)
+	encoded, err := common.Marshal(completed)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), settings.IFLinkPaySecret)
 
@@ -220,7 +219,7 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 			TradeNo string `json:"trade_no"`
 		} `json:"data"`
 	}
-	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &payResponse))
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payResponse))
 	require.True(t, payResponse.Success)
 	payURL, err := url.Parse(payResponse.Data.PayURL)
 	require.NoError(t, err)

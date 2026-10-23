@@ -109,6 +109,15 @@ func isEpayWebhookEnabled() bool {
 	return isEpayTopUpEnabled()
 }
 
+// ===== IFLinkPay (临时跳转第三方支付页, 凭据到位即启用) =====
+
+func isIFLinkPayTopUpEnabled() bool {
+	if !isPaymentComplianceConfirmed() {
+		return false
+	}
+	return strings.TrimSpace(operation_setting.GetIFLinkPaySecret()) != ""
+}
+
 // ===== 支付宝原生集成 (MVP: 与 Waffo 同模式, 凭据到位即启用) =====
 
 func isAlipayTopUpEnabled() bool {
@@ -129,13 +138,4 @@ func isAlipayWebhookConfigured() bool {
 
 func isAlipayWebhookEnabled() bool {
 	return isAlipayTopUpEnabled() && isAlipayWebhookConfigured()
-}
-
-// ===== IFLinkPay (临时跳转第三方支付页, 凭据到位即启用) =====
-
-func isIFLinkPayTopUpEnabled() bool {
-	if !isPaymentComplianceConfirmed() {
-		return false
-	}
-	return strings.TrimSpace(operation_setting.GetIFLinkPaySecret()) != ""
 }

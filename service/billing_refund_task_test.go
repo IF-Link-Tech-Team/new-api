@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ func seedWalletRefundSession(t *testing.T) (*BillingSession, *gin.Context) {
 	seedUser(t, 701, 1000)
 	seedToken(t, 701, 701, "durable-wallet", 1000)
 	c, _ := gin.CreateTestContext(nil)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	session, apiErr := NewBillingSession(c, &relaycommon.RelayInfo{UserId: 701, TokenId: 701, TokenKey: "durable-wallet", RequestId: "durable-wallet", ForcePreConsume: true}, 100)
 	require.Nil(t, apiErr)
 	return session, c

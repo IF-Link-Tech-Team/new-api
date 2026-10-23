@@ -18,63 +18,36 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
-import { Window } from 'happy-dom'
 import type { ReactNode } from 'react'
-
-const bunTestModule = 'bun:test'
-const { afterAll, afterEach, mock, test } = (await import(bunTestModule)) as {
-  afterAll: typeof import('node:test').after
-  afterEach: typeof import('node:test').afterEach
-  mock: { module: (specifier: string, factory: () => unknown) => void }
-  test: typeof import('node:test').test
-}
-
-const domWindow = new Window({ url: 'https://token.iflink.tech/' })
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'localStorage',
-  'HTMLElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
+import { afterEach, test, vi } from 'vitest'
 
 // Mutable fixture state read by the mocked status hook below.
-let currentStatus: Record<string, unknown> | null = null
+const fixture = vi.hoisted(() => ({
+  currentStatus: null as Record<string, unknown> | null,
+}))
 
 // External boundaries only: the status hook, the router, and the heavier
 // child components that are irrelevant to the sign-up link contract.
-mock.module('@/hooks/use-status', () => ({
-  useStatus: () => ({ status: currentStatus, loading: false, error: null }),
+vi.mock('@/hooks/use-status', () => ({
+  useStatus: () => ({
+    status: fixture.currentStatus,
+    loading: false,
+    error: null,
+  }),
 }))
-mock.module('@tanstack/react-router', () => ({
+vi.mock('@tanstack/react-router', () => ({
   Link: ({ to, children }: { to: string; children?: ReactNode }) => (
     <a href={to}>{children}</a>
   ),
   useSearch: () => ({ redirect: undefined }),
 }))
-mock.module('../components/user-auth-form', () => ({
+vi.mock('../components/user-auth-form', () => ({
   UserAuthForm: () => <div data-testid='user-auth-form' />,
 }))
-mock.module('../../auth-layout', () => ({
+vi.mock('../../auth-layout', () => ({
   AuthLayout: ({ children }: { children?: ReactNode }) => children,
 }))
-mock.module('../../components/terms-footer', () => ({
+vi.mock('../../components/terms-footer', () => ({
   TermsFooter: () => null,
 }))
 
@@ -128,16 +101,12 @@ afterEach(async () => {
   host?.remove()
   root = null
   host = null
-  currentStatus = null
+  fixture.currentStatus = null
   document.body.replaceChildren()
 })
 
-afterAll(() => {
-  domWindow.close()
-})
-
 test('hides the sign-up link when password registration is disabled', async () => {
-  currentStatus = {
+  fixture.currentStatus = {
     register_enabled: true,
     password_register_enabled: false,
   }
@@ -149,7 +118,7 @@ test('hides the sign-up link when password registration is disabled', async () =
 })
 
 test('shows the sign-up link when password registration is enabled', async () => {
-  currentStatus = {
+  fixture.currentStatus = {
     register_enabled: true,
     password_register_enabled: true,
   }
@@ -160,7 +129,7 @@ test('shows the sign-up link when password registration is enabled', async () =>
 })
 
 test('hides the sign-up link when registration is disabled entirely', async () => {
-  currentStatus = {
+  fixture.currentStatus = {
     register_enabled: false,
     password_register_enabled: true,
   }

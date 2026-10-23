@@ -20,6 +20,8 @@ import i18next from 'i18next'
 import { useState, useCallback } from 'react'
 import { toast } from 'sonner'
 
+import { handleServerError } from '@/lib/handle-server-error'
+
 import {
   calculateAmount,
   calculateStripeAmount,
@@ -27,8 +29,8 @@ import {
   calculateWaffoPancakeAmount,
   requestPayment,
   requestStripePayment,
-  requestAlipayPayment,
   requestIFLinkPayPayment,
+  requestAlipayPayment,
   isApiSuccess,
 } from '../api'
 import {
@@ -123,7 +125,6 @@ export function usePayment() {
         setProcessing(true)
 
         const isStripe = isStripePayment(paymentType)
-        const isAlipay = isAlipayPayment(paymentType)
         const isIFLinkPay = isIFLinkPayPayment(paymentType)
         const amount = Math.floor(topupAmount)
 
@@ -144,13 +145,10 @@ export function usePayment() {
           return true
         }
 
-        // 支付宝原生通道:单独取收银台 URL 后整页跳转
-        if (isAlipay) {
+        if (isAlipayPayment(paymentType)) {
           const alipayRes = await requestAlipayPayment({ amount })
           if (!isApiSuccess(alipayRes) || !alipayRes.data?.pay_url) {
-            toast.error(
-              alipayRes.message || i18next.t('Payment request failed')
-            )
+            handleServerError(alipayRes, i18next.t('Payment request failed'))
             return false
           }
           toast.success(i18next.t('Redirecting to payment page...'))
@@ -169,7 +167,7 @@ export function usePayment() {
             })
 
         if (!isApiSuccess(response)) {
-          toast.error(response.message || i18next.t('Payment request failed'))
+          handleServerError(response, i18next.t('Payment request failed'))
           return false
         }
 
@@ -191,8 +189,8 @@ export function usePayment() {
         }
 
         return false
-      } catch {
-        toast.error(i18next.t('Payment request failed'))
+      } catch (error) {
+        handleServerError(error, i18next.t('Payment request failed'))
         return false
       } finally {
         setProcessing(false)

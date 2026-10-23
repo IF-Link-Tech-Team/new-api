@@ -16,18 +16,21 @@ import (
 )
 
 func TestBillingRefundHTTPRequiresRootAndRecordsReviewWithoutKeyDisclosure(t *testing.T) {
-	user := setupIFLinkPayHTTPTest(t)
+	user, _ := setupAccessTokenAudit(t)
+	user.Quota = 100
+	require.NoError(t, model.DB.Model(user).Update("quota", user.Quota).Error)
 	require.NoError(t, model.DB.AutoMigrate(&model.BillingRefund{}))
 	t.Cleanup(func() { require.NoError(t, model.DB.Exec("DELETE FROM billing_refunds").Error) })
 	receipt := &model.BillingRefund{UserID: user.Id, RequestID: "refund-http-authorization", WalletQuota: 100}
 	require.NoError(t, model.CreateBillingRefundReceipt(receipt))
 	require.NoError(t, model.SaveBillingRefundReservation(receipt))
 	require.NoError(t, model.QueueBillingRefund(receipt.ID))
-	rootPAT, adminPAT := "synthetic-root-pat", "synthetic-admin-pat"
-	root := &model.User{Username: "refund-root", AffCode: "refund-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AuthVersion: 1, AccessToken: &rootPAT}
-	admin := &model.User{Username: "refund-admin", AffCode: "refund-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, AuthVersion: 1, AccessToken: &adminPAT}
+	root := &model.User{Username: "refund-root", AffCode: "refund-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AuthVersion: 1}
+	admin := &model.User{Username: "refund-admin", AffCode: "refund-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, AuthVersion: 1}
 	require.NoError(t, model.DB.Create(root).Error)
 	require.NoError(t, model.DB.Create(admin).Error)
+	_, rootPAT := createAccessTokenTestSession(t, root.Id, "refund-root-session")
+	_, adminPAT := createAccessTokenTestSession(t, admin.Id, "refund-admin-session")
 	engine := gin.New()
 	engine.GET("/api/billing-refund/", middleware.RootAuth(), ListBillingRefunds)
 	engine.POST("/api/billing-refund/:id/review", middleware.RootAuth(), ReviewBillingRefund)

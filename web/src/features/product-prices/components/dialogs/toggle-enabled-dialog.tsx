@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { handleServerError } from '@/lib/handle-server-error'
 
 import { setProductPriceEnabled } from '../../api'
 import { useProductPrices } from '../product-prices-provider'
@@ -51,8 +52,8 @@ export function ToggleEnabledDialog() {
         triggerRefresh()
         setOpen(null)
       }
-    } catch {
-      toast.error(t('Operation failed'))
+    } catch (error) {
+      handleServerError(error, t('Operation failed'))
     } finally {
       setLoading(false)
     }

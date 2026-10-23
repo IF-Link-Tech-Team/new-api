@@ -139,7 +139,7 @@ data: {"type":"message_stop"}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, IsStream: true, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-1-flash-260910"}}
+	info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, IsStream: true, StreamStatus: relaycommon.NewStreamStatus(), ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-1-flash-260910"}}
 	usageValue, apiErr := (&Adaptor{}).DoResponse(c, claudeTestResponse(stream), info)
 	require.Nil(t, apiErr)
 	usage := usageValue.(*dto.Usage)
@@ -200,21 +200,21 @@ data: {"type":"message_stop"}
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-			info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, IsStream: true, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-1-flash-260910"}}
+			info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, IsStream: true, StreamStatus: relaycommon.NewStreamStatus(), ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-1-flash-260910"}}
 			_, apiErr := (&Adaptor{}).DoResponse(c, claudeTestResponse(stream), info)
 			require.Nil(t, apiErr)
 			events := claudeResponsesEvents(t, recorder.Body.String())
 			require.GreaterOrEqual(t, len(events), 6)
 			assert.Equal(t, "response.output_item.added", events[1].Type)
 			require.NotNil(t, events[1].Item.Summary)
-			assert.Empty(t, *events[1].Item.Summary)
+			assert.Empty(t, events[1].Item.Summary)
 			assert.Equal(t, "response.reasoning_summary_part.added", events[2].Type)
 			assert.Equal(t, "response.reasoning_summary_text.delta", events[3].Type)
 			final := events[len(events)-1]
 			require.NotNil(t, final.Response)
 			require.Len(t, final.Response.Output, 1)
 			require.NotNil(t, final.Response.Output[0].Summary)
-			assert.Equal(t, "Consider carefully", (*final.Response.Output[0].Summary)[0].Text)
+			assert.Equal(t, "Consider carefully", (final.Response.Output[0].Summary)[0].Text)
 			if reason == "max_tokens" {
 				assert.Equal(t, "response.incomplete", final.Type)
 				require.NotNil(t, final.Response.IncompleteDetails)
@@ -240,9 +240,19 @@ func TestClaudeResponsesSSEFailureIsNotCompleted(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-			info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, IsStream: true, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-1-flash-260910"}}
-			_, apiErr := (&Adaptor{}).DoResponse(c, claudeTestResponse(claudeResponsesStreamStart+tail), info)
-			require.NotNil(t, apiErr)
+			info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatOpenAIResponses, IsStream: true, StreamStatus: relaycommon.NewStreamStatus(), ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "deepseek-v4-1-flash-260910"}}
+			usage, apiErr := (&Adaptor{}).DoResponse(c, claudeTestResponse(claudeResponsesStreamStart+tail), info)
+			// rc.46 may successfully deliver a native failure event with billable
+			// partial usage instead of returning a second transport error.
+			if apiErr == nil {
+				assert.Contains(t, recorder.Body.String(), "response.failed")
+				require.NotNil(t, usage)
+				partialUsage, ok := usage.(*dto.Usage)
+				require.True(t, ok)
+				assert.Equal(t, 100, partialUsage.PromptTokens)
+				assert.True(t, info.StreamStatus.ResponseFailed())
+				assert.NotEqual(t, relaycommon.StreamEndReasonPanic, info.StreamStatus.EndReason)
+			}
 			assert.NotContains(t, recorder.Body.String(), "response.completed")
 		})
 	}

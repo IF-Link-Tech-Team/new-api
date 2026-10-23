@@ -63,6 +63,7 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { getAdminProductTemplates } from '@/features/subscriptions/api'
+import { handleServerError } from '@/lib/handle-server-error'
 
 import { createProductPrice } from '../api'
 import {
@@ -176,13 +177,8 @@ export function ProductPricesMutateDrawer({ open, onOpenChange }: Props) {
         onOpenChange(false)
         triggerRefresh()
       }
-    } catch (err) {
-      const serverMessage = (
-        err as { response?: { data?: { message?: string } } }
-      )?.response?.data?.message
-      if (!serverMessage) {
-        toast.error(t('Request failed'))
-      }
+    } catch (error) {
+      handleServerError(error, t('Request failed'))
     } finally {
       setIsSubmitting(false)
     }

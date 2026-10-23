@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -49,7 +50,8 @@ func setupBillingLifecycleDB(t *testing.T) {
 		require.NoError(t, model.InitLogDB())
 		model.LOG_DB = previousLogDB
 	})
-	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.BillingRefund{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.Option{}, &model.BillingRefund{}))
+	require.NoError(t, model.EnsureLegacyAccessTokenRetireAt(common.GetTimestamp()))
 	t.Cleanup(func() {
 		for _, table := range []string{"billing_refunds", "subscription_pre_consume_records", "user_subscriptions", "subscription_plans", "tokens", "users"} {
 			require.NoError(t, model.DB.Exec("DELETE FROM "+table).Error)
@@ -69,6 +71,7 @@ func seedSubscriptionBillingSession(t *testing.T, requestID string) (*BillingSes
 		ModelScope: "billing-model", StartTime: time.Now().Unix() - 60, EndTime: time.Now().Unix() + 3600}
 	require.NoError(t, model.DB.Create(sub).Error)
 	c, _ := gin.CreateTestContext(nil)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{UserId: 601, TokenId: 601, TokenKey: requestID, TokenUserSubscriptionId: sub.Id,
 		RequestId: requestID, OriginModelName: "billing-model", ForcePreConsume: true}
 	session, apiErr := NewBillingSession(c, info, 100)
@@ -153,6 +156,7 @@ func TestBillingSessionRefundIsTerminalForSettlement(t *testing.T) {
 	seedUser(t, 501, 1000)
 	seedToken(t, 501, 501, "refund-terminal", 1000)
 	c, _ := gin.CreateTestContext(nil)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{UserId: 501, TokenId: 501, TokenKey: "refund-terminal", ForcePreConsume: true}
 	session, apiErr := NewBillingSession(c, info, 100)
 	require.Nil(t, apiErr)
@@ -172,6 +176,7 @@ func TestBillingSessionRejectsNegativeActualQuota(t *testing.T) {
 	truncate(t)
 	seedUser(t, 502, 1000)
 	c, _ := gin.CreateTestContext(nil)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{UserId: 502, IsPlayground: true, ForcePreConsume: true}
 	session, apiErr := NewBillingSession(c, info, 100)
 	require.Nil(t, apiErr)
@@ -195,6 +200,7 @@ func TestBillingSessionStorageErrorIsNotClassifiedByMessage(t *testing.T) {
 	}))
 	t.Cleanup(func() { require.NoError(t, model.DB.Callback().Query().Remove(callback)) })
 	c, _ := gin.CreateTestContext(nil)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{UserId: 503, TokenId: 503, TokenKey: "storage-error", TokenUserSubscriptionId: 1, RequestId: "storage-failure", ForcePreConsume: true}
 	session, apiErr := NewBillingSession(c, info, 100)
 	require.Nil(t, session)
@@ -211,6 +217,7 @@ func TestBillingSessionReserveAfterZeroPreConsumeRefundsDurably(t *testing.T) {
 	seedUser(t, 701, 1000)
 	seedToken(t, 701, 701, "reserve-after-zero", 1000)
 	c, _ := gin.CreateTestContext(nil)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{UserId: 701, TokenId: 701, TokenKey: "reserve-after-zero", RequestId: "reserve-after-zero", ForcePreConsume: true}
 	session, apiErr := NewBillingSession(c, info, 0)
 	require.Nil(t, apiErr)

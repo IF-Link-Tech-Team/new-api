@@ -55,10 +55,10 @@ func setupIFLinkPayHTTPTest(t *testing.T) *model.User {
 		common.SetDatabaseTypes(previousMainType, previousLogType)
 		*settings = previousSettings
 	})
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}, &model.SubscriptionOrder{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}))
 	if os.Getenv("CILAI_TEST_POSTGRES_DSN") != "" {
 		t.Cleanup(func() {
-			for _, table := range []string{"top_ups", "logs", "subscription_orders", "users"} {
+			for _, table := range []string{"top_ups", "logs", "users"} {
 				require.NoError(t, db.Exec("DELETE FROM "+table).Error)
 			}
 		})
@@ -118,10 +118,9 @@ func TestIFLinkPayHTTPFractionalPurchaseAndCallbackReplay(t *testing.T) {
 			payURL, err := url.Parse(response.Data.PayURL)
 			require.NoError(t, err)
 			assert.Equal(t, strconv.FormatInt(tc.fen, 10), payURL.Query().Get("amount"))
-			assert.Equal(t, response.Data.TradeNo, payURL.Query().Get("uid"), "new orders keep the opaque production payment identity")
 			// Taking new sales offline must still allow existing paid orders to complete.
 			operation_setting.GetPaymentSetting().ComplianceConfirmed = false
-			notify := IFLinkPayNotifyRequest{UID: payURL.Query().Get("uid"), Amount: tc.fen, Order: response.Data.TradeNo, TS: time.Now().Unix()}
+			notify := IFLinkPayNotifyRequest{UID: strconv.Itoa(user.Id), Amount: tc.fen, Order: response.Data.TradeNo, TS: time.Now().Unix()}
 			notify.Sign = ifLinkPaySign(notify.UID, notify.Amount, notify.Order, notify.TS, operation_setting.GetIFLinkPaySecret())
 			for replay := 0; replay < 2; replay++ {
 				assert.Equal(t, 0, invokeIFLinkPayNotify(t, notify))
@@ -191,6 +190,7 @@ func TestIFLinkPayHTTPRejectsInvalidSignedReceiptsBeforeCrediting(t *testing.T) 
 
 func TestIFLinkPayHTTPRejectsAmountThatCannotBeCreditedBeforeCreatingOrder(t *testing.T) {
 	user := setupIFLinkPayHTTPTest(t)
+	require.NoError(t, model.DB.Model(user).Update("quota", common.MaxWalletQuota).Error)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/iflinkpay", bytes.NewBufferString(`{"amount":10000}`))
@@ -200,7 +200,7 @@ func TestIFLinkPayHTTPRejectsAmountThatCannotBeCreditedBeforeCreatingOrder(t *te
 		Success bool `json:"success"`
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
-	assert.False(t, response.Success, "do not issue a payment link for quota above the database's supported range")
+	assert.False(t, response.Success, "do not issue a payment link when the wallet has no credit capacity")
 	var orders int64
 	require.NoError(t, model.DB.Model(&model.TopUp{}).Count(&orders).Error)
 	assert.Zero(t, orders)

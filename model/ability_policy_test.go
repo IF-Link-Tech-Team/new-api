@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +33,7 @@ func TestDatabaseChannelSelectionChoosesHighestPriorityInsidePolicy(t *testing.T
 	require.NoError(t, DB.Create(&Ability{Group: "default", Model: "wallet-route-model", ChannelId: 15, Enabled: true, Priority: &low}).Error)
 	require.NoError(t, DB.Create(&Ability{Group: "default", Model: "wallet-route-model", ChannelId: 16, Enabled: true, Priority: &high}).Error)
 
-	selected, err := GetChannelWithPolicy("default", "wallet-route-model", 0, "/v1/chat/completions", &ChannelSelectionPolicy{
+	selected, err := GetChannelWithPolicy("default", "wallet-route-model", 0, []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/chat/completions"}}, &ChannelSelectionPolicy{
 		AllowedChannelIds: map[int]struct{}{15: {}},
 		MaxUpstreamCost:   PriceComponents{Input: 1, CachedInput: 0.2, Output: 4},
 		RequireCost:       true,
@@ -65,20 +66,25 @@ func TestProductPolicySelectsReviewedChannelOutsideWalletGroup(t *testing.T) {
 		RequireCost:       true,
 	}
 
-	common.MemoryCacheEnabled = false
-	selected, err := GetRandomSatisfiedChannelWithPolicy("default", modelName, 0, "/v1/chat/completions", policy)
-	require.NoError(t, err)
-	require.NotNil(t, selected)
-	require.Equal(t, 14, selected.Id)
+	for _, cached := range []bool{false, true} {
+		common.MemoryCacheEnabled = cached
+		if cached {
+			InitChannelCache()
+		}
+		filters := []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/chat/completions"}}
+		selected, err := GetRandomSatisfiedChannelWithPolicy("default", modelName, 0, filters, policy)
+		require.NoError(t, err)
+		require.NotNil(t, selected)
+		require.Equal(t, 14, selected.Id)
 
-	common.MemoryCacheEnabled = true
-	InitChannelCache()
-	selected, err = GetRandomSatisfiedChannelWithPolicy("default", modelName, 0, "/v1/chat/completions", policy)
-	require.NoError(t, err)
-	require.NotNil(t, selected)
-	require.Equal(t, 14, selected.Id)
+		ordinary, err := GetRandomSatisfiedChannel("default", modelName, 0, filters)
+		require.NoError(t, err)
+		require.Nil(t, ordinary, "ordinary wallet routing must not inherit the classroom channel")
 
-	ordinary, err := GetRandomSatisfiedChannel("default", modelName, 0, "/v1/chat/completions")
-	require.NoError(t, err)
-	require.Nil(t, ordinary, "ordinary wallet routing must not inherit the classroom channel")
+		// A product allowlist must never bypass rc.46 protocol constraints.
+		blocked, err := GetRandomSatisfiedChannelWithPolicy("default", modelName, 0,
+			[]dto.ChannelFilter{{Kind: dto.FilterResponsesWebSocket}}, policy)
+		require.NoError(t, err)
+		require.Nil(t, blocked, "product channel without WebSocket support must remain unavailable")
+	}
 }

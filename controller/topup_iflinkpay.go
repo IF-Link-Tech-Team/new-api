@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -81,7 +80,7 @@ func RequestIFLinkPay(c *gin.Context) {
 	id := c.GetInt("id")
 	lock := getTopUpLock(id)
 	if !lock.TryLock() {
-		common.ApiErrorI18n(c, i18n.MsgUserTopUpProcessing)
+		common.ApiErrorT(c, "Top-up is processing, please try again later")
 		return
 	}
 	defer lock.Unlock()
@@ -130,8 +129,13 @@ func RequestIFLinkPay(c *gin.Context) {
 		Status:          common.TopUpStatusPending,
 		Currency:        "CNY",
 	}
-	if _, err := topUp.WalletQuota(); err != nil {
+	quota, quotaErr := topUp.WalletQuota()
+	if quotaErr != nil {
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "充值金额超出可入账额度，请减少单次充值金额"})
+		return
+	}
+	if err := model.ValidateTopUpQuotaCapacity(id, quota); err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	if err := topUp.Insert(); err != nil {
@@ -298,7 +302,7 @@ func IFLinkPayNotify(c *gin.Context) {
 	}
 	if credited {
 		model.RecordTopupLog(completed.UserId,
-			fmt.Sprintf("IFLinkPay 充值成功,充值额度: %d,支付金额: %.2f", quotaToAdd, completed.Money),
+			common.NewMessage("{{provider}} top-up succeeded, amount added: {{quota}}, payment amount: {{amount}}", map[string]any{"provider": "IFLinkPay", "quota": logger.FormatQuota(quotaToAdd), "amount": fmt.Sprintf("%.2f", completed.Money)}),
 			c.ClientIP(), completed.PaymentMethod, model.PaymentProviderIFLinkPay)
 	}
 

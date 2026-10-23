@@ -32,8 +32,8 @@ func (topUp *TopUp) WalletQuota() (int, error) {
 	}
 	quota = quota.Truncate(0)
 	// Check decimal bounds before IntPart: IntPart itself wraps above int64.
-	if quota.LessThan(decimal.NewFromInt(1)) || quota.GreaterThan(decimal.NewFromInt(int64(common.MaxQuota))) {
+	if quota.LessThan(decimal.NewFromInt(1)) || quota.GreaterThan(decimal.NewFromInt(int64(common.MaxWalletQuota))) {
 		return 0, errors.New("充值额度无效")
 	}
-	return common.QuotaFromDecimal(quota), nil
+	return common.WalletQuotaFromDecimalStrict(quota)
 }

@@ -24,6 +24,7 @@ import { PaymentDisplayDialog } from '@/features/payment-display/components/paym
 import { useStatus } from '@/hooks/use-status'
 import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
+import { handleServerError } from '@/lib/handle-server-error'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
@@ -73,13 +74,13 @@ export function Wallet(props: WalletProps) {
   >(null)
   const [paymentLoading, setPaymentLoading] = useState<string | null>(null)
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
-  const [paymentDisplayOpen, setPaymentDisplayOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [redemptionCode, setRedemptionCode] = useState('')
   const [creemDialogOpen, setCreemDialogOpen] = useState(false)
   const [selectedCreemProduct, setSelectedCreemProduct] =
     useState<CreemProduct | null>(null)
+  const [paymentDisplayOpen, setPaymentDisplayOpen] = useState(false)
 
   const { status } = useStatus()
   const { currency } = useSystemConfig()
@@ -119,8 +120,7 @@ export function Wallet(props: WalletProps) {
         setUser(response.data as UserWalletData)
       }
     } catch (error) {
-      // eslint-disable-next-line no-console
-      console.error('Failed to fetch user data:', error)
+      handleServerError(error)
     } finally {
       setUserLoading(false)
     }
@@ -173,12 +173,14 @@ export function Wallet(props: WalletProps) {
   // Handle payment method selection
   const handlePaymentMethodSelect = async (method: PaymentMethod) => {
     setSelectedPaymentMethod(method)
-    setSelectedWaffoMethodIndex(null)
-    if (method.display_only) {
+    if (
+      method.type === PAYMENT_TYPES.ALIPAY &&
+      !topupInfo?.enable_alipay_topup
+    ) {
       setPaymentDisplayOpen(true)
       return
     }
-
+    setSelectedWaffoMethodIndex(null)
     setPaymentLoading(method.type)
 
     try {
@@ -288,24 +290,11 @@ export function Wallet(props: WalletProps) {
           {t('Wallet and benefits')}
         </SectionPageLayout.Title>
         <SectionPageLayout.Content>
-          <div className='mx-auto flex w-full max-w-7xl flex-col gap-5 pb-8'>
-            <div>
-              <p className='max-w-3xl text-sm font-medium sm:text-base'>
-                {t(
-                  'Manage wallet cash, traffic packs, Token Plan, and billing in one place.'
-                )}
-              </p>
-              <p className='text-muted-foreground mt-1 max-w-3xl text-sm'>
-                {t(
-                  'Wallet cash, traffic pack compute points, and subscription cycle benefits remain separate assets.'
-                )}
-              </p>
-            </div>
+          <div className='mx-auto flex w-full max-w-7xl flex-col gap-4 sm:gap-5'>
             <WalletStatsCard user={user} loading={userLoading} />
 
             <WalletAssetsOverview />
-
-            <div className='grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)] xl:items-start'>
+            <div className='grid gap-4'>
               <div id='wallet-add-funds' className='scroll-mt-4'>
                 <RechargeFormCard
                   topupInfo={topupInfo}
@@ -339,16 +328,17 @@ export function Wallet(props: WalletProps) {
                   }
                 />
               </div>
-              <AffiliateRewardsCard
-                user={user}
-                affiliateLink={affiliateLink}
-                onTransfer={() => setTransferDialogOpen(true)}
-                complianceConfirmed={
-                  topupInfo?.payment_compliance_confirmed !== false
-                }
-                loading={affiliateLoading}
-              />
             </div>
+
+            <AffiliateRewardsCard
+              user={user}
+              affiliateLink={affiliateLink}
+              onTransfer={() => setTransferDialogOpen(true)}
+              complianceConfirmed={
+                topupInfo?.payment_compliance_confirmed !== false
+              }
+              loading={affiliateLoading}
+            />
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>

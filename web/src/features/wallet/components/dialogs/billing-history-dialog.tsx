@@ -47,6 +47,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { getSelfSubscriptionOrders } from '@/features/subscriptions/api'
 import type { SubscriptionOrderStatus } from '@/features/subscriptions/types'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { useBillingHistory } from '../../hooks/use-billing-history'
 import {
@@ -90,9 +92,23 @@ export function BillingHistoryDialog({
 
   useEffect(() => {
     if (!open || isAdmin) return
-    void getSelfSubscriptionOrders().then((response) => {
-      setSubscriptionOrders(response.success ? (response.data ?? []) : [])
-    })
+    let active = true
+    setSubscriptionOrders([])
+    void getSelfSubscriptionOrders()
+      .then((response) => {
+        if (!active) return
+        requireServerSuccess(response)
+        if (!Array.isArray(response.data)) {
+          throw new Error('Invalid subscription order response')
+        }
+        setSubscriptionOrders(response.data)
+      })
+      .catch((error: unknown) => {
+        if (active) handleServerError(error)
+      })
+    return () => {
+      active = false
+    }
   }, [isAdmin, open])
 
   const visibleSubscriptionOrders = subscriptionOrders.filter((order) =>
@@ -115,7 +131,7 @@ export function BillingHistoryDialog({
         onOpenChange={onOpenChange}
         title={t('Billing History')}
         description={t('View wallet top-ups and product purchase orders')}
-        contentClassName='flex max-h-[calc(100dvh-2rem)] flex-col max-sm:w-screen max-sm:max-w-none max-sm:rounded-none max-sm:p-4 sm:max-w-4xl'
+        contentClassName='flex max-h-(--dialog-available-height) flex-col max-sm:w-screen max-sm:max-w-none max-sm:rounded-none max-sm:p-4 sm:max-w-4xl'
         contentHeight='auto'
         bodyClassName='space-y-3'
       >
@@ -286,7 +302,7 @@ export function BillingHistoryDialog({
                             </div>
                           </div>
                           <StatusBadge
-                            label={statusConfig.label}
+                            label={t(statusConfig.label)}
                             variant={statusConfig.variant}
                             showDot
                             copyable={false}

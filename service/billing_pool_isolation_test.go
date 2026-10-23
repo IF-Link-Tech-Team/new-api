@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ func TestUnboundWalletKeyNeverConsumesAnAvailableSubscription(t *testing.T) {
 	}
 	require.NoError(t, model.DB.Create(sub).Error)
 	ctx, _ := gin.CreateTestContext(nil)
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{
 		UserId: 401, OriginModelName: "kimi-k3", RequestId: "wallet-isolation",
 		TokenUserSubscriptionId: 0, IsPlayground: true, ForcePreConsume: true,
@@ -60,6 +62,7 @@ func TestBoundKeyInsufficientQuotaFailsWithoutWalletOrOtherPoolFallback(t *testi
 	require.NoError(t, model.DB.Create(bound).Error)
 	require.NoError(t, model.DB.Create(other).Error)
 	ctx, _ := gin.CreateTestContext(nil)
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{
 		UserId: 402, OriginModelName: "kimi-k3", RequestId: "bound-isolation",
 		TokenUserSubscriptionId: bound.Id, IsPlayground: true, ForcePreConsume: true,
@@ -101,6 +104,7 @@ func TestBoundKeyExpiredOrWrongModelFailsWithoutWalletFallback(t *testing.T) {
 			}
 			require.NoError(t, model.DB.Create(bound).Error)
 			ctx, _ := gin.CreateTestContext(nil)
+			ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 			info := &relaycommon.RelayInfo{
 				UserId: 403, OriginModelName: test.modelName, RequestId: "bound-rejection-" + test.name,
 				TokenUserSubscriptionId: bound.Id, IsPlayground: true, ForcePreConsume: true,
@@ -170,6 +174,7 @@ func TestV1PurchaseProvisionKeyAndConsumeSinglePoolE2E(t *testing.T) {
 	require.Equal(t, "kimi-k3", token.ModelLimits)
 
 	ctx, _ := gin.CreateTestContext(nil)
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{
 		UserId: 404, OriginModelName: "kimi-k3", RequestId: "v1-local-e2e-consume",
 		TokenUserSubscriptionId: token.UserSubscriptionId, TokenId: token.Id, TokenKey: token.Key,

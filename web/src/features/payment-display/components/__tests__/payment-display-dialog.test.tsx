@@ -18,45 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
-import { Window } from 'happy-dom'
-
-const bunTestModule = 'bun:test'
-const { afterAll, afterEach, test } = (await import(bunTestModule)) as {
-  afterAll: typeof import('node:test').after
-  afterEach: typeof import('node:test').afterEach
-  test: typeof import('node:test').test
-}
-
-const domWindow = new Window({ url: 'https://token.iflink.tech/' })
-const domGlobals = [
-  'window',
-  'document',
-  'navigator',
-  'HTMLElement',
-  'HTMLButtonElement',
-  'HTMLImageElement',
-  'SVGElement',
-  'Node',
-  'Element',
-  'Event',
-  'KeyboardEvent',
-  'PointerEvent',
-  'MouseEvent',
-  'FocusEvent',
-  'CustomEvent',
-  'MutationObserver',
-  'ResizeObserver',
-  'requestAnimationFrame',
-  'cancelAnimationFrame',
-  'getComputedStyle',
-] as const
-
-for (const key of domGlobals) {
-  Object.defineProperty(globalThis, key, {
-    configurable: true,
-    value: domWindow[key],
-  })
-}
+import { afterEach, test } from 'vitest'
 
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
@@ -74,8 +36,8 @@ await i18n.use(initReactI18next).init({
         'Alipay payment integration is in progress. Online payment is currently unavailable.':
           '支付宝支付接入中，当前暂无法完成在线付款',
         'Alipay QR code': '支付宝收款码',
-        'Alipay QR code pending': '支付宝支付二维码待接入',
-        'Amount Due (RMB)': '应付金额（人民币）',
+        'Payment QR code is not available yet': '支付宝支付二维码待接入',
+        'List price': '应付金额（人民币）',
         Close: '关闭',
         'Product Name': '产品名称',
         'Review your payment details': '请核对商品与金额',
@@ -102,10 +64,6 @@ afterEach(async () => {
   root = null
   host = null
   document.body.replaceChildren()
-})
-
-afterAll(() => {
-  domWindow.close()
 })
 
 test('shows product details and the QR placeholder without creating an order', async () => {

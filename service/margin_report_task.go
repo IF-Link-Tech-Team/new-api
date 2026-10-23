@@ -174,7 +174,7 @@ func parseMarginReportOther(raw string) (productType string, cacheTokens int, ca
 	if trimmed == "" {
 		return productType, 0, 0
 	}
-	var other map[string]interface{}
+	var other map[string]any
 	if err := common.UnmarshalJsonStr(trimmed, &other); err != nil {
 		return productType, 0, 0
 	}
@@ -186,7 +186,7 @@ func parseMarginReportOther(raw string) (productType string, cacheTokens int, ca
 	return productType, cacheTokens, cacheCreationTokens
 }
 
-func marginReportOtherInt(value interface{}) int {
+func marginReportOtherInt(value any) int {
 	switch v := value.(type) {
 	case float64:
 		return int(v)
@@ -212,10 +212,10 @@ func (marginReportHandler) Run(ctx context.Context, task *model.SystemTask, runn
 	}
 	// Save the durable report before attempting any external delivery.
 	if err != nil {
-		if root := model.GetRootUser(); root != nil && root.Id > 0 {
-			if notifyErr := NotifyUser(root.Id, root.Email, root.GetSetting(), dto.NewNotify("margin_report_breach", "Daily margin report: gross margin below floor", message, nil)); notifyErr != nil {
-				logger.LogError(ctx, fmt.Sprintf("margin report alert delivery failed: task=%s error=%v", task.TaskID, notifyErr))
-			}
-		}
+		notifyAdmins("margin_report_breach", func(role int, _ dto.UserSetting) bool {
+			return role == common.RoleRootUser
+		}, func(_ string) (string, string) {
+			return "Daily margin report: gross margin below floor", message
+		})
 	}
 }

@@ -46,6 +46,7 @@ export const apiKeySchema = z.object({
   model_limits_enabled: z.boolean(),
   model_limits: z.string().nullish().default(''),
   allow_ips: z.string().nullish().default(''),
+  allow_user_quota_query: z.boolean().optional().default(false),
   user_subscription_id: z.number().optional(),
   entitlement_type: z.string().optional(),
   product_type: z.string().optional(),
@@ -106,6 +107,7 @@ export interface ApiKeyFormData {
   model_limits_enabled: boolean
   model_limits: string
   allow_ips: string
+  allow_user_quota_query: boolean
   group: string
   auto_groups: string[]
   cross_group_retry: boolean

@@ -68,7 +68,6 @@
       "Type": "response.output_text.done",
       "Payload": {
         "type": "response.output_text.done",
-        "text": "Hello world",
         "output_index": 0,
         "content_index": 0,
         "item_id": "stream_fixed_msg_0"

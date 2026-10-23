@@ -3,6 +3,9 @@ package model
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -30,5 +33,29 @@ func TestChannelSatisfiesProductPolicyFailsClosedOnWhitelistAndEveryCostLeg(t *t
 			channel := &Channel{Id: 14, UpstreamCosts: costs}
 			require.False(t, ChannelSatisfiesPolicy(channel, "qwen3.8-flash", policy))
 		})
+	}
+}
+
+func TestProductPolicyFiltersBeforeRetryPriorityWithAndWithoutCache(t *testing.T) {
+	truncateTables(t)
+	original := common.MemoryCacheEnabled
+	t.Cleanup(func() { common.MemoryCacheEnabled = original; InitChannelCache() })
+	for i, priority := range []int64{100, 50, 10} {
+		channel := Channel{Id: 940001 + i, Type: constant.ChannelTypeOpenAI, Status: common.ChannelStatusEnabled, Name: "product-route", Models: "route-model", Group: "default", Priority: &priority}
+		require.NoError(t, channel.Insert())
+	}
+	policy := &ChannelSelectionPolicy{AllowedChannelIds: map[int]struct{}{940002: {}, 940003: {}}}
+	for _, cached := range []bool{false, true} {
+		common.MemoryCacheEnabled = cached
+		InitChannelCache()
+		for retry, id := range []int{940002, 940003, 940003} {
+			selected, err := GetRandomSatisfiedChannelWithPolicy("default", "route-model", retry, nil, policy)
+			require.NoError(t, err)
+			require.NotNil(t, selected, "cached=%v retry=%d", cached, retry)
+			require.Equal(t, id, selected.Id, "cached=%v retry=%d", cached, retry)
+		}
+		denied, err := GetRandomSatisfiedChannelWithPolicy("default", "route-model", 0, nil, &ChannelSelectionPolicy{AllowedChannelIds: map[int]struct{}{999999: {}}})
+		require.NoError(t, err)
+		require.Nil(t, denied)
 	}
 }

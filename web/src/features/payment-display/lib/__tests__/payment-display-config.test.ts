@@ -18,16 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
 
+import { describe, test } from 'vitest'
+
 import {
   defaultPaymentDisplayConfig,
   normalizePaymentDisplayConfig,
 } from '../payment-display-config'
-
-const bunTestModule = 'bun:test'
-const { describe, test } = (await import(bunTestModule)) as {
-  describe: typeof import('node:test').describe
-  test: typeof import('node:test').test
-}
 
 describe('payment display configuration', () => {
   test('keeps the placeholder when the QR code URL is empty', () => {

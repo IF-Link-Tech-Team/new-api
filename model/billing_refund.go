@@ -187,7 +187,7 @@ func ProcessBillingRefund(id int64) error {
 			}
 		}
 		if receipt.WalletQuota > 0 {
-			result := tx.Unscoped().Model(&User{}).Where("id = ? AND quota <= ?", receipt.UserID, int64(common.MaxQuota)-receipt.WalletQuota).Update("quota", gorm.Expr("quota + ?", receipt.WalletQuota))
+			result := tx.Unscoped().Model(&User{}).Where("id = ? AND quota <= ?", receipt.UserID, int64(common.MaxWalletQuota)-receipt.WalletQuota).Update("quota", gorm.Expr("quota + ?", receipt.WalletQuota))
 			if result.Error != nil {
 				return result.Error
 			}
@@ -196,7 +196,7 @@ func ProcessBillingRefund(id int64) error {
 			}
 		}
 		if receipt.TokenQuota > 0 {
-			result := tx.Unscoped().Model(&Token{}).Where("id = ? AND user_id = ? AND remain_quota <= ?", receipt.TokenID, receipt.UserID, int64(common.MaxQuota)-receipt.TokenQuota).Updates(map[string]any{
+			result := tx.Unscoped().Model(&Token{}).Where("id = ? AND user_id = ? AND remain_quota <= ?", receipt.TokenID, receipt.UserID, int64(common.MaxWalletQuota)-receipt.TokenQuota).Updates(map[string]any{
 				"remain_quota": gorm.Expr("remain_quota + ?", receipt.TokenQuota), "used_quota": gorm.Expr("used_quota - ?", receipt.TokenQuota), "accessed_time": common.GetTimestamp(),
 			})
 			if result.Error != nil {
@@ -226,7 +226,7 @@ func ProcessBillingRefund(id int64) error {
 		if err := db.Unscoped().Select("key").First(&token, receipt.TokenID).Error; err != nil {
 			return err
 		}
-		if err := cacheDeleteToken(token.Key); err != nil {
+		if err := invalidateTokenCacheForMutation(token.Key); err != nil {
 			return err
 		}
 	}
