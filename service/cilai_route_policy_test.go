@@ -79,6 +79,35 @@ func TestResolveChannelSelectionPolicySnapshotsCurrentWalletPriceVersion(t *test
 	require.ErrorContains(t, err, "disabled or not yet effective")
 }
 
+func TestResolveChannelSelectionPolicyUsesProductPriceBookSnapshot(t *testing.T) {
+	truncate(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.PriceBookPrice{}))
+	price := &model.PriceBookPrice{
+		PriceBook: "product:91", Model: "book-route-model", PriceVersion: "book-route-v1",
+		OfficialReferencePrice:  `{"input":1,"cached_input":0.2,"output":4}`,
+		UserSellingPrice:        `{"input":1,"cached_input":0.2,"output":4}`,
+		UpstreamSettlementPrice: `{"input":0.5,"cached_input":0.1,"output":2}`,
+		BillingExpression:       `tier("base", p + cr * 0.2 + c * 4)`, BillingMultiplier: 0.73,
+		AllowedChannels: "[14,15]", MaxUpstreamCost: `{"input":1,"cached_input":0.2,"output":4}`,
+		FallbackAllowed: false, Enabled: true,
+	}
+	require.NoError(t, model.DB.Create(price).Error)
+
+	ctx, _ := gin.CreateTestContext(nil)
+	common.SetContextKey(ctx, constant.ContextKeyTokenProductType, model.ProductTypePackK3)
+	common.SetContextKey(ctx, constant.ContextKeyTokenPriceBook, price.PriceBook)
+	common.SetContextKey(ctx, constant.ContextKeyTokenPriceVersion, price.PriceVersion)
+	policy, err := ResolveChannelSelectionPolicy(ctx, price.Model)
+	require.NoError(t, err)
+	require.Len(t, policy.AllowedChannelIds, 2)
+	require.Contains(t, policy.AllowedChannelIds, 14)
+	require.True(t, policy.RequireCost)
+	require.Equal(t, 0.2, policy.MaxUpstreamCost.CachedInput)
+
+	_, err = ResolveChannelSelectionPolicy(ctx, "other-model")
+	require.ErrorContains(t, err, "unavailable")
+}
+
 func TestResolveChannelSelectionPolicyKeepsLegacyWalletWhenCatalogIsAbsent(t *testing.T) {
 	truncate(t)
 	ctx, _ := gin.CreateTestContext(nil)

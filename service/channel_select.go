@@ -135,13 +135,15 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 		if price == nil {
 			return nil, fmt.Errorf("product price book %s has no configured model %s", priceBook, modelName)
 		}
-		policySnapshot, err := model.ParseProductRoutePolicy(price.AllowedChannels, price.MaxUpstreamCost, price.FallbackAllowed)
-		if err != nil {
+		var channelIds []int
+		if err := common.UnmarshalJsonStr(price.AllowedChannels, &channelIds); err != nil {
 			return nil, err
 		}
-		channelIds := policySnapshot.AllowedChannels[modelName]
-		maxCost, ok := policySnapshot.MaxUpstreamCost[modelName]
-		if len(channelIds) == 0 || !ok {
+		var maxCost model.PriceComponents
+		if err := common.UnmarshalJsonStr(price.MaxUpstreamCost, &maxCost); err != nil {
+			return nil, err
+		}
+		if len(channelIds) == 0 {
 			return nil, fmt.Errorf("model %s has no compliant product route", modelName)
 		}
 		allowed := make(map[int]struct{}, len(channelIds))
