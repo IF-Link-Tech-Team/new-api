@@ -64,13 +64,20 @@ func TestAdaptorMasksDialedHostsInDialFailure(t *testing.T) {
 	defer upstream.Close()
 	upstreamURL, err := url.Parse(upstream.URL)
 	require.NoError(t, err)
+	// Use a closed loopback listener rather than an external .invalid DNS name.
+	// Local DNS proxies can resolve .invalid and fail the handshake with EOF,
+	// which does not contain the proxy address and cannot exercise its masking.
+	proxy := httptest.NewServer(http.NotFoundHandler())
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	proxy.Close()
 	for _, tc := range []struct {
 		name   string
 		proxy  string
 		hidden string
 	}{
 		{name: "absolute route host", hidden: "localhost"},
-		{name: "channel proxy host", proxy: "http://egress.private.invalid:8080", hidden: "egress.private.invalid"},
+		{name: "channel proxy host", proxy: proxy.URL, hidden: proxyURL.Hostname()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			info := advancedCustomRelayInfo(&dto.AdvancedCustomConfig{
