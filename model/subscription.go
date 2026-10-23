@@ -914,6 +914,10 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if userId <= 0 {
 		return nil, errors.New("invalid user id")
 	}
+	// Validation normalizes fields and pins the template. A plan may be shared
+	// by concurrent purchases; mutate only this issuance's local snapshot.
+	planSnapshot := *plan
+	plan = &planSnapshot
 	plan.NormalizeDefaults()
 	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, err

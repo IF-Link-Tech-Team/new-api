@@ -570,6 +570,8 @@ func ensureSubscriptionPlanTableSQLite() error {
 ` + "`max_upstream_cost`" + ` text,
 ` + "`fallback_allowed`" + ` numeric DEFAULT 0,
 ` + "`course_eligible`" + ` numeric DEFAULT 0,
+` + "`template_id`" + ` bigint NOT NULL DEFAULT 0,
+` + "`display_metadata`" + ` text,
 ` + "`created_at`" + ` bigint,
 ` + "`updated_at`" + ` bigint,
 PRIMARY KEY (` + "`id`" + `)
@@ -621,6 +623,8 @@ PRIMARY KEY (` + "`id`" + `)
 		{Name: "max_upstream_cost", DDL: "`max_upstream_cost` text"},
 		{Name: "fallback_allowed", DDL: "`fallback_allowed` numeric DEFAULT 0"},
 		{Name: "course_eligible", DDL: "`course_eligible` numeric DEFAULT 0"},
+		{Name: "template_id", DDL: "`template_id` bigint NOT NULL DEFAULT 0"},
+		{Name: "display_metadata", DDL: "`display_metadata` text"},
 		{Name: "created_at", DDL: "`created_at` bigint"},
 		{Name: "updated_at", DDL: "`updated_at` bigint"},
 	}

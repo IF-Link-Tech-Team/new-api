@@ -33,6 +33,7 @@ var accessTokenExemptRoutes = []string{
 	"GET /api/home_page_content",
 	"GET /api/ratio_config",
 	"GET /api/user/groups",
+	"GET /api/subscription/public/catalog",
 
 	// Anonymous account entry points.
 	"GET /api/verification",
@@ -66,6 +67,12 @@ var accessTokenExemptRoutes = []string{
 	"POST /api/subscription/epay/notify",
 	"GET /api/subscription/epay/return",
 	"POST /api/subscription/epay/return",
+	"POST /api/topup/iflinkpay/notify",
+	"POST /api/topup/alipay/notify",
+	"GET /api/topup/alipay/return",
+	"POST /api/pay/callback",
+	"POST /api/subscription/alipay/notify",
+	"GET /api/subscription/alipay/return",
 
 	// API key authentication (TokenAuthReadOnly).
 	"GET /api/usage/token/",

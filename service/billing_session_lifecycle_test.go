@@ -217,6 +217,7 @@ func TestBillingSessionReserveAfterZeroPreConsumeRefundsDurably(t *testing.T) {
 	seedUser(t, 701, 1000)
 	seedToken(t, 701, 701, "reserve-after-zero", 1000)
 	c, _ := gin.CreateTestContext(nil)
+	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	info := &relaycommon.RelayInfo{UserId: 701, TokenId: 701, TokenKey: "reserve-after-zero", RequestId: "reserve-after-zero", ForcePreConsume: true}
 	session, apiErr := NewBillingSession(c, info, 0)
 	require.Nil(t, apiErr)

@@ -80,7 +80,7 @@ func TestFixedPriceBillingDatabaseMatrix(t *testing.T) {
 			model.DB, model.LOG_DB = db, logDB
 			common.SetDatabaseTypes(dialect.name, dialect.name)
 			t.Cleanup(func() { model.DB, model.LOG_DB = oldDB, oldLogDB; common.SetDatabaseTypes(oldMainType, oldLogType) })
-			require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Channel{}))
+			require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Channel{}, &model.BillingRefund{}))
 			require.NoError(t, logDB.AutoMigrate(&model.Log{}))
 			versionQuery := "select version()"
 			if dialect.name == common.DatabaseTypeSQLite {
@@ -158,6 +158,7 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 			channel := model.Channel{Name: "fixed-billing", Key: "unused", Status: common.ChannelStatusEnabled}
 			require.NoError(t, db.Create(&channel).Error)
 			t.Cleanup(func() {
+				require.NoError(t, db.Where("user_id = ?", user.Id).Delete(&model.BillingRefund{}).Error)
 				require.NoError(t, logDB.Where("user_id = ?", user.Id).Delete(&model.Log{}).Error)
 				require.NoError(t, db.Unscoped().Delete(&token).Error)
 				require.NoError(t, db.Unscoped().Delete(&user).Error)

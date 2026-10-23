@@ -392,6 +392,46 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 	assert.Equal(t, http.StatusOK, middlewareBearerRequest(router, "/api/user/self", profile).Code, "the deadline only retires legacy tokens")
 }
 
+func TestIFLinkAccessTokenRulesPreserveScopeAndRoleBoundaries(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	admin := createMiddlewarePATUser(t, "iflink-scope-admin", "iflink-scope-legacy")
+	root := createMiddlewarePATUser(t, "iflink-scope-root", "iflink-root-legacy")
+	require.NoError(t, model.DB.Model(admin).Update("role", common.RoleAdminUser).Error)
+	require.NoError(t, model.DB.Model(root).Update("role", common.RoleRootUser).Error)
+	read, _ := createMiddlewareScopedToken(t, admin.Id, 0, "wallet:read", "billing:read", "redemption:read")
+	write, _ := createMiddlewareScopedToken(t, admin.Id, 0, "wallet:write", "billing:write", "redemption:write", "api_key:write", "api_key:reveal")
+	rootRead, _ := createMiddlewareScopedToken(t, root.Id, 0, "billing:read")
+	rootWrite, _ := createMiddlewareScopedToken(t, root.Id, 0, "billing:write")
+	for _, tc := range []struct {
+		name, method, route, path, token string
+		auth                             gin.HandlerFunc
+		status                           int
+	}{
+		{"orders read", http.MethodGet, "/api/subscription/self/orders", "/api/subscription/self/orders", read, UserAuth(), http.StatusNoContent},
+		{"read cannot pay", http.MethodPost, "/api/subscription/iflinkpay/pay", "/api/subscription/iflinkpay/pay", read, UserAuth(), http.StatusForbidden},
+		{"wallet write can pay", http.MethodPost, "/api/subscription/iflinkpay/pay", "/api/subscription/iflinkpay/pay", write, UserAuth(), http.StatusNoContent},
+		{"read cannot edit product price", http.MethodPost, "/api/subscription/admin/product-prices", "/api/subscription/admin/product-prices", read, AdminAuth(), http.StatusForbidden},
+		{"billing write can edit product price", http.MethodPost, "/api/subscription/admin/product-prices", "/api/subscription/admin/product-prices", write, AdminAuth(), http.StatusNoContent},
+		{"read cannot create redemption batch", http.MethodPost, "/api/redemption/batches", "/api/redemption/batches", read, AdminAuth(), http.StatusForbidden},
+		{"write can create redemption batch", http.MethodPost, "/api/redemption/batches", "/api/redemption/batches", write, AdminAuth(), http.StatusNoContent},
+		{"admin cannot review refund", http.MethodPost, "/api/billing-refund/:id/review", "/api/billing-refund/1/review", write, RootAuth(), http.StatusForbidden},
+		{"root read cannot review refund", http.MethodPost, "/api/billing-refund/:id/review", "/api/billing-refund/1/review", rootRead, RootAuth(), http.StatusForbidden},
+		{"root write can review refund", http.MethodPost, "/api/billing-refund/:id/review", "/api/billing-refund/1/review", rootWrite, RootAuth(), http.StatusNoContent},
+		{"PAT cannot rotate plaintext key", http.MethodPost, "/api/token/:id/rotate", "/api/token/1/rotate", write, UserAuth(), http.StatusForbidden},
+		{"legacy PAT cannot rotate plaintext key", http.MethodPost, "/api/token/:id/rotate", "/api/token/1/rotate", "iflink-scope-legacy", UserAuth(), http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := gin.New()
+			router.Handle(tc.method, tc.route, tc.auth, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			request := httptest.NewRequest(tc.method, tc.path, nil)
+			request.Header.Set("Authorization", "Bearer "+tc.token)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			assert.Equal(t, tc.status, response.Code, response.Body.String())
+		})
+	}
+}
+
 func TestAccessTokenIdentityAndSingleLookup(t *testing.T) {
 	setupDashboardAuthMiddlewareTest(t)
 	gin.SetMode(gin.TestMode)

@@ -310,6 +310,13 @@ func saveBillingConfig(t *testing.T) {
 }
 
 func TestRelayTaskSubmitAliasBillingIdentityAndExprFallback(t *testing.T) {
+	db := setupRelayChannelDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+	user := model.User{Username: "alias-billing", AffCode: "alias-billing", Quota: 0}
+	require.NoError(t, db.Create(&user).Error)
+	previousRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = previousRedis })
 	const mapping = `{"alias-model":"declared-model"}`
 	const aliasExpr = `tier("alias", 2)`
 	const tailExpr = `tier("tail", 3)`
@@ -376,6 +383,10 @@ export function extractUsage(){return {old_units:2};}
 			c.Set("group", "default")
 			info.UserGroup = "default"
 			info.UsingGroup = "default"
+			// Exercise price selection, then stop at an explicitly empty wallet
+			// rather than depending on an uninitialized global Redis client.
+			info.UserId = user.Id
+			info.UserSetting.BillingPreference = "wallet_only"
 			source := testCase.source
 			if source == "" {
 				source = billingFallbackPlugin
@@ -411,6 +422,13 @@ export function extractUsage(){return {old_units:2};}
 }
 
 func TestSharedTaskBillingExpressionSelectionAndFrozenSettlement(t *testing.T) {
+	db := setupRelayChannelDB(t)
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+	user := model.User{Username: "shared-task-billing", AffCode: "shared-task-billing", Quota: 0}
+	require.NoError(t, db.Create(&user).Error)
+	previousRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = previousRedis })
 	const baseExpr = `tier("base", u("seconds") * 2)`
 	const alphaExpr = `tier("alpha", u("seconds") * 3)`
 	const betaExpr = `tier("beta", u("credits") * 5)`
@@ -464,6 +482,8 @@ func TestSharedTaskBillingExpressionSelectionAndFrozenSettlement(t *testing.T) {
 			info.UserGroup = "default"
 			info.UsingGroup = "default"
 			info.OriginModelName = tc.model
+			info.UserId = user.Id
+			info.UserSetting.BillingPreference = "wallet_only"
 			plugin, ok := registry.Generation().Get(tc.plugin)
 			require.True(t, ok)
 			c.Set(pluginruntime.ContextKeyPinnedPlugin, pluginruntime.PinnedPlugin{Generation: registry.Generation(), Plugin: plugin})

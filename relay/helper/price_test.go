@@ -178,8 +178,9 @@ func TestModelPriceHelperUsesMonthlyModelMultiplierWithoutGlobalModelRatioStacki
 	}
 	priceData, err := ModelPriceHelper(ctx, info, 1_000, &types.TokenCountMeta{MaxTokens: 100})
 	require.NoError(t, err)
-	// (1,000*3 + 100*9) / 1M * 500,000 * 0.70 = 1,365.
-	require.Equal(t, 1_365, priceData.QuotaToPreConsume)
+	// rc.46 reserves input only: 1,000*3 / 1M * 500,000 * 0.70 = 1,050.
+	// The output limit and global model ratio must not stack onto the product price.
+	require.Equal(t, 1_050, priceData.QuotaToPreConsume)
 	require.Equal(t, 0.70, info.ProductBillingMultiplier)
 	require.Equal(t, 0.70, info.TieredBillingSnapshot.ProductMultiplier)
 }
