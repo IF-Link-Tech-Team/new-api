@@ -80,8 +80,17 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			}
 		}
 		if bookPrice == nil {
-			return hosttypes.PriceData{}, errors.New("frozen price book row is unavailable")
+			// An empty wallet book means this model has no explicit wallet
+			// override. Continue to the global model pricing below. Product
+			// books remain strict because a subscription must settle from its
+			// frozen product/version snapshot.
+			if info.ProductPriceBook != model.WalletPriceBook {
+				return hosttypes.PriceData{}, errors.New("frozen price book row is unavailable")
+			}
+			info.ProductPriceBook = ""
+			info.ProductPriceVersion = ""
 		}
+		if bookPrice != nil {
 		// The immutable product/model/version row is authoritative. This permits
 		// IF.Learn to share one entitlement pool while DeepSeek settles at 0.60
 		// and Qwen settles at 1.00, without stacking a token/global multiplier.
@@ -89,6 +98,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, bookPrice.BillingMultiplier)
 		groupRatioInfo := HandleGroupRatio(c, info)
 		return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, groupRatioInfo, bookPrice.BillingExpression)
+		}
 	}
 	if model.UsesVersionedProductPricing(info.ProductType) && strings.TrimSpace(info.ProductPriceVersion) != "" {
 		legacyPrice, err := model.GetProductPriceSnapshot(info.ProductType, info.OriginModelName, info.ProductPriceVersion)
