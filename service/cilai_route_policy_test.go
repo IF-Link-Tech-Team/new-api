@@ -1,12 +1,17 @@
 package service
 
 import (
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -153,6 +158,108 @@ func TestResolveChannelSelectionPolicyUsesProductPriceBookSnapshot(t *testing.T)
 
 	_, err = ResolveChannelSelectionPolicy(ctx, "other-model")
 	require.ErrorContains(t, err, "unavailable")
+}
+
+func TestOrderedProductRoutingUsesFrozenVersionAndAttemptTrail(t *testing.T) {
+	truncate(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.PriceBookPrice{}, &model.Channel{}, &model.Ability{}))
+	oldMemory := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = oldMemory })
+	price := model.PriceBookPrice{
+		PriceBook: "product:98", Model: "ordered-product-model", PriceVersion: "ordered-v1", RouteMode: model.ProductRouteOrdered,
+		OfficialReferencePrice:  `{"input":1,"cached_input":0.2,"cache_creation":1,"output":4}`,
+		UserSellingPrice:        `{"input":1,"cached_input":0.2,"cache_creation":1,"output":4}`,
+		UpstreamSettlementPrice: `{"input":0.5,"cached_input":0.1,"cache_creation":0.5,"output":2}`,
+		BillingExpression:       `tier("base", p + cr * 0.2 + cc + c * 4)`, BillingMultiplier: 0.73,
+		AllowedChannels: `[981,982]`, MaxUpstreamCost: `{"input":1,"cached_input":0.2,"cache_creation":1,"output":4}`,
+		FallbackAllowed: true, Enabled: true,
+	}
+	require.NoError(t, model.DB.Create(&price).Error)
+	for index, id := range []int{981, 982} {
+		channel := model.Channel{Id: id, Key: "synthetic-key", Models: price.Model, Group: "supplier-only",
+			Status: common.ChannelStatusEnabled, Priority: common.GetPointer(int64(index * 100)),
+			UpstreamCosts: `{"ordered-product-model":{"input":0.5,"cached_input":0.1,"cache_creation":0.5,"output":2}}`}
+		require.NoError(t, model.DB.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(model.DB))
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	common.SetContextKey(ctx, constant.ContextKeyTokenPriceBook, price.PriceBook)
+	common.SetContextKey(ctx, constant.ContextKeyTokenPriceVersion, price.PriceVersion)
+	retry := &RetryParam{Ctx: ctx, ModelName: price.Model, TokenGroup: "default"}
+	first, _, failure := SelectChannelForRequest(ctx, price.Model, retry)
+	require.Nil(t, failure)
+	require.NotNil(t, first)
+	assert.Equal(t, 981, first.Id)
+	assert.Equal(t, []int{981, 982}, retry.Policy.OrderedChannelIds)
+	assert.False(t, ProductFallbackDisabled(ctx))
+	assert.Equal(t, 0.73, ctx.GetFloat64(string(constant.ContextKeyTokenBillingMultiplier)))
+	// Session preference cannot silently move a new ordered request to a backup.
+	// Strict binding instead rejects a conflicting order rather than switching it.
+	setting := operation_setting.GetChannelAffinitySetting()
+	previous := *setting
+	t.Cleanup(func() { *setting = previous })
+	rule := operation_setting.ChannelAffinityRule{Name: "ordered-product-session", SessionMode: "inherit", ModelRegex: []string{"^ordered-product-model$"},
+		KeySources: []operation_setting.ChannelAffinityKeySource{{Type: "request_header", Key: "X-Session"}}, IncludeRuleName: true}
+	setting.Enabled, setting.Rules = true, []operation_setting.ChannelAffinityRule{rule}
+	cache := getChannelAffinityCache()
+	for _, mode := range []string{"prefer", "strict"} {
+		t.Run("session="+mode, func(t *testing.T) {
+			setting.SessionMode = mode
+			key := t.Name()
+			cacheKey := buildChannelAffinityCacheKeySuffix(rule, price.Model, "default", key)
+			require.NoError(t, cache.SetWithTTL(cacheKey, 982, time.Minute))
+			t.Cleanup(func() { _, err := cache.DeleteMany([]string{cacheKey}); assert.NoError(t, err) })
+			session, _ := gin.CreateTestContext(httptest.NewRecorder())
+			session.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+			session.Request.Header.Set("X-Session", key)
+			common.SetContextKey(session, constant.ContextKeyTokenPriceBook, price.PriceBook)
+			common.SetContextKey(session, constant.ContextKeyTokenPriceVersion, price.PriceVersion)
+			chosen, _, failure := SelectChannelForRequest(session, price.Model, &RetryParam{Ctx: session, ModelName: price.Model, TokenGroup: "default"})
+			if mode == "strict" {
+				require.NotNil(t, failure)
+				assert.Equal(t, "strict_session_binding_unavailable", failure.Message)
+				assert.Nil(t, chosen)
+			} else {
+				require.Nil(t, failure)
+				require.NotNil(t, chosen)
+				assert.Equal(t, 981, chosen.Id)
+			}
+		})
+	}
+	*setting = previous
+
+	// Publication of a different preference order does not change the request's
+	// original version. Removing the failed primary must not skip its backup.
+	newPrice := price
+	newPrice.Id, newPrice.PriceVersion, newPrice.AllowedChannels = 0, "ordered-v2", `[982,981]`
+	newPrice.FallbackAllowed = false
+	require.NoError(t, model.DB.Create(&newPrice).Error)
+	AppendUsedChannel(ctx, first.Id)
+	require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", first.Id).Update("status", common.ChannelStatusManuallyDisabled).Error)
+	retry.SetRetry(1)
+	backup, _, failure := SelectChannelForRequest(ctx, price.Model, retry)
+	require.Nil(t, failure)
+	require.NotNil(t, backup)
+	assert.Equal(t, 982, backup.Id)
+	AppendUsedChannel(ctx, backup.Id)
+	retry.SetRetry(2)
+	_, _, failure = SelectChannelForRequest(ctx, price.Model, retry)
+	require.NotNil(t, failure, "exhausted ordered routes must not retry a previous supplier")
+
+	fresh, _ := gin.CreateTestContext(httptest.NewRecorder())
+	fresh.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	common.SetContextKey(fresh, constant.ContextKeyTokenPriceBook, newPrice.PriceBook)
+	common.SetContextKey(fresh, constant.ContextKeyTokenPriceVersion, newPrice.PriceVersion)
+	newPolicy, err := ResolveChannelSelectionPolicy(fresh, price.Model)
+	require.NoError(t, err)
+	assert.Equal(t, []int{982, 981}, newPolicy.OrderedChannelIds)
+	assert.True(t, ProductFallbackDisabled(fresh))
+	assert.NotContains(t, newPolicy.AllowedChannelIds, 981, "no-backup also constrains explicit pins")
+	GetChannelConstraints(fresh).AddPin(dto.ChannelPin{ChannelId: 981, Source: dto.PinSourceToken})
+	_, _, failure = SelectChannelForRequest(fresh, price.Model, &RetryParam{Ctx: fresh, ModelName: price.Model, TokenGroup: "default"})
+	require.NotNil(t, failure)
 }
 
 func TestResolveChannelSelectionPolicyKeepsLegacyWalletWhenCatalogIsAbsent(t *testing.T) {

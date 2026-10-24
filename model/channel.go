@@ -71,6 +71,10 @@ const ChannelStatusReasonAllKeysDisabled = "All keys are disabled"
 
 type ChannelSelectionPolicy struct {
 	AllowedChannelIds map[int]struct{}
+	// Non-empty only for an explicitly ordered product version. The allowlist
+	// and cost policy still apply to every attempt, including explicit pins.
+	OrderedChannelIds []int
+	FallbackAllowed   bool
 	MaxUpstreamCost   PriceComponents
 	RequireCost       bool
 	// ProductType identifies the product whose route policy is enforced; it is

@@ -7553,6 +7553,14 @@
     "Template billing multiplier: {{value}}": "Template billing multiplier: {{value}}",
     "After disabling, this price version stops selling, but historical purchases keep their settled price. Continue?": "After disabling, this price version stops selling, but historical purchases keep their settled price. Continue?",
     "After enabling, this price version becomes sellable. Continue?": "After enabling, this price version becomes sellable. Continue?",
-    "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "Billing refund reconciliation: receipt={{receipt}} action={{action}}"
+    "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "Billing refund reconciliation: receipt={{receipt}} action={{action}}",
+    "Product route selection": "Product route selection",
+    "Global channel priority and weight": "Global channel priority and weight",
+    "Product channel order": "Product channel order",
+    "Global routing follows future channel priority changes. Product order stays with this price version; existing entitlements keep their version.": "Global routing follows future channel priority changes. Product order stays with this price version; existing entitlements keep their version.",
+    "Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.": "Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.",
+    "product route mode must be global or ordered": "product route mode must be global or ordered",
+    "wallet overrides do not support product route ordering": "wallet overrides do not support product route ordering",
+    "ordered product route is not configured": "ordered product route is not configured"
   }
 }

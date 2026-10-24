@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -162,11 +163,24 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 		if len(channelIds) == 0 {
 			return nil, fmt.Errorf("model %s has no compliant product route", modelName)
 		}
+		common.SetContextKey(ctx, constant.ContextKeyTokenBillingMultiplier, price.BillingMultiplier)
+		common.SetContextKey(ctx, constant.ContextKeyTokenAllowedChannels, price.AllowedChannels)
+		common.SetContextKey(ctx, constant.ContextKeyTokenMaxUpstreamCost, price.MaxUpstreamCost)
+		common.SetContextKey(ctx, constant.ContextKeyTokenFallbackAllowed, price.FallbackAllowed)
 		allowed := make(map[int]struct{}, len(channelIds))
 		for _, channelId := range channelIds {
 			allowed[channelId] = struct{}{}
 		}
-		return &model.ChannelSelectionPolicy{AllowedChannelIds: allowed, MaxUpstreamCost: maxCost, RequireCost: true, ProductType: productType}, nil
+		policy := &model.ChannelSelectionPolicy{AllowedChannelIds: allowed, MaxUpstreamCost: maxCost, RequireCost: true, ProductType: productType}
+		if price.RouteMode == model.ProductRouteOrdered {
+			policy.OrderedChannelIds = channelIds
+			policy.FallbackAllowed = price.FallbackAllowed
+			if !price.FallbackAllowed {
+				// A pin must not bypass an explicit no-backup decision either.
+				policy.AllowedChannelIds = map[int]struct{}{channelIds[0]: {}}
+			}
+		}
+		return policy, nil
 	}
 	if !model.RequiresStrictV1RoutePolicy(productType) {
 		return nil, nil
@@ -341,7 +355,10 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannelWithPolicy(autoGroup, param.ModelName, priorityRetry, filters, param.Policy)
+			channel, err = selectChannelForAttempt(param, autoGroup, priorityRetry, filters)
+			if err != nil {
+				return nil, autoGroup, err
+			}
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -379,12 +396,28 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelWithPolicy(param.TokenGroup, param.ModelName, param.GetRetry(), filters, param.Policy)
+		channel, err = selectChannelForAttempt(param, param.TokenGroup, param.GetRetry(), filters)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
 	}
 	return channel, selectGroup, nil
+}
+
+// Ordered versions advance by the actual attempt trail. Normal products and
+// wallets retain upstream priority/weight selection and auto-group behavior.
+func selectChannelForAttempt(param *RetryParam, group string, retry int, filters []dto.ChannelFilter) (*model.Channel, error) {
+	if param.Policy == nil || len(param.Policy.OrderedChannelIds) == 0 {
+		return model.GetRandomSatisfiedChannelWithPolicy(group, param.ModelName, retry, filters, param.Policy)
+	}
+	attempted := make(map[int]struct{})
+	for _, value := range param.Ctx.GetStringSlice("use_channel") {
+		id, err := strconv.Atoi(value)
+		if err == nil {
+			attempted[id] = struct{}{}
+		}
+	}
+	return model.GetOrderedSatisfiedChannel(param.ModelName, filters, param.Policy, attempted)
 }
 
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {
@@ -508,6 +541,12 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			affinitySatisfied := false
 			if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled {
 				affinitySatisfied, _ = model.ChannelSatisfiesFilters(preferred, modelName, constraints.Filters)
+			}
+			if affinitySatisfied && policy != nil && len(policy.OrderedChannelIds) > 0 {
+				first, err := selectChannelForAttempt(retry, usingGroup, 0, constraints.Filters)
+				if err != nil || first == nil || first.Id != preferredChannelID {
+					affinitySatisfied = false
+				}
 			}
 			if affinitySatisfied && model.ChannelSatisfiesPolicy(preferred, modelName, policy) {
 				if usingGroup == "auto" {

@@ -17,6 +17,11 @@ import (
 
 const WalletPriceBook = "wallet"
 
+const (
+	ProductRouteGlobal  = "global"
+	ProductRouteOrdered = "ordered"
+)
+
 var ErrPriceBookVersionExists = errors.New("price book version already exists")
 
 // PriceBookPrice is the expansion-stage successor of ProductPrice. The old
@@ -35,11 +40,14 @@ type PriceBookPrice struct {
 	BillingExpression       string  `json:"billing_expression" gorm:"type:text"`
 	BillingMultiplier       float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null"`
 	AllowedChannels         string  `json:"allowed_channels" gorm:"type:text;not null"`
-	MaxUpstreamCost         string  `json:"max_upstream_cost" gorm:"type:text;not null"`
-	FallbackAllowed         bool    `json:"fallback_allowed"`
-	Enabled                 bool    `json:"enabled"`
-	CreatedAt               int64   `json:"created_at" gorm:"bigint;autoCreateTime:false"`
-	UpdatedAt               int64   `json:"updated_at" gorm:"bigint;autoUpdateTime:false"`
+	// Empty is the historical global-priority behavior. In ordered mode the
+	// existing channel list is the immutable preference order, not a second list.
+	RouteMode       string `json:"route_mode" gorm:"type:varchar(16)"`
+	MaxUpstreamCost string `json:"max_upstream_cost" gorm:"type:text;not null"`
+	FallbackAllowed bool   `json:"fallback_allowed"`
+	Enabled         bool   `json:"enabled"`
+	CreatedAt       int64  `json:"created_at" gorm:"bigint;autoCreateTime:false"`
+	UpdatedAt       int64  `json:"updated_at" gorm:"bigint;autoUpdateTime:false"`
 }
 
 func ProductPriceBook(planId int) (string, error) {
@@ -62,6 +70,12 @@ func legacyPriceBook(productType string, planId int) (string, error) {
 func (p *PriceBookPrice) Validate() error {
 	if p == nil {
 		return errors.New("price book price is nil")
+	}
+	if p.RouteMode != "" && p.RouteMode != ProductRouteGlobal && p.RouteMode != ProductRouteOrdered {
+		return errors.New("product route mode must be global or ordered")
+	}
+	if p.PriceBook == WalletPriceBook && p.RouteMode == ProductRouteOrdered {
+		return errors.New("wallet overrides do not support product route ordering")
 	}
 	if strings.TrimSpace(p.Model) != p.Model || len(p.Model) > 255 ||
 		strings.TrimSpace(p.PriceVersion) != p.PriceVersion || len(p.PriceVersion) > 64 {

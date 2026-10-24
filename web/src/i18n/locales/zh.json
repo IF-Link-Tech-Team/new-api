@@ -7554,6 +7554,14 @@
     "After disabling, this price version stops selling, but historical purchases keep their settled price. Continue?": "禁用后该价格版本停止售卖，历史购买仍按原结算价计费。继续？",
     "After enabling, this price version becomes sellable. Continue?": "启用后该价格版本将开放售卖。继续？",
     "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "调用退款核对：凭据={{receipt}} 操作={{action}}",
-    "Not on sale yet": "暂未开售"
+    "Not on sale yet": "暂未开售",
+    "Product route selection": "商品选路方式",
+    "Global channel priority and weight": "全局渠道优先级与权重",
+    "Product channel order": "商品渠道顺序",
+    "Global routing follows future channel priority changes. Product order stays with this price version; existing entitlements keep their version.": "全局选路会跟随以后调整的渠道优先级；商品顺序固定在本价格版本中，已有权益继续使用原版本。",
+    "Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.": "按顺序填写渠道 ID：首选、第一备用、第二备用。关闭兜底时仅使用第一个渠道。所有候选都必须通过可用性和成本检查。",
+    "product route mode must be global or ordered": "商品选路方式必须为全局或顺序",
+    "wallet overrides do not support product route ordering": "钱包价格覆盖不支持商品渠道顺序",
+    "ordered product route is not configured": "商品渠道顺序尚未配置"
   }
 }

@@ -22,6 +22,7 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { ProductPriceVersionDrawer } from '@/features/product-prices/components/product-prices-mutate-drawer'
 import { api } from '@/lib/api'
 
 import { subscriptionPlanSchema } from '../../types'
@@ -47,6 +48,46 @@ function Wrapper(props: { children: ReactNode }) {
     </QueryClientProvider>
   )
 }
+
+it('lets an operator choose product order and explains the fallback boundary', async () => {
+  const user = userEvent.setup()
+  const plan = subscriptionPlanSchema.parse({
+    id: 7,
+    title: 'Flexible promotion',
+    price_amount: 12,
+    duration_unit: 'day',
+    duration_value: 30,
+    quota_reset_period: 'never',
+    enabled: false,
+    sort_order: 0,
+    max_purchase_per_user: 0,
+    total_amount: 10000,
+    price_book: 'product:7',
+    config_revision: 3,
+  })
+  render(
+    <ProductPriceVersionDrawer
+      open
+      onOpenChange={vi.fn()}
+      product={plan}
+      onCreated={vi.fn()}
+    />,
+    { wrapper: Wrapper }
+  )
+  const mode = screen.getByRole('combobox', { name: 'Product route selection' })
+  expect(mode).toHaveTextContent('Global channel priority and weight')
+  await user.click(mode)
+  await user.click(
+    screen.getByRole('option', { name: 'Product channel order' })
+  )
+  expect(mode).toHaveTextContent('Product channel order')
+  expect(screen.getByText(/Enter channel IDs in order: primary/)).toBeVisible()
+  await user.type(screen.getByLabelText('Allowed Channels'), '15, 14')
+  expect(screen.getByLabelText('Allowed Channels')).toHaveValue('15, 14')
+  expect(
+    screen.getByRole('switch', { name: 'Allow route fallback' })
+  ).not.toBeChecked()
+})
 
 it('creates a draft without requesting templates or offering fixed product types', async () => {
   const user = userEvent.setup()

@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -39,7 +41,9 @@ func TestProductPriceBookMigration(t *testing.T) {
 				if dsn == "" {
 					t.Skip("PRICE_BOOK_TEST_POSTGRES_DSN not configured")
 				}
-				dialect = postgres.Open(dsn)
+				// Production migrations use simple protocol: cached SELECT * plans
+				// cannot survive the deliberate old-schema expansion in this test.
+				dialect = postgres.New(postgres.Config{DSN: dsn, PreferSimpleProtocol: true})
 			}
 			db, err := gorm.Open(dialect, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 			require.NoError(t, err)
@@ -587,17 +591,102 @@ func TestProductPriceBookMigration(t *testing.T) {
 			generic := entries[0]
 			generic.Id, generic.PriceBook, generic.PriceVersion = 0, "product:42", "operator-v2"
 			generic.Model, generic.BillingMultiplier, generic.FallbackAllowed = "new-provider-model", 0.73, true
+			generic.RouteMode = ProductRouteOrdered
 			require.NoError(t, db.Create(&generic).Error)
+			// Upgrade an already populated expansion table; old rows keep global
+			// behavior, while new preference orders survive subsequent restarts.
+			require.NoError(t, db.Migrator().DropColumn(&PriceBookPrice{}, "RouteMode"))
+			for range 2 {
+				require.NoError(t, db.AutoMigrate(&PriceBookPrice{}))
+			}
+			var upgraded PriceBookPrice
+			require.NoError(t, db.First(&upgraded, generic.Id).Error)
+			assert.Empty(t, upgraded.RouteMode)
+			require.NoError(t, db.Model(&PriceBookPrice{}).Where("id = ?", generic.Id).UpdateColumn("route_mode", ProductRouteOrdered).Error)
 			require.NoError(t, db.Model(&generic).Update("enabled", false).Error)
 			var disabled PriceBookPrice
 			require.NoError(t, db.First(&disabled, generic.Id).Error)
 			assert.False(t, disabled.Enabled)
 			assert.Equal(t, generic.BillingExpression, disabled.BillingExpression)
+			assert.Equal(t, ProductRouteOrdered, disabled.RouteMode)
+			assert.Equal(t, generic.AllowedChannels, disabled.AllowedChannels)
+			require.ErrorContains(t, db.Model(&disabled).Update("route_mode", ProductRouteGlobal).Error, "immutable")
+			invalidMode := generic
+			invalidMode.RouteMode = "typo"
+			require.ErrorContains(t, invalidMode.Validate(), "route mode")
+			invalidMode.RouteMode, invalidMode.PriceBook = ProductRouteOrdered, WalletPriceBook
+			require.ErrorContains(t, invalidMode.Validate(), "wallet")
 			for _, book := range []string{"", "wallet ", "product:0", "product:-1", "product:01", "41", "monthly_subscription"} {
 				invalid := generic
 				invalid.PriceBook = book
 				require.Error(t, invalid.Validate(), book)
 			}
+
+			t.Run("ordered routes retain safety and do not skip shrinking candidates", func(t *testing.T) {
+				require.NoError(t, db.AutoMigrate(&Channel{}, &Ability{}))
+				t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(&Ability{}, &Channel{})) })
+				for index, id := range []int{801, 802, 803} {
+					channel := Channel{Id: id, Name: "ordered synthetic route", Key: "synthetic-key", Models: generic.Model,
+						Group: "supplier-only", Status: common.ChannelStatusEnabled, Priority: common.GetPointer(int64(index * 100)),
+						UpstreamCosts: `{"new-provider-model":{"input":0.5,"cached_input":0.1,"cache_creation":0.5,"output":2}}`}
+					require.NoError(t, db.Create(&channel).Error)
+					require.NoError(t, channel.AddAbilities(db))
+				}
+				oldCache := common.MemoryCacheEnabled
+				channelSyncLock.RLock()
+				oldGroups, oldChannels, oldCustom := group2model2channels, channelsIDM, channel2advancedCustomConfig
+				channelSyncLock.RUnlock()
+				t.Cleanup(func() {
+					common.MemoryCacheEnabled = oldCache
+					channelSyncLock.Lock()
+					group2model2channels, channelsIDM, channel2advancedCustomConfig = oldGroups, oldChannels, oldCustom
+					channelSyncLock.Unlock()
+				})
+				for _, cache := range []bool{false, true} {
+					t.Run(fmt.Sprintf("cache=%v", cache), func(t *testing.T) {
+						common.MemoryCacheEnabled = cache
+						if cache {
+							InitChannelCache()
+						}
+						policy := &ChannelSelectionPolicy{
+							AllowedChannelIds: map[int]struct{}{801: {}, 802: {}, 803: {}},
+							OrderedChannelIds: []int{801, 802, 803}, FallbackAllowed: true, RequireCost: true,
+							MaxUpstreamCost: PriceComponents{Input: 1, CachedInput: 0.2, CacheCreation: 1, Output: 4},
+						}
+						chosen, err := GetOrderedSatisfiedChannel(generic.Model, nil, policy, nil)
+						require.NoError(t, err)
+						require.NotNil(t, chosen)
+						assert.Equal(t, 801, chosen.Id, "product preference beats global priority")
+						attempted := map[int]struct{}{801: {}}
+						chosen, err = GetOrderedSatisfiedChannel(generic.Model, nil, policy, attempted)
+						require.NoError(t, err)
+						require.NotNil(t, chosen)
+						assert.Equal(t, 802, chosen.Id)
+						policy.FallbackAllowed = false
+						chosen, err = GetOrderedSatisfiedChannel(generic.Model, nil, policy, attempted)
+						require.NoError(t, err)
+						assert.Nil(t, chosen, "no backup means no second channel")
+						policy.FallbackAllowed = true
+						delete(policy.AllowedChannelIds, 801)
+						chosen, err = GetOrderedSatisfiedChannel(generic.Model, nil, policy, nil)
+						require.NoError(t, err)
+						require.NotNil(t, chosen)
+						assert.Equal(t, 802, chosen.Id, "a shorter eligible set must not skip the first backup")
+						policy.MaxUpstreamCost.Output = 1
+						chosen, err = GetOrderedSatisfiedChannel(generic.Model, nil, policy, nil)
+						require.NoError(t, err)
+						assert.Nil(t, chosen, "over-cost backups must fail closed")
+						policy.MaxUpstreamCost.Output = 4
+						policy.RequireCost = false
+						chosen, err = GetOrderedSatisfiedChannel("unsupported-model", nil, policy, nil)
+						require.NoError(t, err)
+						assert.Nil(t, chosen, "an allowlist cannot grant an unsupported model even without cost enforcement")
+						chosen, err = GetOrderedSatisfiedChannel(generic.Model, []dto.ChannelFilter{{Kind: dto.FilterTaskPluginIdentity, TaskPluginKey: "unavailable-plugin"}}, policy, nil)
+						require.NoError(t, err)
+						assert.Nil(t, chosen, "product preference cannot bypass request capability filters")
+					})
+				}
+			})
 		})
 	}
 }

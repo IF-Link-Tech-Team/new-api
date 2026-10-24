@@ -182,7 +182,9 @@ export function ProductPriceVersionDrawer(
     setIsSubmitting(true)
     try {
       const res = props.product
-        ? await createProductPriceBookVersion(props.product.id, payload)
+        ? await createProductPriceBookVersion(props.product.id, {
+            price: { ...payload.price, route_mode: values.route_mode },
+          })
         : await createProductPrice(payload)
       if (res.success) {
         toast.success(t('Create succeeded'))
@@ -403,6 +405,48 @@ export function ProductPriceVersionDrawer(
                 )}
               />
 
+              {props.product && (
+                <FormField
+                  control={form.control}
+                  name='route_mode'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Product route selection')}</FormLabel>
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                      >
+                        <FormControl>
+                          <SelectTrigger className='w-full'>
+                            <SelectValue>
+                              {field.value === 'ordered'
+                                ? t('Product channel order')
+                                : t('Global channel priority and weight')}
+                            </SelectValue>
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value='global'>
+                              {t('Global channel priority and weight')}
+                            </SelectItem>
+                            <SelectItem value='ordered'>
+                              {t('Product channel order')}
+                            </SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>
+                        {t(
+                          'Global routing follows future channel priority changes. Product order stays with this price version; existing entitlements keep their version.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
               <FormField
                 control={form.control}
                 name='allowed_channels'
@@ -413,9 +457,13 @@ export function ProductPriceVersionDrawer(
                       <Input {...field} placeholder='14, 15' />
                     </FormControl>
                     <FormDescription>
-                      {t(
-                        'Comma-separated channel IDs that may serve this price version'
-                      )}
+                      {props.product && form.watch('route_mode') === 'ordered'
+                        ? t(
+                            'Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.'
+                          )
+                        : t(
+                            'Comma-separated channel IDs that may serve this price version'
+                          )}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>

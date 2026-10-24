@@ -38,11 +38,22 @@ describe('product price API failures', () => {
       .spyOn(api, 'post')
       .mockResolvedValue({ data: { success: true, data: { id: 1 } } })
     await createProductPriceBookVersion(7, {
-      price: { product_type: 'pack_k3', model: 'operator-model' },
+      price: {
+        product_type: 'pack_k3',
+        model: 'operator-model',
+        route_mode: 'ordered',
+        allowed_channels: '[15,14]',
+      },
     })
     expect(post).toHaveBeenCalledWith(
       '/api/subscription/admin/plans/7/prices',
-      { price: { model: 'operator-model' } }
+      {
+        price: {
+          model: 'operator-model',
+          route_mode: 'ordered',
+          allowed_channels: '[15,14]',
+        },
+      }
     )
   })
 

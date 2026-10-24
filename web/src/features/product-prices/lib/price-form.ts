@@ -38,6 +38,7 @@ export function getPriceFormSchema(t: TFunction, productOwned = false) {
       .string()
       .trim()
       .min(1, t('Please enter at least one channel ID')),
+    route_mode: z.enum(['global', 'ordered']),
     official_input: z.coerce.number().min(0),
     official_cached_input: z.coerce.number().min(0),
     official_cache_creation: z.coerce.number().min(0),
@@ -69,6 +70,7 @@ export const PRICE_FORM_DEFAULTS: PriceFormValues = {
   billing_multiplier: 1,
   billing_expression: '',
   allowed_channels: '',
+  route_mode: 'global',
   official_input: 0,
   official_cached_input: 0,
   official_cache_creation: 0,

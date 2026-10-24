@@ -7553,6 +7553,14 @@
     "Template billing multiplier: {{value}}": "Template billing multiplier: {{value}}",
     "After disabling, this price version stops selling, but historical purchases keep their settled price. Continue?": "After disabling, this price version stops selling, but historical purchases keep their settled price. Continue?",
     "After enabling, this price version becomes sellable. Continue?": "After enabling, this price version becomes sellable. Continue?",
-    "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "呼叫退款核對：憑據={{receipt}} 操作={{action}}"
+    "Billing refund reconciliation: receipt={{receipt}} action={{action}}": "呼叫退款核對：憑據={{receipt}} 操作={{action}}",
+    "Product route selection": "商品選路方式",
+    "Global channel priority and weight": "全域渠道優先級與權重",
+    "Product channel order": "商品渠道順序",
+    "Global routing follows future channel priority changes. Product order stays with this price version; existing entitlements keep their version.": "全域選路會跟隨以後調整的渠道優先級；商品順序固定在本價格版本中，已有權益繼續使用原版本。",
+    "Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.": "按順序填寫渠道 ID：首選、第一備用、第二備用。關閉備援時僅使用第一個渠道。所有候選都必須通過可用性與成本檢查。",
+    "product route mode must be global or ordered": "商品選路方式必須為全域或順序",
+    "wallet overrides do not support product route ordering": "錢包價格覆蓋不支援商品渠道順序",
+    "ordered product route is not configured": "商品渠道順序尚未設定"
   }
 }
