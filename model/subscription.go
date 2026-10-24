@@ -214,10 +214,14 @@ type SubscriptionPlan struct {
 	ProductTier       int     `json:"product_tier" gorm:"type:int;default:0"`
 	BillingMultiplier float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
 	PriceVersion      string  `json:"price_version" gorm:"type:varchar(64);default:''"`
-	AllowedChannels   string  `json:"allowed_channels" gorm:"type:text"`
-	MaxUpstreamCost   string  `json:"max_upstream_cost" gorm:"type:text"`
-	FallbackAllowed   bool    `json:"fallback_allowed"`
-	CourseEligible    bool    `json:"course_eligible"`
+	// PriceBook opts a plan into product-owned pricing without a template or
+	// commercial product type. Empty preserves the pre-migration contract.
+	PriceBook       string `json:"price_book" gorm:"type:varchar(64);default:''"`
+	ConfigRevision  int64  `json:"config_revision" gorm:"bigint;not null;default:0"`
+	AllowedChannels string `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost string `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed bool   `json:"fallback_allowed"`
+	CourseEligible  bool   `json:"course_eligible"`
 
 	// TemplateId links the plan to its product_templates row. It is pinned
 	// during ValidateV1Contract and backfilled for existing plans by the
@@ -320,13 +324,16 @@ type SubscriptionOrder struct {
 	BillingMultiplier  float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
 	PriceVersion       string  `json:"price_version" gorm:"type:varchar(64);default:''"`
 	PriceBook          string  `json:"-" gorm:"type:varchar(64);default:'';index"`
-	ModelScope         string  `json:"model_scope" gorm:"type:text"`
-	AllowedChannels    string  `json:"allowed_channels" gorm:"type:text"`
-	MaxUpstreamCost    string  `json:"max_upstream_cost" gorm:"type:text"`
-	FallbackAllowed    bool    `json:"fallback_allowed"`
-	CourseEligible     bool    `json:"course_eligible"`
-	ProvisioningStatus string  `json:"provisioning_status" gorm:"type:varchar(32);default:'pending';index"`
-	ProvisioningError  string  `json:"provisioning_error" gorm:"type:text"`
+	// The complete generic plan freezes non-price terms too, including limits,
+	// group changes and wallet overflow. It never contains credentials.
+	ProductPlanSnapshot string `json:"-" gorm:"type:text"`
+	ModelScope          string `json:"model_scope" gorm:"type:text"`
+	AllowedChannels     string `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost     string `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed     bool   `json:"fallback_allowed"`
+	CourseEligible      bool   `json:"course_eligible"`
+	ProvisioningStatus  string `json:"provisioning_status" gorm:"type:varchar(32);default:'pending';index"`
+	ProvisioningError   string `json:"provisioning_error" gorm:"type:text"`
 
 	// Immutable commercial snapshot captured before the customer is sent to a
 	// payment provider. Completion must never read mutable price/quota/duration
@@ -357,10 +364,13 @@ func (o *SubscriptionOrder) Insert() error {
 	if o.ProvisioningStatus == "" {
 		o.ProvisioningStatus = ProvisioningStatusPending
 	}
-	if o.PlanId > 0 && o.ProductType == "" {
+	if o.PlanId > 0 && o.ProductType == "" && o.PriceBook == "" {
 		plan, err := GetSubscriptionPlanById(o.PlanId)
 		if err != nil {
 			return err
+		}
+		if plan.PriceBook != "" {
+			return errors.New("product orders require transactional checkout")
 		}
 		if err := plan.ValidateV1Contract(); err != nil {
 			return err
@@ -389,7 +399,7 @@ func (o *SubscriptionOrder) SnapshotPlan(plan *SubscriptionPlan) {
 	o.TargetTier = plan.ProductTier
 	o.BillingMultiplier = plan.BillingMultiplier
 	o.PriceVersion = strings.TrimSpace(plan.PriceVersion)
-	o.PriceBook = ""
+	o.PriceBook = plan.PriceBook
 	if RequiresStrictV1RoutePolicy(plan.ProductType) && plan.Id > 0 {
 		o.PriceBook = fmt.Sprintf("product:%d", plan.Id)
 	}
@@ -507,6 +517,13 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 	if err != nil {
 		return nil, nil, err
 	}
+	if plan.PriceBook != "" {
+		// Serialize checkout with generic plan edits and price publication.
+		// Display cache state never decides whether a new sale is valid.
+		if err := lockForUpdate(tx).First(plan, planId).Error; err != nil {
+			return nil, nil, err
+		}
+	}
 	if !plan.Enabled {
 		return nil, nil, errors.New("套餐未启用")
 	}
@@ -568,6 +585,13 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		ProvisioningStatus: ProvisioningStatusPending,
 	}
 	order.SnapshotPlan(plan)
+	if plan.PriceBook != "" {
+		data, err := common.Marshal(plan)
+		if err != nil {
+			return nil, nil, err
+		}
+		order.ProductPlanSnapshot = string(data)
+	}
 
 	if plan.ProductType == ProductTypeMonthlySubscription {
 		now := getDBTimestampTx(tx)
@@ -641,7 +665,10 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		if err := pendingQuery.Count(&pendingCount).Error; err != nil {
 			return nil, nil, err
 		}
-		if pendingCount > 0 {
+		if plan.PriceBook != "" && pendingCount >= int64(plan.MaxPurchasePerUser)-count {
+			return nil, nil, errors.New("已达到该套餐购买上限（含待支付订单）")
+		}
+		if plan.PriceBook == "" && pendingCount > 0 {
 			return nil, nil, errors.New("该套餐已有待支付订单")
 		}
 	}
@@ -933,7 +960,11 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, err
 	}
-	if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
+	if plan.PriceBook != "" {
+		if err := validateProductPlanPrices(tx, plan, false); err != nil {
+			return nil, err
+		}
+	} else if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
 		return nil, err
 	}
 	nowUnix := getDBTimestampTx(tx)
@@ -1007,7 +1038,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if plan.AllowWalletOverflow != nil {
 		allowWalletOverflow = *plan.AllowWalletOverflow
 	}
-	priceBook := ""
+	priceBook := plan.PriceBook
 	if RequiresStrictV1RoutePolicy(plan.ProductType) {
 		priceBook, err = ProductPriceBook(plan.Id)
 		if err != nil {
@@ -1216,6 +1247,23 @@ func provisionPlanFromOrder(tx *gorm.DB, order *SubscriptionOrder, livePlan *Sub
 		return nil, errors.New("invalid order plan snapshot")
 	}
 	plan := *livePlan
+	if order.ProductPlanSnapshot != "" {
+		var frozen SubscriptionPlan
+		if err := common.UnmarshalJsonStr(order.ProductPlanSnapshot, &frozen); err != nil {
+			return nil, fmt.Errorf("invalid product plan snapshot: %w", err)
+		}
+		plan = frozen
+		if plan.Id != order.PlanId || plan.PriceBook == "" || plan.PriceBook != order.PriceBook || plan.PriceVersion != order.PriceVersion {
+			return nil, errors.New("product plan snapshot identity mismatch")
+		}
+		if err := plan.ValidateProductPlan(); err != nil {
+			return nil, err
+		}
+		return &plan, nil
+	}
+	if order.PriceBook != "" && order.ProductType == "" {
+		return nil, errors.New("product order is missing its immutable plan snapshot")
+	}
 	if order.ProductType == "" {
 		return &plan, nil
 	}

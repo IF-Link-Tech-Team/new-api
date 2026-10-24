@@ -174,6 +174,9 @@ func (p *SubscriptionPlan) validateV1ContractTx(tx *gorm.DB) error {
 	if p == nil {
 		return errors.New("plan is nil")
 	}
+	if p.PriceBook != "" {
+		return p.ValidateProductPlan()
+	}
 	p.ProductType = strings.TrimSpace(p.ProductType)
 	if p.ProductType == "" || p.ProductType == ProductTypeLegacySubscription {
 		// Legacy plans retain their historical model scope and billing path. They
@@ -661,6 +664,9 @@ func HasProductPriceConfiguration(productType string, modelName string) (bool, e
 }
 
 func validateV1ProductPriceCatalogTx(tx *gorm.DB, plan *SubscriptionPlan) error {
+	if plan != nil && plan.PriceBook != "" {
+		return validateProductPlanPrices(tx, plan, true)
+	}
 	if tx == nil || plan == nil || !RequiresStrictV1RoutePolicy(plan.ProductType) {
 		return nil
 	}
@@ -849,6 +855,9 @@ func backfillCilaiV1Contracts() error {
 				}
 				continue
 			}
+			if order.PriceBook != "" && order.ProductPlanSnapshot != "" {
+				continue // Generic orders already carry complete immutable terms.
+			}
 			if order.ProductType == "" {
 				if err := backfillLegacySubscriptionOrderTx(tx, order); err != nil {
 					return err
@@ -874,7 +883,7 @@ func backfillCilaiV1Contracts() error {
 		}
 		for i := range subscriptions {
 			sub := &subscriptions[i]
-			if sub.ProductType == "" {
+			if sub.ProductType == "" && sub.PriceBook == "" {
 				var plan SubscriptionPlan
 				if err := tx.Where("id = ?", sub.PlanId).First(&plan).Error; err == nil && plan.ProductType != "" {
 					sub.ProductType = plan.ProductType

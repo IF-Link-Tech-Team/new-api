@@ -37,6 +37,9 @@ func TestProductPriceBookAdministrativeAPI(t *testing.T) {
 	group := router.Group("/api/subscription/admin", middleware.AdminAuth())
 	group.GET("/plans/:id/prices", AdminListProductPriceBookVersions)
 	group.POST("/plans/:id/prices", AdminCreateProductPriceBookVersion)
+	group.POST("/plans", AdminCreateSubscriptionPlan)
+	group.PUT("/plans/:id", AdminUpdateSubscriptionPlan)
+	group.PATCH("/plans/:id", AdminUpdateSubscriptionPlanStatus)
 	price := model.PriceBookPrice{
 		Id: 987, CreatedAt: 1, UpdatedAt: 1,
 		Model: "operator-model", PriceVersion: "operator-v2", BillingMultiplier: 0.73, Enabled: true,
@@ -123,4 +126,53 @@ func TestProductPriceBookAdministrativeAPI(t *testing.T) {
 	auditJSON, err := common.Marshal(audit)
 	require.NoError(t, err)
 	assert.NotContains(t, string(auditJSON), write)
+
+	t.Run("generic draft and version conflict", func(t *testing.T) {
+		payment.ComplianceConfirmed = true
+		product := model.SubscriptionPlan{
+			Title: "New administrator promotion", PriceAmount: 12.5, Currency: "CNY",
+			TotalAmount: 8_000_000, DurationUnit: model.SubscriptionDurationDay, DurationValue: 23,
+			QuotaResetPeriod: model.SubscriptionResetNever, ModelScope: "operator-model", BillingMultiplier: 1,
+			Enabled: true, Listed: true, RedemptionEnabled: true,
+		}
+		body, err := common.Marshal(map[string]any{"plan": product, "product_owned_pricing": true})
+		require.NoError(t, err)
+		response := accessTokenRequest(router, http.MethodPost, "/api/subscription/admin/plans", read, "", string(body))
+		require.Equal(t, http.StatusForbidden, response.Code)
+		response = accessTokenRequest(router, http.MethodPost, "/api/subscription/admin/plans", write, "", string(body))
+		var result struct {
+			Success bool                   `json:"success"`
+			Data    model.SubscriptionPlan `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+		require.True(t, result.Success, response.Body.String())
+		product = result.Data
+		assert.False(t, product.Enabled)
+		assert.False(t, product.Listed)
+		assert.False(t, product.RedemptionEnabled)
+		assert.Empty(t, product.ProductType)
+		assert.Zero(t, product.TemplateId)
+		assert.Equal(t, fmt.Sprintf("product:%d", product.Id), product.PriceBook)
+		assert.Equal(t, "CNY", product.Currency)
+		assert.Equal(t, fmt.Sprint(product.Id), subscriptionPlanProductID(product))
+		path := fmt.Sprintf("/api/subscription/admin/plans/%d", product.Id)
+		product.Title = "Revised promotion"
+		body, err = common.Marshal(map[string]any{"plan": product, "expected_revision": product.ConfigRevision})
+		require.NoError(t, err)
+		response = accessTokenRequest(router, http.MethodPut, path, write, "", string(body))
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+		require.True(t, result.Success, response.Body.String())
+		assert.EqualValues(t, 2, result.Data.ConfigRevision)
+		response = accessTokenRequest(router, http.MethodPut, path, write, "", string(body))
+		assert.Equal(t, http.StatusConflict, response.Code)
+		response = accessTokenRequest(router, http.MethodPatch, path, write, "", `{"listed":true,"expected_revision":1}`)
+		assert.Equal(t, http.StatusConflict, response.Code)
+		response = accessTokenRequest(router, http.MethodPatch, path, write, "", `{"enabled":true,"expected_revision":2}`)
+		assert.Contains(t, response.Body.String(), `"success":false`, "missing prices must prevent activation")
+		var after model.SubscriptionPlan
+		require.NoError(t, db.First(&after, product.Id).Error)
+		assert.EqualValues(t, 2, after.ConfigRevision)
+		assert.Equal(t, "Revised promotion", after.Title)
+		assert.False(t, after.Enabled)
+	})
 }

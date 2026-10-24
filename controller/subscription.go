@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"unicode"
@@ -56,6 +58,9 @@ func subscriptionBillingMultipliers(productType string, modelScope string, price
 // URLs. V1 SKUs use their immutable product_code. The title-based fallback is
 // only for older configured plans that predate product_code.
 func subscriptionPlanProductID(plan model.SubscriptionPlan) string {
+	if plan.PriceBook != "" && plan.Id > 0 {
+		return strconv.Itoa(plan.Id)
+	}
 	if productCode := strings.ToLower(strings.TrimSpace(plan.ProductCode)); productCode != "" {
 		return productCode
 	}
@@ -393,7 +398,9 @@ func AdminListSubscriptionPlans(c *gin.Context) {
 }
 
 type AdminUpsertSubscriptionPlanRequest struct {
-	Plan model.SubscriptionPlan `json:"plan"`
+	Plan                model.SubscriptionPlan `json:"plan"`
+	ProductOwnedPricing bool                   `json:"product_owned_pricing"`
+	ExpectedRevision    *int64                 `json:"expected_revision"`
 }
 
 func normalizeAdminSubscriptionPlan(plan *model.SubscriptionPlan) error {
@@ -502,6 +509,22 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if req.ProductOwnedPricing {
+		if !requirePaymentCompliance(c) {
+			return
+		}
+		if err := model.CreateProductPlan(model.DB, &req.Plan); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "subscription.product_create", map[string]any{"plan_id": req.Plan.Id, "price_book": req.Plan.PriceBook})
+		common.ApiSuccess(c, req.Plan)
+		return
+	}
+	if req.Plan.PriceBook != "" {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
 	if !operation_setting.IsPaymentComplianceConfirmed() && req.Plan.ProductType != model.ProductTypePackDeepSeekClassroom {
 		if !requirePaymentCompliance(c) {
 			return
@@ -580,6 +603,38 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if existingPlan.PriceBook != "" {
+		if !requirePaymentCompliance(c) {
+			return
+		}
+		if req.ExpectedRevision == nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		req.Plan.Id = id
+		if req.Plan.PriceBook != "" && req.Plan.PriceBook != existingPlan.PriceBook {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		req.Plan.PriceBook = existingPlan.PriceBook
+		if err := model.UpdateProductPlan(model.DB, &req.Plan, *req.ExpectedRevision); err != nil {
+			if errors.Is(err, model.ErrProductPlanConflict) {
+				c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+				return
+			}
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "subscription.product_update", map[string]any{
+			"plan_id": id, "price_book": req.Plan.PriceBook, "old_revision": *req.ExpectedRevision, "revision": req.Plan.ConfigRevision,
+		})
+		common.ApiSuccess(c, req.Plan)
+		return
+	}
+	if req.Plan.PriceBook != "" {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
 	if !operation_setting.IsPaymentComplianceConfirmed() &&
 		(existingPlan.ProductType != model.ProductTypePackDeepSeekClassroom || req.Plan.ProductType != model.ProductTypePackDeepSeekClassroom) {
 		if !requirePaymentCompliance(c) {
@@ -647,9 +702,8 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"custom_seconds": req.Plan.CustomSeconds,
 			"enabled":        req.Plan.Enabled,
 			"listed":         req.Plan.Listed,
-			// The full plan editor predates the independent redemption switch.
-			// Preserve it here; the PATCH status endpoint is authoritative.
-			"redemption_enabled":         existingPlan.RedemptionEnabled,
+			// Redemption is owned by PATCH; omit it so a concurrent switch cannot
+			// be overwritten by this editor's earlier database read.
 			"sort_order":                 req.Plan.SortOrder,
 			"stripe_price_id":            req.Plan.StripePriceId,
 			"creem_product_id":           req.Plan.CreemProductId,
@@ -696,9 +750,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 }
 
 type AdminUpdateSubscriptionPlanStatusRequest struct {
-	Enabled           *bool `json:"enabled"`
-	Listed            *bool `json:"listed"`
-	RedemptionEnabled *bool `json:"redemption_enabled"`
+	Enabled           *bool  `json:"enabled"`
+	Listed            *bool  `json:"listed"`
+	RedemptionEnabled *bool  `json:"redemption_enabled"`
+	ExpectedRevision  *int64 `json:"expected_revision"`
 }
 
 func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
@@ -715,6 +770,37 @@ func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
 	var plan model.SubscriptionPlan
 	if err := model.DB.Where("id = ?", id).First(&plan).Error; err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if plan.PriceBook != "" {
+		if !requirePaymentCompliance(c) {
+			return
+		}
+		if req.ExpectedRevision == nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		if req.Enabled != nil {
+			plan.Enabled = *req.Enabled
+		}
+		if req.Listed != nil {
+			plan.Listed = *req.Listed
+		}
+		if req.RedemptionEnabled != nil {
+			plan.RedemptionEnabled = *req.RedemptionEnabled
+		}
+		if err := model.UpdateProductPlan(model.DB, &plan, *req.ExpectedRevision); err != nil {
+			if errors.Is(err, model.ErrProductPlanConflict) {
+				c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+				return
+			}
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "subscription.product_update", map[string]any{
+			"plan_id": id, "price_book": plan.PriceBook, "old_revision": *req.ExpectedRevision, "revision": plan.ConfigRevision,
+		})
+		common.ApiSuccess(c, plan)
 		return
 	}
 	// Redemption availability is deliberately independent from paid-sale

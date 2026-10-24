@@ -97,8 +97,13 @@ func TestProductPriceBookMigration(t *testing.T) {
 				ModelScope: pack.Model, TradeNo: "price-book-history", Money: 19.9}
 			require.NoError(t, db.Create(&order).Error)
 
+			// Emulate the released schema while retaining the representative
+			// rows, then expand twice. These additions may not mutate old data.
+			require.NoError(t, db.Migrator().DropColumn(&SubscriptionPlan{}, "PriceBook"))
+			require.NoError(t, db.Migrator().DropColumn(&SubscriptionPlan{}, "ConfigRevision"))
+			require.NoError(t, db.Migrator().DropColumn(&SubscriptionOrder{}, "ProductPlanSnapshot"))
 			for range 2 {
-				require.NoError(t, db.AutoMigrate(&PriceBookPrice{}))
+				require.NoError(t, db.AutoMigrate(&PriceBookPrice{}, &SubscriptionPlan{}, &SubscriptionOrder{}))
 				require.NoError(t, BackfillProductPriceBooks(db))
 			}
 			var entries []PriceBookPrice
@@ -345,6 +350,121 @@ func TestProductPriceBookMigration(t *testing.T) {
 				committed, err := GetSubscriptionPlanById(52)
 				require.NoError(t, err)
 				assert.Equal(t, "committed plan", committed.Title, "rolled-back data must never enter shared caches")
+			})
+
+			t.Run("generic product purchase and immutable issuance", func(t *testing.T) {
+				extra := []any{&SubscriptionKeyBinding{}, &TopUp{}, &User{}}
+				require.NoError(t, db.AutoMigrate(extra...))
+				t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(extra...)) })
+				user := User{Id: 901, Username: "generic-product-buyer", Status: common.UserStatusEnabled, Group: "default"}
+				require.NoError(t, db.Create(&user).Error)
+				plan := SubscriptionPlan{
+					Title: "Operator configured promotion", Currency: "CNY", PriceAmount: 17.25,
+					TotalAmount: 20_000_000, DurationUnit: SubscriptionDurationDay, DurationValue: 37,
+					QuotaResetPeriod: SubscriptionResetDaily, MaxPurchasePerUser: 0,
+					ModelScope: "arbitrary-provider-model", BillingMultiplier: 1,
+				}
+				require.NoError(t, CreateProductPlan(db, &plan))
+				assert.False(t, plan.Enabled)
+				assert.False(t, plan.Listed)
+				assert.False(t, plan.RedemptionEnabled, "GORM defaults must not make a draft redeemable")
+				assert.EqualValues(t, 1, plan.ConfigRevision)
+				assert.Empty(t, plan.ProductType)
+				assert.Zero(t, plan.TemplateId)
+				var stored SubscriptionPlan
+				require.NoError(t, db.First(&stored, plan.Id).Error)
+				assert.Equal(t, plan, stored)
+				invalid := plan
+				invalid.PriceBook = WalletPriceBook
+				require.Error(t, invalid.ValidateProductPlan())
+				invalid = plan
+				invalid.ProductType = ProductTypePackK3
+				require.Error(t, invalid.ValidateProductPlan())
+				// A draft cannot be activated without all of its model prices.
+				plan.Enabled, plan.PriceVersion = true, "generic-sale-v1"
+				require.Error(t, UpdateProductPlan(db, &plan, 1))
+				price := entries[0]
+				price.Id, price.PriceBook, price.Model, price.PriceVersion = 0, "", plan.ModelScope, plan.PriceVersion
+				price.Enabled, price.EffectiveAt, price.BillingMultiplier = true, 0, 0.73
+				require.NoError(t, CreateProductPriceBookVersion(db, plan.Id, &price))
+				require.NoError(t, UpdateProductPlan(db, &plan, 1))
+				assert.EqualValues(t, 2, plan.ConfigRevision)
+				unsafeInsert := SubscriptionOrder{PlanId: plan.Id, UserId: user.Id, TradeNo: "generic-unsafe-" + engine}
+				require.ErrorContains(t, unsafeInsert.Insert(), "transactional checkout")
+				stale := stored
+				stale.Title = "stale editor must not win"
+				require.ErrorIs(t, UpdateProductPlan(db, &stale, 1), ErrProductPlanConflict)
+				order, _, err := CreateSubscriptionOrder(user.Id, plan.Id, "generic-purchase-"+engine, "alipay", "alipay", true)
+				require.NoError(t, err)
+				assert.Equal(t, plan.PriceBook, order.PriceBook)
+				require.NotEmpty(t, order.ProductPlanSnapshot)
+				// Change the live quota, validity, models, overflow and limit after
+				// payment starts. Issuance must use the complete original contract.
+				require.NoError(t, db.Model(&SubscriptionPlan{}).Where("id = ?", plan.Id).Updates(map[string]any{
+					"total_amount": 1, "duration_value": 1, "model_scope": "different-model",
+					"allow_wallet_overflow": true, "max_purchase_per_user": 1, "enabled": false,
+				}).Error)
+				require.NoError(t, db.Model(&price).Update("enabled", false).Error)
+				for range 2 {
+					require.NoError(t, CompleteSubscriptionOrder(order.TradeNo, "", "alipay", "alipay"))
+				}
+				var subscriptions []UserSubscription
+				require.NoError(t, db.Where("user_id = ? AND plan_id = ?", user.Id, plan.Id).Find(&subscriptions).Error)
+				require.Len(t, subscriptions, 1)
+				sub := subscriptions[0]
+				assert.Equal(t, plan.TotalAmount, sub.AmountTotal)
+				assert.Equal(t, plan.ModelScope, sub.ModelScope)
+				assert.Equal(t, plan.PriceBook, sub.PriceBook)
+				assert.Equal(t, plan.PriceVersion, sub.PriceVersion)
+				assert.False(t, sub.AllowWalletOverflow)
+				assert.EqualValues(t, 37*24*60*60, sub.EndTime-sub.StartTime)
+				var bindings []SubscriptionKeyBinding
+				require.NoError(t, db.Where("user_subscription_id = ?", sub.Id).Find(&bindings).Error)
+				require.Len(t, bindings, 1)
+				var token Token
+				require.NoError(t, db.First(&token, bindings[0].TokenId).Error)
+				assert.Equal(t, sub.Id, token.UserSubscriptionId)
+				assert.Equal(t, plan.PriceBook, token.PriceBook)
+				assert.Equal(t, plan.PriceVersion, token.PriceVersion)
+				// Re-running startup must not reinterpret generic orders as legacy.
+				require.NoError(t, backfillCilaiV1Contracts())
+				var after SubscriptionOrder
+				require.NoError(t, db.First(&after, order.Id).Error)
+				assert.Empty(t, after.LegacyCompatibilityState)
+				assert.Equal(t, order.ProductPlanSnapshot, after.ProductPlanSnapshot)
+				// Unlimited means actual multiple purchases, each with its own
+				// entitlement and key, rather than one shared quota pool.
+				require.NoError(t, db.Model(&price).Update("enabled", true).Error)
+				require.NoError(t, UpdateProductPlan(db, &plan, 2))
+				second, _, err := CreateSubscriptionOrder(user.Id, plan.Id, "generic-second-"+engine, "alipay", "alipay", true)
+				require.NoError(t, err)
+				require.NoError(t, CompleteSubscriptionOrder(second.TradeNo, "", "alipay", "alipay"))
+				require.NoError(t, db.Where("user_id = ? AND plan_id = ?", user.Id, plan.Id).Find(&subscriptions).Error)
+				require.Len(t, subscriptions, 2)
+				var tokens []Token
+				require.NoError(t, db.Where("user_subscription_id IN ?", []int{subscriptions[0].Id, subscriptions[1].Id}).Find(&tokens).Error)
+				require.Len(t, tokens, 2)
+				assert.NotEqual(t, tokens[0].Key, tokens[1].Key)
+				assert.NotEqual(t, tokens[0].UserSubscriptionId, tokens[1].UserSubscriptionId)
+				if engine != "sqlite" {
+					start, results := make(chan struct{}), make(chan error, 2)
+					for _, title := range []string{"admin A", "admin B"} {
+						candidate := plan
+						candidate.Title = title
+						go func() {
+							<-start
+							results <- UpdateProductPlan(db, &candidate, 3)
+						}()
+					}
+					close(start)
+					first, second := <-results, <-results
+					if first == nil {
+						require.ErrorIs(t, second, ErrProductPlanConflict)
+					} else {
+						require.ErrorIs(t, first, ErrProductPlanConflict)
+						require.NoError(t, second)
+					}
+				}
 			})
 
 			// A conflicting migrated row must never be overwritten or leave a
