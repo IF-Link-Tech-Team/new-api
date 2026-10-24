@@ -23,6 +23,7 @@ import (
 	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func modelPriceNotConfiguredError(c *gin.Context, modelName string, userId int) error {
@@ -68,16 +69,25 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
 	if info.ProductPriceBook != "" {
 		bookPrice, err := model.ResolvePriceBookPrice(model.DB, info.ProductPriceBook, info.OriginModelName, info.ProductPriceVersion)
+		// During expansion the route selector may freeze a legacy wallet
+		// override that has not been backfilled yet. Only an entirely absent
+		// wallet model may use that path; never hide a broken migrated version.
+		if errors.Is(err, gorm.ErrRecordNotFound) && info.ProductPriceBook == model.WalletPriceBook && info.ProductPriceVersion != "" {
+			var count int64
+			if lookupErr := model.DB.Model(&model.PriceBookPrice{}).Where("price_book = ? AND model = ?", model.WalletPriceBook, info.OriginModelName).Count(&count).Error; lookupErr != nil {
+				return hosttypes.PriceData{}, fmt.Errorf("cannot inspect wallet price book: %w", lookupErr)
+			}
+			if count == 0 {
+				legacyPrice, legacyErr := model.GetProductPriceSnapshot(model.ProductTypeWallet, info.OriginModelName, info.ProductPriceVersion)
+				if legacyErr != nil {
+					return hosttypes.PriceData{}, fmt.Errorf("legacy wallet price unavailable during migration: %w", legacyErr)
+				}
+				bookPrice = &model.PriceBookPrice{BillingMultiplier: legacyPrice.BillingMultiplier, BillingExpression: legacyPrice.BillingExpression}
+				err = nil
+			}
+		}
 		if err != nil {
 			return hosttypes.PriceData{}, fmt.Errorf("price book price unavailable: %w", err)
-		}
-		if bookPrice == nil {
-			if info.ProductPriceBook == model.WalletPriceBook {
-				legacyPrice, legacyErr := model.GetProductPriceSnapshot(model.ProductTypeWallet, info.OriginModelName, info.ProductPriceVersion)
-				if legacyErr == nil {
-					bookPrice = &model.PriceBookPrice{BillingMultiplier: legacyPrice.BillingMultiplier, BillingExpression: legacyPrice.BillingExpression}
-				}
-			}
 		}
 		if bookPrice == nil {
 			// An empty wallet book means this model has no explicit wallet
@@ -89,15 +99,17 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			}
 			info.ProductPriceBook = ""
 			info.ProductPriceVersion = ""
+			common.SetContextKey(c, constant.ContextKeyTokenPriceBook, "")
+			common.SetContextKey(c, constant.ContextKeyTokenPriceVersion, "")
 		}
 		if bookPrice != nil {
-		// The immutable product/model/version row is authoritative. This permits
-		// IF.Learn to share one entitlement pool while DeepSeek settles at 0.60
-		// and Qwen settles at 1.00, without stacking a token/global multiplier.
-		info.ProductBillingMultiplier = bookPrice.BillingMultiplier
-		common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, bookPrice.BillingMultiplier)
-		groupRatioInfo := HandleGroupRatio(c, info)
-		return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, groupRatioInfo, bookPrice.BillingExpression)
+			// The immutable product/model/version row is authoritative. This permits
+			// IF.Learn to share one entitlement pool while DeepSeek settles at 0.60
+			// and Qwen settles at 1.00, without stacking a token/global multiplier.
+			info.ProductBillingMultiplier = bookPrice.BillingMultiplier
+			common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, bookPrice.BillingMultiplier)
+			groupRatioInfo := HandleGroupRatio(c, info)
+			return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, groupRatioInfo, bookPrice.BillingExpression)
 		}
 	}
 	if model.UsesVersionedProductPricing(info.ProductType) && strings.TrimSpace(info.ProductPriceVersion) != "" {
