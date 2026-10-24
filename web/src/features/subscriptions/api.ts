@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   ApiResponse,
@@ -39,6 +40,41 @@ import type {
 // ============================================================================
 // Admin Plan Management
 // ============================================================================
+
+export interface ProductCompensationOrder {
+  id: number
+  user_id: number
+  trade_no: string
+  plan_title: string
+  provisioning_error: string
+  paid_money: number
+  paid_currency: string
+  payment_provider: string
+  provider_trade_no: string
+}
+
+export async function getProductCompensationOrders(beforeId = 0): Promise<{
+  items: ProductCompensationOrder[]
+  next_id: number
+}> {
+  const params = new URLSearchParams({ limit: '50' })
+  if (beforeId) params.set('before_id', String(beforeId))
+  const res = await api.get(
+    `/api/subscription/admin/compensation-orders?${params}`
+  )
+  return requireServerSuccess(res.data).data
+}
+
+export async function retryProductCompensation(
+  tradeNo: string,
+  note: string
+): Promise<void> {
+  const res = await api.post(
+    `/api/subscription/admin/compensation-orders/${encodeURIComponent(tradeNo)}/retry`,
+    { note }
+  )
+  requireServerSuccess(res.data)
+}
 
 export async function getAdminPlans(): Promise<ApiResponse<PlanRecord[]>> {
   const res = await api.get('/api/subscription/admin/plans')

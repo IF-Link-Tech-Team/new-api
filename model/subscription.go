@@ -314,6 +314,10 @@ type SubscriptionOrder struct {
 	CreateTime           int64  `json:"create_time"`
 	CompleteTime         int64  `json:"complete_time"`
 	ReservationExpiresAt int64  `json:"reservation_expires_at" gorm:"bigint;not null;default:0"`
+	// Compensation decisions persist with issuance, independently of log DB.
+	CompensationActorId int    `json:"compensation_actor_id" gorm:"not null;default:0"`
+	CompensationTime    int64  `json:"compensation_time" gorm:"bigint;not null;default:0"`
+	CompensationNote    string `json:"compensation_note" gorm:"type:varchar(512);not null;default:''"`
 
 	ProviderPayload string  `json:"provider_payload" gorm:"type:text"`
 	PaidMoney       float64 `json:"paid_money" gorm:"type:decimal(10,6);not null;default:0"`
@@ -1517,13 +1521,36 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			}
 			return nil
 		}
-		if order.Status != common.TopUpStatusPending && order.Status != common.TopUpStatusExpired {
+		failedProduct := order.ProductPlanSnapshot != "" && order.Status == common.TopUpStatusFailed
+		if order.Status != common.TopUpStatusPending && order.Status != common.TopUpStatusExpired && !failedProduct {
 			return ErrSubscriptionOrderStatusInvalid
+		}
+		if failedProduct {
+			// A checkout request can time out after the provider created its
+			// session. A later verified payment is real even if creation failed
+			// locally; retain it without taking an already released slot.
+			if receipt == nil {
+				return ErrSubscriptionOrderStatusInvalid
+			}
+			if err := parkPaidProductOrderTx(tx, &order, actualPaymentMethod, *receipt, "reservation_released"); err != nil {
+				return err
+			}
+			logUserId, compensationReason = order.UserId, order.ProvisioningError
+			return nil
 		}
 		// Lock before the first consistent table read, as checkout does. This
 		// keeps the issuance limit check fresh on MySQL REPEATABLE READ too.
 		var userRow User
 		if err := lockForUpdate(tx).Select("id").Where("id = ?", order.UserId).First(&userRow).Error; err != nil {
+			if order.ProductPlanSnapshot != "" && receipt != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+				// Deleted customers cannot receive keys, but their verified cash
+				// receipt must remain visible to finance for resolution.
+				if err := parkPaidProductOrderTx(tx, &order, actualPaymentMethod, *receipt, "provisioning_failed"); err != nil {
+					return err
+				}
+				logUserId, compensationReason = order.UserId, order.ProvisioningError
+				return nil
+			}
 			return err
 		}
 		var reservationReleased bool
@@ -1548,47 +1575,32 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		if order.Status != common.TopUpStatusPending {
 			return ErrSubscriptionOrderStatusInvalid
 		}
-		plan, err := getSubscriptionPlanByIdTx(tx, order.PlanId)
-		if err != nil {
-			return err
+		durableReceipt := order.ProductPlanSnapshot != "" && receipt != nil
+		if durableReceipt {
+			if err := tx.SavePoint("product_fulfillment").Error; err != nil {
+				return err
+			}
 		}
-		provisionPlan, err := provisionPlanFromOrder(tx, &order, plan)
-		if err != nil {
-			return err
-		}
-		var subscription *UserSubscription
-		if order.OrderType == SubscriptionOrderTypeUpgrade {
-			subscription, err = upgradeMonthlySubscriptionTx(tx, &order, provisionPlan)
-		} else {
-			subscription, _, err = createProvisionedSubscriptionFromPlanTx(tx, order.UserId, provisionPlan, "order")
+		beforeIssuance := order
+		provisionPlan, subscription, err := fulfillSubscriptionOrderTx(tx, &order, providerPayload, actualPaymentMethod, receipt)
+		if err != nil && durableReceipt {
+			// Undo every partial entitlement/key/top-up write before retaining
+			// the verified receipt. Never acknowledge if rollback or parking fails.
+			if rollbackErr := tx.RollbackTo("product_fulfillment").Error; rollbackErr != nil {
+				return rollbackErr
+			}
+			order = beforeIssuance
+			if err := parkPaidProductOrderTx(tx, &order, actualPaymentMethod, *receipt, "provisioning_failed"); err != nil {
+				return err
+			}
+			logUserId, compensationReason = order.UserId, order.ProvisioningError
+			return nil
 		}
 		if err != nil {
 			return err
 		}
 		if subscription.PrevUserGroup != "" {
 			upgradeGroup = strings.TrimSpace(subscription.UpgradeGroup)
-		}
-		if err := upsertSubscriptionTopUpTx(tx, &order); err != nil {
-			return err
-		}
-		order.Status = common.TopUpStatusSuccess
-		order.UserSubscriptionId = &subscription.Id
-		order.ProvisioningStatus = ProvisioningStatusProvisioned
-		order.ProvisioningError = ""
-		order.CompleteTime = common.GetTimestamp()
-		if providerPayload != "" {
-			order.ProviderPayload = providerPayload
-		}
-		if actualPaymentMethod != "" && order.PaymentMethod != actualPaymentMethod {
-			order.PaymentMethod = actualPaymentMethod
-		}
-		if receipt != nil {
-			order.PaidMoney, _ = receipt.Amount.Float64()
-			order.PaidCurrency = strings.ToUpper(strings.TrimSpace(receipt.Currency))
-			order.ProviderTradeNo = strings.TrimSpace(receipt.ProviderTradeNo)
-		}
-		if err := tx.Save(&order).Error; err != nil {
-			return err
 		}
 		logUserId = order.UserId
 		logPlanTitle = provisionPlan.Title
@@ -1600,7 +1612,11 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		return err
 	}
 	if compensationReason != "" {
-		RecordLog(logUserId, LogTypeSystem, common.NewMessage("Product payment received after reservation release; compensation required"))
+		message := "Product payment received after reservation release; compensation required"
+		if compensationReason == "provisioning_failed" {
+			message = "Product payment received but provisioning failed; compensation required"
+		}
+		RecordLog(logUserId, LogTypeSystem, common.NewMessage(message))
 		return nil
 	}
 	if upgradeGroup != "" && logUserId > 0 {
@@ -1614,6 +1630,52 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		}))
 	}
 	return nil
+}
+
+// fulfillSubscriptionOrderTx atomically links the entitlement, its dedicated
+// key, the top-up ledger and the successful order. The caller holds order and
+// user locks; both payment callbacks and explicit compensation retry use it.
+func fulfillSubscriptionOrderTx(tx *gorm.DB, order *SubscriptionOrder, providerPayload string, method string, receipt *PaymentReceipt) (*SubscriptionPlan, *UserSubscription, error) {
+	plan, err := getSubscriptionPlanByIdTx(tx, order.PlanId)
+	if err != nil {
+		return nil, nil, err
+	}
+	provisionPlan, err := provisionPlanFromOrder(tx, order, plan)
+	if err != nil {
+		return nil, nil, err
+	}
+	var subscription *UserSubscription
+	if order.OrderType == SubscriptionOrderTypeUpgrade {
+		subscription, err = upgradeMonthlySubscriptionTx(tx, order, provisionPlan)
+	} else {
+		subscription, _, err = createProvisionedSubscriptionFromPlanTx(tx, order.UserId, provisionPlan, "order")
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if method != "" {
+		order.PaymentMethod = method
+	}
+	if err := upsertSubscriptionTopUpTx(tx, order); err != nil {
+		return nil, nil, err
+	}
+	order.Status = common.TopUpStatusSuccess
+	order.UserSubscriptionId = &subscription.Id
+	order.ProvisioningStatus = ProvisioningStatusProvisioned
+	order.ProvisioningError = ""
+	order.CompleteTime = common.GetTimestamp()
+	if providerPayload != "" {
+		order.ProviderPayload = providerPayload
+	}
+	if receipt != nil {
+		order.PaidMoney, _ = receipt.Amount.Float64()
+		order.PaidCurrency = strings.ToUpper(strings.TrimSpace(receipt.Currency))
+		order.ProviderTradeNo = strings.TrimSpace(receipt.ProviderTradeNo)
+	}
+	if err := tx.Save(order).Error; err != nil {
+		return nil, nil, err
+	}
+	return provisionPlan, subscription, nil
 }
 
 func upsertSubscriptionTopUpTx(tx *gorm.DB, order *SubscriptionOrder) error {

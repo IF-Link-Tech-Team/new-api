@@ -666,12 +666,140 @@ func TestProductPriceBookMigration(t *testing.T) {
 						assert.Equal(t, receipt.ProviderPayload, parked.ProviderPayload)
 						assert.Nil(t, parked.UserSubscriptionId)
 					}
+					_, _, err = RetryPaidProductOrder(first.TradeNo, 1, "synthetic compensation decision")
+					require.ErrorContains(t, err, "consume another reservation")
 					var issued int64
 					require.NoError(t, db.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", user.Id, product.Id).Count(&issued).Error)
 					assert.Zero(t, issued, "late callbacks must not consume another reservation or issue quota")
 					require.NoError(t, CompleteSubscriptionOrder(third.TradeNo, "", "alipay", "alipay"))
 					require.NoError(t, db.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", user.Id, product.Id).Count(&issued).Error)
 					assert.EqualValues(t, 1, issued)
+					t.Run("verified payment survives partial provisioning failure", func(t *testing.T) {
+						product.MaxPurchasePerUser = 0
+						require.NoError(t, UpdateProductPlan(db, &product, product.ConfigRevision))
+						failed, _, err := CreateSubscriptionOrder(user.Id, product.Id, "reserve-failed-"+engine, "alipay", "alipay", true)
+						require.NoError(t, err)
+						const callback = "test:paid-product-token-failure"
+						require.NoError(t, db.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+							if tx.Statement.Table == "tokens" {
+								// A real SQL error aborts PostgreSQL's transaction until
+								// rollback to the savepoint, unlike a Go-only hook error.
+								tx.AddError(tx.Exec("SELECT id FROM product_issuance_failure_missing_table").Error)
+							}
+						}))
+						receipt := PaymentReceipt{Amount: decimal.RequireFromString("17.25"), Currency: "CNY",
+							ProviderTradeNo: "synthetic-" + failed.TradeNo, ProviderPayload: "synthetic-failed-receipt"}
+						err = CompleteSubscriptionOrderWithReceipt(failed.TradeNo, "alipay", "alipay", receipt)
+						require.NoError(t, db.Callback().Create().Remove(callback))
+						require.NoError(t, err, "a verified receipt must remain durable when token issuance fails")
+						var parked SubscriptionOrder
+						require.NoError(t, db.First(&parked, failed.Id).Error)
+						assert.Equal(t, SubscriptionOrderStatusPaidReview, parked.Status)
+						assert.Equal(t, "provisioning_failed", parked.ProvisioningError)
+						assert.Equal(t, receipt.ProviderTradeNo, parked.ProviderTradeNo)
+						assert.Equal(t, 17.25, parked.PaidMoney)
+						assert.Nil(t, parked.UserSubscriptionId)
+						var after int64
+						require.NoError(t, db.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", user.Id, product.Id).Count(&after).Error)
+						assert.Equal(t, issued, after, "partial entitlement creation must roll back")
+						require.NoError(t, db.Model(&TopUp{}).Where("trade_no = ?", failed.TradeNo).Count(&after).Error)
+						assert.Zero(t, after, "failed issuance cannot appear as a successful top-up")
+						require.NoError(t, CompleteSubscriptionOrderWithReceipt(failed.TradeNo, "alipay", "alipay", receipt))
+						for _, invalid := range []struct {
+							actor int
+							note  string
+						}{{0, "synthetic decision"}, {1, " "}} {
+							_, _, err := RetryPaidProductOrder(failed.TradeNo, invalid.actor, invalid.note)
+							require.ErrorContains(t, err, "invalid product compensation")
+						}
+						// Duplicate administrator requests are serialized by the
+						// order lock, and keep the first durable decision.
+						if engine != "sqlite" {
+							start, results := make(chan struct{}), make(chan bool, 2)
+							errors := make(chan error, 2)
+							for range 2 {
+								go func() {
+									<-start
+									_, changed, err := RetryPaidProductOrder(failed.TradeNo, 1, "synthetic operator approved issuance")
+									results <- changed
+									errors <- err
+								}()
+							}
+							close(start)
+							firstChanged, secondChanged := <-results, <-results
+							require.NoError(t, <-errors)
+							require.NoError(t, <-errors)
+							assert.NotEqual(t, firstChanged, secondChanged, "exactly one administrator request issues")
+						} else {
+							_, changed, err := RetryPaidProductOrder(failed.TradeNo, 1, "synthetic operator approved issuance")
+							require.NoError(t, err)
+							assert.True(t, changed)
+						}
+						resolved, changed, err := RetryPaidProductOrder(failed.TradeNo, 2, "duplicate decision must not overwrite")
+						require.NoError(t, err)
+						assert.False(t, changed)
+						assert.Equal(t, common.TopUpStatusSuccess, resolved.Status)
+						assert.Equal(t, 1, resolved.CompensationActorId)
+						assert.Equal(t, "synthetic operator approved issuance", resolved.CompensationNote)
+						assert.Positive(t, resolved.CompensationTime)
+						require.NotNil(t, resolved.UserSubscriptionId)
+						require.NoError(t, db.Model(&Token{}).Where("user_subscription_id = ?", *resolved.UserSubscriptionId).Count(&after).Error)
+						assert.EqualValues(t, 1, after)
+						require.NoError(t, db.Model(&TopUp{}).Where("trade_no = ?", failed.TradeNo).Count(&after).Error)
+						assert.EqualValues(t, 1, after)
+						require.NoError(t, CompleteSubscriptionOrderWithReceipt(failed.TradeNo, "alipay", "alipay", receipt))
+						require.NoError(t, db.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", user.Id, product.Id).Count(&after).Error)
+						assert.Equal(t, issued+1, after)
+					})
+					t.Run("receipt write failure is not acknowledged and leaves no partial issuance", func(t *testing.T) {
+						order, _, err := CreateSubscriptionOrder(user.Id, product.Id, "receipt-write-failed-"+engine, "alipay", "alipay", true)
+						require.NoError(t, err)
+						const callback = "test:paid-product-order-write-failure"
+						require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+							if tx.Statement.Table == "subscription_orders" {
+								tx.AddError(tx.Exec("SELECT id FROM product_receipt_failure_missing_table").Error)
+							}
+						}))
+						receipt := PaymentReceipt{Amount: decimal.RequireFromString("17.25"), Currency: "CNY", ProviderTradeNo: "synthetic-" + order.TradeNo}
+						err = CompleteSubscriptionOrderWithReceipt(order.TradeNo, "alipay", "alipay", receipt)
+						require.NoError(t, db.Callback().Update().Remove(callback))
+						require.Error(t, err, "a non-durable receipt must never be acknowledged")
+						var stored SubscriptionOrder
+						require.NoError(t, db.First(&stored, order.Id).Error)
+						assert.Equal(t, common.TopUpStatusPending, stored.Status)
+						assert.Nil(t, stored.UserSubscriptionId)
+						var count int64
+						require.NoError(t, db.Model(&TopUp{}).Where("trade_no = ?", order.TradeNo).Count(&count).Error)
+						assert.Zero(t, count)
+						require.NoError(t, db.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", user.Id, product.Id).Count(&count).Error)
+						assert.Equal(t, issued+1, count, "all partial issuance must roll back")
+						require.NoError(t, CompleteSubscriptionOrderWithReceipt(order.TradeNo, "alipay", "alipay", receipt))
+						require.NoError(t, db.First(&stored, order.Id).Error)
+						assert.Equal(t, common.TopUpStatusSuccess, stored.Status)
+					})
+					t.Run("verified receipts survive a failed checkout or removed customer", func(t *testing.T) {
+						for i, scenario := range []string{"failed_checkout", "removed_customer"} {
+							buyer := User{Username: "receipt-" + scenario, AffCode: fmt.Sprintf("edge%d", i), Status: common.UserStatusEnabled, Group: "default"}
+							require.NoError(t, db.Create(&buyer).Error)
+							order, _, err := CreateSubscriptionOrder(buyer.Id, product.Id, "receipt-"+scenario+"-"+engine, "alipay", "alipay", true)
+							require.NoError(t, err)
+							if i == 0 {
+								require.NoError(t, db.Model(order).UpdateColumn("status", common.TopUpStatusFailed).Error)
+							} else {
+								require.NoError(t, db.Delete(&buyer).Error)
+							}
+							receipt := PaymentReceipt{Amount: decimal.RequireFromString("17.25"), Currency: "CNY", ProviderTradeNo: "synthetic-" + order.TradeNo, ProviderPayload: "synthetic-receipt"}
+							for range 2 {
+								require.NoError(t, CompleteSubscriptionOrderWithReceipt(order.TradeNo, "alipay", "alipay", receipt))
+							}
+							var stored SubscriptionOrder
+							require.NoError(t, db.First(&stored, order.Id).Error)
+							assert.Equal(t, SubscriptionOrderStatusPaidReview, stored.Status)
+							assert.Equal(t, receipt.ProviderTradeNo, stored.ProviderTradeNo)
+							assert.Equal(t, 17.25, stored.PaidMoney)
+							assert.Nil(t, stored.UserSubscriptionId)
+						}
+					})
 				})
 			})
 

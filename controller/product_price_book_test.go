@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -49,6 +50,92 @@ func TestProductOrderSelfStatusPreservesPaymentPrivacy(t *testing.T) {
 	var original model.SubscriptionOrder
 	require.NoError(t, model.DB.Where("trade_no = ?", "self-order-0").First(&original).Error)
 	assert.Equal(t, common.TopUpStatusPending, original.Status, "displaying expiry must not change payment evidence")
+}
+
+func TestProductCompensationRequiresRootAndKeepsReceiptPrivate(t *testing.T) {
+	admin, _ := setupAccessTokenAudit(t)
+	db := model.DB
+	require.NoError(t, db.AutoMigrate(&model.SubscriptionPlan{}, &model.SubscriptionOrder{}, &model.PriceBookPrice{},
+		&model.UserSubscription{}, &model.SubscriptionKeyBinding{}, &model.Token{}, &model.TopUp{}))
+	root := &model.User{Username: "compensation-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AuthVersion: 1}
+	require.NoError(t, db.Create(root).Error)
+	read, _ := createScopedAccessToken(t, admin.Id, 0, "billing:read")
+	adminWrite, _ := createScopedAccessToken(t, admin.Id, 0, "billing:write")
+	rootRead, _ := createScopedAccessToken(t, root.Id, 0, "billing:read")
+	rootWrite, _ := createScopedAccessToken(t, root.Id, 0, "billing:write")
+	product := model.SubscriptionPlan{Title: "Receipt-backed promotion", PriceAmount: 17.25, Currency: "CNY",
+		DurationUnit: model.SubscriptionDurationDay, DurationValue: 3, TotalAmount: 1000000, ModelScope: "review-model"}
+	require.NoError(t, model.CreateProductPlan(db, &product))
+	price := model.PriceBookPrice{Model: product.ModelScope, PriceVersion: "review-v1", Enabled: true, BillingMultiplier: 1,
+		BillingExpression: `tier("base", p + c * 4)`, AllowedChannels: `[8]`,
+		OfficialReferencePrice:  `{"input":1,"cached_input":0.2,"cache_creation":1,"output":4}`,
+		UserSellingPrice:        `{"input":1,"cached_input":0.2,"cache_creation":1,"output":4}`,
+		UpstreamSettlementPrice: `{"input":0.5,"cached_input":0.1,"cache_creation":0.5,"output":2}`,
+		MaxUpstreamCost:         `{"input":0.5,"cached_input":0.1,"cache_creation":0.5,"output":2}`}
+	require.NoError(t, model.CreateProductPriceBookVersion(db, product.Id, &price))
+	product.Enabled, product.PriceVersion = true, price.PriceVersion
+	require.NoError(t, model.UpdateProductPlan(db, &product, product.ConfigRevision))
+	for i := range 2 {
+		trade := fmt.Sprintf("compensation-api-%d", i)
+		_, _, err := model.CreateSubscriptionOrder(admin.Id, product.Id, trade, "alipay", "alipay", true)
+		require.NoError(t, err)
+		require.NoError(t, model.ExpireSubscriptionOrder(trade, "alipay"))
+		require.NoError(t, model.CompleteSubscriptionOrderWithReceipt(trade, "alipay", "alipay", model.PaymentReceipt{
+			Amount: decimal.RequireFromString("17.25"), Currency: "CNY", ProviderTradeNo: "provider-" + trade,
+			ProviderPayload: "private-receipt-body"}))
+	}
+	router := gin.New()
+	router.Use(middleware.RequestId(), middleware.AccessTokenAudit())
+	group := router.Group("/api/subscription/admin", middleware.AdminAuth())
+	group.GET("/compensation-orders", AdminListProductCompensationOrders)
+	group.POST("/compensation-orders/:trade_no/retry", middleware.RootAuth(), AdminRetryProductCompensation)
+	path := "/api/subscription/admin/compensation-orders"
+	response := accessTokenRequest(router, http.MethodGet, path+"?limit=1", read, "", "")
+	var page struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Items  []ProductCompensationOrderDTO `json:"items"`
+			NextId int                           `json:"next_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &page))
+	require.True(t, page.Success, response.Body.String())
+	require.Len(t, page.Data.Items, 1)
+	assert.Equal(t, "compensation-api-1", page.Data.Items[0].TradeNo)
+	assert.Equal(t, 17.25, page.Data.Items[0].PaidMoney)
+	assert.NotContains(t, response.Body.String(), "private-receipt-body")
+	require.Positive(t, page.Data.NextId)
+	response = accessTokenRequest(router, http.MethodGet, fmt.Sprintf("%s?before_id=%d&limit=1", path, page.Data.NextId), read, "", "")
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &page))
+	require.Len(t, page.Data.Items, 1)
+	assert.Equal(t, "compensation-api-0", page.Data.Items[0].TradeNo)
+	assert.Zero(t, page.Data.NextId)
+	response = accessTokenRequest(router, http.MethodGet, path+"?before_id=1", read, "", "")
+	assert.Contains(t, response.Body.String(), `"items":[]`, "empty lists must remain usable by the console")
+	for _, query := range []string{"?limit=-1", "?limit=201", "?before_id=0", "?before_id=oops"} {
+		response = accessTokenRequest(router, http.MethodGet, path+query, read, "", "")
+		assert.Contains(t, response.Body.String(), `"success":false`)
+	}
+	path += "/compensation-api-0/retry"
+	for _, token := range []string{read, adminWrite, rootRead} {
+		response = accessTokenRequest(router, http.MethodPost, path, token, "", `{"note":"synthetic decision"}`)
+		assert.Equal(t, http.StatusForbidden, response.Code)
+	}
+	response = accessTokenRequest(router, http.MethodPost, path, rootWrite, "", `{"note":" "}`)
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	response = accessTokenRequest(router, http.MethodPost, path, rootWrite, "", `{"note":"synthetic reviewed receipt"}`)
+	assert.Contains(t, response.Body.String(), `"success":true`)
+	assert.Contains(t, response.Body.String(), `"changed":true`)
+	assert.NotContains(t, response.Body.String(), "private-receipt-body")
+	response = accessTokenRequest(router, http.MethodPost, path, rootWrite, "", `{"note":"second request"}`)
+	assert.Contains(t, response.Body.String(), `"changed":false`)
+	var order model.SubscriptionOrder
+	require.NoError(t, db.Where("trade_no = ?", "compensation-api-0").First(&order).Error)
+	assert.Equal(t, root.Id, order.CompensationActorId)
+	assert.Equal(t, "synthetic reviewed receipt", order.CompensationNote)
+	var audit model.AuditLog
+	require.NoError(t, model.LOG_DB.Where("action = ?", "subscription.product_compensation_issue").First(&audit).Error)
+	assert.Equal(t, root.Id, audit.UserId)
 }
 
 func TestProductPriceBookAdministrativeAPI(t *testing.T) {

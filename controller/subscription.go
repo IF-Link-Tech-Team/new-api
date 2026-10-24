@@ -387,6 +387,76 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 
 // ---- Admin APIs ----
 
+type ProductCompensationOrderDTO struct {
+	Id                   int     `json:"id"`
+	UserId               int     `json:"user_id"`
+	TradeNo              string  `json:"trade_no"`
+	PlanTitle            string  `json:"plan_title"`
+	Status               string  `json:"status"`
+	ProvisioningError    string  `json:"provisioning_error"`
+	PaidMoney            float64 `json:"paid_money"`
+	PaidCurrency         string  `json:"paid_currency"`
+	PaymentProvider      string  `json:"payment_provider"`
+	ProviderTradeNo      string  `json:"provider_trade_no"`
+	CreateTime           int64   `json:"create_time"`
+	CompleteTime         int64   `json:"complete_time"`
+	ReservationExpiresAt int64   `json:"reservation_expires_at"`
+}
+
+func AdminListProductCompensationOrders(c *gin.Context) {
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if err != nil || limit < 1 || limit > 200 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	before := 0
+	if value := c.Query("before_id"); value != "" {
+		before, err = strconv.Atoi(value)
+		if err != nil || before <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	query := model.DB.Model(&model.SubscriptionOrder{}).
+		Where("status = ? AND provisioning_status = ?", model.SubscriptionOrderStatusPaidReview, model.ProvisioningStatusCompensationPending)
+	if before > 0 {
+		query = query.Where("id < ?", before)
+	}
+	orders := make([]ProductCompensationOrderDTO, 0)
+	if err := query.Select("id, user_id, trade_no, plan_title_snapshot AS plan_title, status, provisioning_error, paid_money, paid_currency, payment_provider, provider_trade_no, create_time, complete_time, reservation_expires_at").
+		Order("id DESC").Limit(limit + 1).Scan(&orders).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	next := 0
+	if len(orders) > limit {
+		orders = orders[:limit]
+		next = orders[len(orders)-1].Id
+	}
+	common.ApiSuccess(c, gin.H{"items": orders, "next_id": next})
+}
+
+func AdminRetryProductCompensation(c *gin.Context) {
+	var req struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	order, changed, err := model.RetryPaidProductOrder(c.Param("trade_no"), c.GetInt("id"), req.Note)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if changed {
+		recordManageAudit(c, "subscription.product_compensation_issue", map[string]any{
+			"order_id": order.Id, "user_id": order.UserId, "subscription_id": order.UserSubscriptionId,
+		})
+	}
+	common.ApiSuccess(c, gin.H{"status": order.Status, "user_subscription_id": order.UserSubscriptionId, "changed": changed})
+}
+
 func AdminListSubscriptionPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	if err := model.DB.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {

@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -244,6 +245,84 @@ func parkPaidProductOrderTx(tx *gorm.DB, order *SubscriptionOrder, method string
 		order.PaymentMethod = method
 	}
 	return tx.Save(order).Error
+}
+
+// RetryPaidProductOrder explicitly resolves a verified, unfulfilled payment.
+// It preserves the original order terms and cannot take a newer order's slot.
+// A repeated request returns the first committed decision without reissuing.
+func RetryPaidProductOrder(tradeNo string, actorId int, note string) (*SubscriptionOrder, bool, error) {
+	note = strings.TrimSpace(note)
+	if tradeNo == "" || actorId <= 0 || note == "" || utf8.RuneCountInString(note) > 512 {
+		return nil, false, errors.New("invalid product compensation decision")
+	}
+	var order SubscriptionOrder
+	var changed, groupChanged bool
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockForUpdate(tx).Where("trade_no = ?", tradeNo).First(&order).Error; err != nil {
+			return err
+		}
+		if order.ProductPlanSnapshot == "" {
+			return ErrSubscriptionOrderStatusInvalid
+		}
+		if order.Status == common.TopUpStatusSuccess && order.CompensationActorId > 0 && order.UserSubscriptionId != nil {
+			return nil
+		}
+		if order.Status != SubscriptionOrderStatusPaidReview || order.ProvisioningStatus != ProvisioningStatusCompensationPending || order.UserSubscriptionId != nil {
+			return ErrSubscriptionOrderStatusInvalid
+		}
+		receipt := PaymentReceipt{Amount: decimal.NewFromFloat(order.PaidMoney), Currency: order.PaidCurrency,
+			ProviderTradeNo: order.ProviderTradeNo, ProviderPayload: order.ProviderPayload}
+		if err := validatePaymentReceipt(order.Money, order.CurrencySnapshot, &receipt); err != nil {
+			return err
+		}
+		var user User
+		if err := lockForUpdate(tx).Select("id").First(&user, order.UserId).Error; err != nil {
+			return err
+		}
+		livePlan, err := getSubscriptionPlanByIdTx(tx, order.PlanId)
+		if err != nil {
+			return err
+		}
+		plan, err := provisionPlanFromOrder(tx, &order, livePlan)
+		if err != nil {
+			return err
+		}
+		now, err := productReservationTimeTx(tx)
+		if err != nil {
+			return err
+		}
+		if plan.MaxPurchasePerUser > 0 {
+			var issued, reserved int64
+			if err := tx.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", order.UserId, order.PlanId).Count(&issued).Error; err != nil {
+				return err
+			}
+			if err := tx.Model(&SubscriptionOrder{}).
+				Where("user_id = ? AND plan_id = ? AND status = ?", order.UserId, order.PlanId, common.TopUpStatusPending).
+				Where("reservation_expires_at = 0 OR reservation_expires_at > ?", now).Count(&reserved).Error; err != nil {
+				return err
+			}
+			if issued+reserved >= int64(plan.MaxPurchasePerUser) {
+				return errors.New("product compensation would exceed purchase limit or consume another reservation")
+			}
+		}
+		_, subscription, err := fulfillSubscriptionOrderTx(tx, &order, order.ProviderPayload, order.PaymentMethod, &receipt)
+		if err != nil {
+			return err
+		}
+		order.CompensationActorId, order.CompensationTime, order.CompensationNote = actorId, now, note
+		if err := tx.Save(&order).Error; err != nil {
+			return err
+		}
+		changed, groupChanged = true, subscription.PrevUserGroup != ""
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if groupChanged {
+		refreshSubscriptionUserGroupCache(order.UserId, common.LogText("subscription payment completion"))
+	}
+	return &order, changed, nil
 }
 
 // validateProductPlanPrices separates new sales from paid issuance: sale
