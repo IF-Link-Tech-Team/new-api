@@ -116,6 +116,12 @@ function orderState(order: SubscriptionOrderStatus): {
   label: string
   tone: string
 } {
+  if (order.status === 'paid_review') {
+    return {
+      label: 'Payment received; awaiting compensation review',
+      tone: 'text-destructive',
+    }
+  }
   if (order.status !== 'success') {
     return order.status === 'pending'
       ? { label: '等待支付', tone: 'text-amber-600' }
@@ -209,6 +215,9 @@ export function TrafficPacks({
             order,
             ...current.filter((item) => item.trade_no !== order.trade_no),
           ])
+          if (order.status === 'paid_review' || order.status === 'expired') {
+            return
+          }
           if (
             order.status === 'success' &&
             order.provisioning_status === 'provisioned'
@@ -255,6 +264,7 @@ export function TrafficPacks({
   const unresolvedOrders = orders.filter(
     (order) =>
       order.status === 'pending' ||
+      order.status === 'paid_review' ||
       (order.status === 'success' &&
         order.provisioning_status !== 'provisioned')
   )
@@ -542,7 +552,7 @@ export function TrafficPacks({
                           </p>
                         </div>
                         <span className={cn('text-sm font-medium', state.tone)}>
-                          {state.label}
+                          {t(state.label)}
                         </span>
                       </CardContent>
                     </Card>

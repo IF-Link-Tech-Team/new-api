@@ -306,7 +306,7 @@ func BootstrapMonthlyProducts(apply bool, enabled bool, listed bool, effectiveAt
 				return find.Error
 			}
 			if find.RowsAffected == 0 {
-				if err := tx.Create(&desired).Error; err != nil {
+				if err := CreateLegacyProductPrice(tx, &desired); err != nil {
 					return err
 				}
 				continue
@@ -314,8 +314,7 @@ func BootstrapMonthlyProducts(apply bool, enabled bool, listed bool, effectiveAt
 			if !sameProductPrice(existing, desired) {
 				return fmt.Errorf("immutable monthly product price %s differs from billing contract", desired.Model)
 			}
-			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&ProductPrice{}).Where("id = ?", existing.Id).
-				Updates(map[string]interface{}{"enabled": desired.Enabled, "updated_at": common.GetTimestamp()}).Error; err != nil {
+			if err := SetLegacyProductPriceEnabled(tx, existing.Id, desired.Enabled); err != nil {
 				return err
 			}
 		}
@@ -350,6 +349,9 @@ func BootstrapMonthlyProducts(apply bool, enabled bool, listed bool, effectiveAt
 				return err
 			}
 			result.Plans[index].PlanId = plan.Id
+			if err := SyncSubscriptionPlanPriceBook(tx, plan); err != nil {
+				return err
+			}
 			if enabled {
 				if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
 					return err

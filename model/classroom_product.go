@@ -408,7 +408,7 @@ func BootstrapClassroomProduct(apply bool, enabled bool, listed bool, effectiveA
 				return find.Error
 			}
 			if find.RowsAffected == 0 {
-				if err := tx.Create(&desired).Error; err != nil {
+				if err := CreateLegacyProductPrice(tx, &desired); err != nil {
 					return err
 				}
 				continue
@@ -416,9 +416,7 @@ func BootstrapClassroomProduct(apply bool, enabled bool, listed bool, effectiveA
 			if !sameProductPrice(existing, desired) {
 				return fmt.Errorf("immutable product price %s/%s differs from billing contract", desired.ProductType, desired.Model)
 			}
-			desiredEnabled := desired.Enabled
-			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&ProductPrice{}).Where("id = ?", existing.Id).
-				Updates(map[string]interface{}{"enabled": desiredEnabled, "updated_at": common.GetTimestamp()}).Error; err != nil {
+			if err := SetLegacyProductPriceEnabled(tx, existing.Id, desired.Enabled); err != nil {
 				return err
 			}
 		}
@@ -455,6 +453,9 @@ func BootstrapClassroomProduct(apply bool, enabled bool, listed bool, effectiveA
 		}
 		result.MigratedSubscriptions = migratedSubscriptions
 		result.MigratedTokens = migratedTokens
+		if err := SyncSubscriptionPlanPriceBook(tx, plan); err != nil {
+			return err
+		}
 		if !enabled {
 			// Disabling the sale/redemption switch must not invalidate existing
 			// entitlements, which continue using their frozen price snapshots.

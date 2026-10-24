@@ -89,6 +89,7 @@ type RelayInfo struct {
 	ProductType              string
 	ProductBillingMultiplier float64
 	ProductPriceVersion      string
+	ProductPriceBook         string
 	ProductAllowedChannels   string
 	ProductMaxUpstreamCost   string
 	ProductFallbackAllowed   bool
@@ -644,6 +645,7 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		ProductType:              common.GetContextKeyString(c, constant.ContextKeyTokenProductType),
 		ProductBillingMultiplier: c.GetFloat64(string(constant.ContextKeyTokenBillingMultiplier)),
 		ProductPriceVersion:      common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion),
+		ProductPriceBook:         common.GetContextKeyString(c, constant.ContextKeyTokenPriceBook),
 		ProductAllowedChannels:   common.GetContextKeyString(c, constant.ContextKeyTokenAllowedChannels),
 		ProductMaxUpstreamCost:   common.GetContextKeyString(c, constant.ContextKeyTokenMaxUpstreamCost),
 		ProductFallbackAllowed:   common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed),

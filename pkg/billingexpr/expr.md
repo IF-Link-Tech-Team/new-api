@@ -525,6 +525,24 @@ quota = exprOutput / 1,000,000 * QuotaPerUnit * groupRatio
 
 This matches the per-call billing pattern: `quota = modelPrice * QuotaPerUnit * groupRatio`.
 
+### Automatic cost verification
+
+`AnalyzeLinearTokenPrice` is a read-only classifier for the commercial cost
+guard. It accepts one literal-named `tier` containing non-negative linear
+`p/cr/cc/c` terms and literal multiplication/division. It inspects the original
+AST and rejects conditional branches (including unreachable ones), request or
+time factors, other modalities, fixed fees and non-finite coefficients. This
+whitelist never restricts normal expression execution: unsupported expressions
+remain usable but cannot be labelled automatically verified.
+
+Its coefficients are not a profitability result. The caller must still apply
+the actual normalization, product and group multipliers, quota conversion and
+rounding/saturation, verified channel costs, net cash currency/fees and maximum
+entitlement exposure including calendar resets. Explicit zero cache terms and
+omitted terms remain distinct through `UsedVariables`. In particular, a
+positive upstream cost with a settlement that rounds to zero cannot produce a
+finite per-quota cost bound. Sampling a typical request does not prove a bound.
+
 ### Expression Versioning
 
 Expressions can carry a version prefix: `v1:tier(...)`. No prefix = v1.

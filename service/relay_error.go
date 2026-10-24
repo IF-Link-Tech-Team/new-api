@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -28,7 +29,7 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 		}
 		return PolicyDecision{Action: "stop", Reason: "strict_session", Source: source}
 	}
-	if model.UsesVersionedProductPricing(common.GetContextKeyString(c, constant.ContextKeyTokenProductType)) && common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion) != "" && !common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed) {
+	if ProductFallbackDisabled(c) {
 		return PolicyDecision{Action: "stop", Reason: "product_fallback_disabled", Source: "product"}
 	}
 	if GetChannelConstraints(c).SuppressesRetry() {
@@ -57,6 +58,17 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 		return PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
 	}
 	return PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}
+}
+
+// ProductFallbackDisabled covers product-owned books as well as the legacy
+// typed catalog. Product identity must not be required to have a fixed type.
+func ProductFallbackDisabled(c *gin.Context) bool {
+	if c == nil || common.GetContextKeyString(c, constant.ContextKeyTokenPriceVersion) == "" {
+		return false
+	}
+	versioned := strings.HasPrefix(common.GetContextKeyString(c, constant.ContextKeyTokenPriceBook), "product:") ||
+		model.UsesVersionedProductPricing(common.GetContextKeyString(c, constant.ContextKeyTokenProductType))
+	return versioned && !common.GetContextKeyBool(c, constant.ContextKeyTokenFallbackAllowed)
 }
 
 func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {

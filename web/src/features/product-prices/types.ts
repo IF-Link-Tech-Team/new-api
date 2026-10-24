@@ -55,6 +55,16 @@ export const productPriceSchema = z.object({
 
 export type ProductPrice = z.infer<typeof productPriceSchema>
 
+export type ProductPriceBookVersion = Omit<ProductPrice, 'product_type'> & {
+  price_book: string
+  route_mode?: '' | 'global' | 'ordered'
+}
+
+export interface ProductPriceBookPage {
+  items: ProductPriceBookVersion[]
+  next_id: number
+}
+
 export interface ApiResponse<T = unknown> {
   success: boolean
   message?: string
@@ -62,7 +72,7 @@ export interface ApiResponse<T = unknown> {
 }
 
 export interface ProductPricePayload {
-  price: Partial<ProductPrice>
+  price: Partial<ProductPrice> & Pick<ProductPriceBookVersion, 'route_mode'>
 }
 
 export interface ProductPriceFilters {

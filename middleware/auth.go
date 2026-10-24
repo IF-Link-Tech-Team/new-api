@@ -695,6 +695,11 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 	common.SetContextKey(c, constant.ContextKeyTokenProductType, token.ProductType)
 	common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, token.BillingMultiplier)
 	common.SetContextKey(c, constant.ContextKeyTokenPriceVersion, token.PriceVersion)
+	priceBook := token.PriceBook
+	if priceBook == "" && token.UserSubscriptionId == 0 && token.ProductType == model.ProductTypeWallet {
+		priceBook = model.WalletPriceBook
+	}
+	common.SetContextKey(c, constant.ContextKeyTokenPriceBook, priceBook)
 	common.SetContextKey(c, constant.ContextKeyTokenAllowedChannels, token.AllowedChannels)
 	common.SetContextKey(c, constant.ContextKeyTokenMaxUpstreamCost, token.MaxUpstreamCost)
 	common.SetContextKey(c, constant.ContextKeyTokenFallbackAllowed, token.FallbackAllowed)

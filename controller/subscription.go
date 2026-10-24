@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"unicode"
@@ -58,6 +60,9 @@ func subscriptionBillingMultipliers(productType string, modelScope string, price
 func subscriptionPlanProductID(plan model.SubscriptionPlan) string {
 	if productCode := strings.ToLower(strings.TrimSpace(plan.ProductCode)); productCode != "" {
 		return productCode
+	}
+	if plan.PriceBook != "" && plan.Id > 0 {
+		return strconv.Itoa(plan.Id)
 	}
 	value := strings.ToLower(strings.TrimSpace(plan.Title + " " + plan.Subtitle + " " + plan.ModelScope))
 	words := strings.FieldsFunc(value, func(r rune) bool {
@@ -190,23 +195,24 @@ func AdminBootstrapMonthlyProducts(c *gin.Context) {
 }
 
 type SubscriptionOrderStatusDTO struct {
-	TradeNo            string  `json:"trade_no"`
-	Status             string  `json:"status"`
-	ProvisioningStatus string  `json:"provisioning_status"`
-	ProvisioningError  string  `json:"provisioning_error,omitempty"`
-	OrderType          string  `json:"order_type"`
-	ProductType        string  `json:"product_type"`
-	ProductCode        string  `json:"product_code"`
-	ProductFamily      string  `json:"product_family"`
-	SourceTier         int     `json:"source_tier"`
-	TargetTier         int     `json:"target_tier"`
-	PlanTitle          string  `json:"plan_title"`
-	Money              float64 `json:"money"`
-	Currency           string  `json:"currency"`
-	PaymentMethod      string  `json:"payment_method"`
-	UserSubscriptionId *int    `json:"user_subscription_id,omitempty"`
-	CreateTime         int64   `json:"create_time"`
-	CompleteTime       int64   `json:"complete_time"`
+	TradeNo              string  `json:"trade_no"`
+	Status               string  `json:"status"`
+	ProvisioningStatus   string  `json:"provisioning_status"`
+	ProvisioningError    string  `json:"provisioning_error,omitempty"`
+	OrderType            string  `json:"order_type"`
+	ProductType          string  `json:"product_type"`
+	ProductCode          string  `json:"product_code"`
+	ProductFamily        string  `json:"product_family"`
+	SourceTier           int     `json:"source_tier"`
+	TargetTier           int     `json:"target_tier"`
+	PlanTitle            string  `json:"plan_title"`
+	Money                float64 `json:"money"`
+	Currency             string  `json:"currency"`
+	PaymentMethod        string  `json:"payment_method"`
+	UserSubscriptionId   *int    `json:"user_subscription_id,omitempty"`
+	CreateTime           int64   `json:"create_time"`
+	CompleteTime         int64   `json:"complete_time"`
+	ReservationExpiresAt int64   `json:"reservation_expires_at"`
 }
 
 // ---- User APIs ----
@@ -317,15 +323,21 @@ func GetSubscriptionSelfOrders(c *gin.Context) {
 		return
 	}
 	result := make([]SubscriptionOrderStatusDTO, 0, len(orders))
+	now := model.GetDBTimestamp()
 	for _, order := range orders {
+		status := order.Status
+		if status == common.TopUpStatusPending && order.ReservationExpiresAt > 0 && order.ReservationExpiresAt <= now {
+			status = common.TopUpStatusExpired
+		}
 		result = append(result, SubscriptionOrderStatusDTO{
-			TradeNo: order.TradeNo, Status: order.Status,
+			TradeNo: order.TradeNo, Status: status,
 			ProvisioningStatus: order.ProvisioningStatus, ProvisioningError: order.ProvisioningError,
 			OrderType: order.OrderType, ProductType: order.ProductType, ProductCode: order.ProductCode,
 			ProductFamily: order.ProductFamily, SourceTier: order.SourceTier, TargetTier: order.TargetTier,
 			PlanTitle: order.PlanTitleSnapshot, Money: order.Money, Currency: order.CurrencySnapshot,
 			PaymentMethod: order.PaymentMethod, UserSubscriptionId: order.UserSubscriptionId,
 			CreateTime: order.CreateTime, CompleteTime: order.CompleteTime,
+			ReservationExpiresAt: order.ReservationExpiresAt,
 		})
 	}
 	common.ApiSuccess(c, result)
@@ -375,6 +387,76 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 
 // ---- Admin APIs ----
 
+type ProductCompensationOrderDTO struct {
+	Id                   int     `json:"id"`
+	UserId               int     `json:"user_id"`
+	TradeNo              string  `json:"trade_no"`
+	PlanTitle            string  `json:"plan_title"`
+	Status               string  `json:"status"`
+	ProvisioningError    string  `json:"provisioning_error"`
+	PaidMoney            float64 `json:"paid_money"`
+	PaidCurrency         string  `json:"paid_currency"`
+	PaymentProvider      string  `json:"payment_provider"`
+	ProviderTradeNo      string  `json:"provider_trade_no"`
+	CreateTime           int64   `json:"create_time"`
+	CompleteTime         int64   `json:"complete_time"`
+	ReservationExpiresAt int64   `json:"reservation_expires_at"`
+}
+
+func AdminListProductCompensationOrders(c *gin.Context) {
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if err != nil || limit < 1 || limit > 200 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	before := 0
+	if value := c.Query("before_id"); value != "" {
+		before, err = strconv.Atoi(value)
+		if err != nil || before <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+	}
+	query := model.DB.Model(&model.SubscriptionOrder{}).
+		Where("status = ? AND provisioning_status = ?", model.SubscriptionOrderStatusPaidReview, model.ProvisioningStatusCompensationPending)
+	if before > 0 {
+		query = query.Where("id < ?", before)
+	}
+	orders := make([]ProductCompensationOrderDTO, 0)
+	if err := query.Select("id, user_id, trade_no, plan_title_snapshot AS plan_title, status, provisioning_error, paid_money, paid_currency, payment_provider, provider_trade_no, create_time, complete_time, reservation_expires_at").
+		Order("id DESC").Limit(limit + 1).Scan(&orders).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	next := 0
+	if len(orders) > limit {
+		orders = orders[:limit]
+		next = orders[len(orders)-1].Id
+	}
+	common.ApiSuccess(c, gin.H{"items": orders, "next_id": next})
+}
+
+func AdminRetryProductCompensation(c *gin.Context) {
+	var req struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	order, changed, err := model.RetryPaidProductOrder(c.Param("trade_no"), c.GetInt("id"), req.Note)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if changed {
+		recordManageAudit(c, "subscription.product_compensation_issue", map[string]any{
+			"order_id": order.Id, "user_id": order.UserId, "subscription_id": order.UserSubscriptionId,
+		})
+	}
+	common.ApiSuccess(c, gin.H{"status": order.Status, "user_subscription_id": order.UserSubscriptionId, "changed": changed})
+}
+
 func AdminListSubscriptionPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	if err := model.DB.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
@@ -393,7 +475,9 @@ func AdminListSubscriptionPlans(c *gin.Context) {
 }
 
 type AdminUpsertSubscriptionPlanRequest struct {
-	Plan model.SubscriptionPlan `json:"plan"`
+	Plan                model.SubscriptionPlan `json:"plan"`
+	ProductOwnedPricing bool                   `json:"product_owned_pricing"`
+	ExpectedRevision    *int64                 `json:"expected_revision"`
 }
 
 func normalizeAdminSubscriptionPlan(plan *model.SubscriptionPlan) error {
@@ -502,6 +586,22 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
+	if req.ProductOwnedPricing {
+		if !requirePaymentCompliance(c) {
+			return
+		}
+		if err := model.CreateProductPlan(model.DB, &req.Plan); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "subscription.product_create", map[string]any{"plan_id": req.Plan.Id, "price_book": req.Plan.PriceBook})
+		common.ApiSuccess(c, req.Plan)
+		return
+	}
+	if req.Plan.PriceBook != "" {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
 	if !operation_setting.IsPaymentComplianceConfirmed() && req.Plan.ProductType != model.ProductTypePackDeepSeekClassroom {
 		if !requirePaymentCompliance(c) {
 			return
@@ -550,7 +650,12 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	err := model.DB.Create(&req.Plan).Error
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&req.Plan).Error; err != nil {
+			return err
+		}
+		return model.SyncSubscriptionPlanPriceBook(tx, &req.Plan)
+	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -573,6 +678,38 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 	var existingPlan model.SubscriptionPlan
 	if err := model.DB.Where("id = ?", id).First(&existingPlan).Error; err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if existingPlan.PriceBook != "" {
+		if !requirePaymentCompliance(c) {
+			return
+		}
+		if req.ExpectedRevision == nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		req.Plan.Id = id
+		if req.Plan.PriceBook != "" && req.Plan.PriceBook != existingPlan.PriceBook {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		req.Plan.PriceBook = existingPlan.PriceBook
+		if err := model.UpdateProductPlan(model.DB, &req.Plan, *req.ExpectedRevision); err != nil {
+			if errors.Is(err, model.ErrProductPlanConflict) {
+				c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+				return
+			}
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "subscription.product_update", map[string]any{
+			"plan_id": id, "price_book": req.Plan.PriceBook, "old_revision": *req.ExpectedRevision, "revision": req.Plan.ConfigRevision,
+		})
+		common.ApiSuccess(c, req.Plan)
+		return
+	}
+	if req.Plan.PriceBook != "" {
+		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
 	if !operation_setting.IsPaymentComplianceConfirmed() &&
@@ -642,9 +779,8 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			"custom_seconds": req.Plan.CustomSeconds,
 			"enabled":        req.Plan.Enabled,
 			"listed":         req.Plan.Listed,
-			// The full plan editor predates the independent redemption switch.
-			// Preserve it here; the PATCH status endpoint is authoritative.
-			"redemption_enabled":         existingPlan.RedemptionEnabled,
+			// Redemption is owned by PATCH; omit it so a concurrent switch cannot
+			// be overwritten by this editor's earlier database read.
 			"sort_order":                 req.Plan.SortOrder,
 			"stripe_price_id":            req.Plan.StripePriceId,
 			"creem_product_id":           req.Plan.CreemProductId,
@@ -677,12 +813,16 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		if req.Plan.AllowWalletOverflow != nil {
 			updateMap["allow_wallet_overflow"] = *req.Plan.AllowWalletOverflow
 		}
-		if err := tx.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
+		if err := model.UpdateLegacySubscriptionPlan(tx, id, updateMap); err != nil {
 			return err
 		}
-		return nil
+		return model.SyncSubscriptionPlanPriceBook(tx, &req.Plan)
 	})
 	if err != nil {
+		if errors.Is(err, model.ErrProductPlanConflict) {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -691,9 +831,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 }
 
 type AdminUpdateSubscriptionPlanStatusRequest struct {
-	Enabled           *bool `json:"enabled"`
-	Listed            *bool `json:"listed"`
-	RedemptionEnabled *bool `json:"redemption_enabled"`
+	Enabled           *bool  `json:"enabled"`
+	Listed            *bool  `json:"listed"`
+	RedemptionEnabled *bool  `json:"redemption_enabled"`
+	ExpectedRevision  *int64 `json:"expected_revision"`
 }
 
 func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
@@ -710,6 +851,37 @@ func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
 	var plan model.SubscriptionPlan
 	if err := model.DB.Where("id = ?", id).First(&plan).Error; err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	if plan.PriceBook != "" {
+		if !requirePaymentCompliance(c) {
+			return
+		}
+		if req.ExpectedRevision == nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		if req.Enabled != nil {
+			plan.Enabled = *req.Enabled
+		}
+		if req.Listed != nil {
+			plan.Listed = *req.Listed
+		}
+		if req.RedemptionEnabled != nil {
+			plan.RedemptionEnabled = *req.RedemptionEnabled
+		}
+		if err := model.UpdateProductPlan(model.DB, &plan, *req.ExpectedRevision); err != nil {
+			if errors.Is(err, model.ErrProductPlanConflict) {
+				c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+				return
+			}
+			common.ApiError(c, err)
+			return
+		}
+		recordManageAudit(c, "subscription.product_update", map[string]any{
+			"plan_id": id, "price_book": plan.PriceBook, "old_revision": *req.ExpectedRevision, "revision": plan.ConfigRevision,
+		})
+		common.ApiSuccess(c, plan)
 		return
 	}
 	// Redemption availability is deliberately independent from paid-sale
@@ -732,7 +904,13 @@ func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
 	if req.RedemptionEnabled != nil {
 		updates["redemption_enabled"] = *req.RedemptionEnabled
 	}
-	if err := model.DB.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		return model.UpdateLegacySubscriptionPlan(tx, id, updates)
+	}); err != nil {
+		if errors.Is(err, model.ErrProductPlanConflict) {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

@@ -40,6 +40,7 @@ export const subscriptionPlanSchema = z.object({
   allow_balance_pay: z.boolean().optional().default(true),
   allow_wallet_overflow: z.boolean().optional().default(true),
   max_purchase_per_user: z.number(),
+  reservation_ttl_seconds: z.number().optional(),
   total_amount: z.number(),
   upgrade_group: z.string().optional(),
   downgrade_group: z.string().optional(),
@@ -53,6 +54,9 @@ export const subscriptionPlanSchema = z.object({
   product_tier: z.number().optional(),
   billing_multiplier: z.number().optional(),
   price_version: z.string().optional(),
+  price_book: z.string().optional(),
+  config_revision: z.number().optional(),
+  display_metadata: z.string().optional(),
   model_scope: z.string().optional(),
   course_eligible: z.boolean().optional(),
   fallback_allowed: z.boolean().optional(),
@@ -162,6 +166,8 @@ export interface ApiResponse<T = unknown> {
 
 export interface PlanPayload {
   plan: Partial<SubscriptionPlan>
+  product_owned_pricing?: boolean
+  expected_revision?: number
 }
 
 export interface SubscriptionPayRequest {
@@ -221,6 +227,7 @@ export interface SubscriptionOrderStatus {
   user_subscription_id?: number
   create_time: number
   complete_time: number
+  reservation_expires_at?: number
 }
 
 export interface CreateUserSubscriptionRequest {

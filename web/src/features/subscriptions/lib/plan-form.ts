@@ -45,6 +45,11 @@ export function getPlanFormSchema(t: TFunction) {
     allow_balance_pay: z.boolean(),
     allow_wallet_overflow: z.boolean(),
     max_purchase_per_user: z.coerce.number().min(0),
+    reservation_ttl_seconds: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(Number.MAX_SAFE_INTEGER),
     total_amount: z.coerce.number().min(0),
     upgrade_group: z.string().optional(),
     downgrade_group: z.string().optional(),
@@ -78,11 +83,12 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   custom_seconds: 0,
   quota_reset_period: 'never',
   quota_reset_custom_seconds: 0,
-  enabled: true,
+  enabled: false,
   sort_order: 0,
   allow_balance_pay: true,
-  allow_wallet_overflow: true,
+  allow_wallet_overflow: false,
   max_purchase_per_user: 0,
+  reservation_ttl_seconds: 1800,
   total_amount: 0,
   upgrade_group: '',
   downgrade_group: '',
@@ -94,13 +100,13 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   product_code: '',
   product_family: '',
   product_tier: 0,
-  billing_multiplier: 0,
+  billing_multiplier: 1,
   price_version: '',
   model_scope: [],
   course_eligible: false,
   fallback_allowed: false,
-  listed: true,
-  redemption_enabled: true,
+  listed: false,
+  redemption_enabled: false,
 }
 
 // Plan model_scope is a comma-separated string on the wire; the form edits it
@@ -135,6 +141,7 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     allow_balance_pay: plan.allow_balance_pay !== false,
     allow_wallet_overflow: plan.allow_wallet_overflow !== false,
     max_purchase_per_user: Number(plan.max_purchase_per_user || 0),
+    reservation_ttl_seconds: Number(plan.reservation_ttl_seconds || 1800),
     total_amount: quotaUnitsToDollars(Number(plan.total_amount || 0)),
     upgrade_group: plan.upgrade_group || '',
     category: plan.category || 'package',
@@ -156,8 +163,13 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
   }
 }
 
-export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
-  return {
+export function formValuesToPlanPayload(
+  values: PlanFormValues,
+  currentPlan?: SubscriptionPlan,
+  revision?: number
+): PlanPayload {
+  const productOwned = !currentPlan || !!currentPlan.price_book
+  const payload: PlanPayload = {
     plan: {
       ...values,
       price_amount: Number(values.price_amount || 0),
@@ -188,4 +200,22 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
       redemption_enabled: values.redemption_enabled,
     },
   }
+  if (productOwned) {
+    payload.product_owned_pricing = true
+    payload.expected_revision = revision ?? currentPlan?.config_revision
+    payload.plan.price_book = currentPlan?.price_book
+    payload.plan.display_metadata = currentPlan?.display_metadata
+    payload.plan.product_type = ''
+    payload.plan.product_tier = 0
+    payload.plan.billing_multiplier = 1
+    payload.plan.course_eligible = false
+    if (!currentPlan) {
+      payload.plan.enabled = false
+      payload.plan.listed = false
+      payload.plan.redemption_enabled = false
+    }
+  } else {
+    delete payload.plan.reservation_ttl_seconds
+  }
+  return payload
 }
