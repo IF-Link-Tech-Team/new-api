@@ -63,6 +63,7 @@ func TestMain(m *testing.M) {
 		&model.SubscriptionPreConsumeRecord{},
 		&model.BillingRefund{},
 		&model.ProductPrice{},
+		&model.PriceBookPrice{},
 		&model.ProductTemplate{},
 		&model.SubscriptionKeyBinding{},
 		&model.CourseEntitlement{},
@@ -101,6 +102,7 @@ func truncate(t *testing.T) {
 		model.DB.Exec("DELETE FROM course_entitlements")
 		model.DB.Exec("DELETE FROM monthly_subscription_cycles")
 		model.DB.Exec("DELETE FROM product_prices")
+		model.DB.Exec("DELETE FROM price_book_prices")
 		model.DB.Exec("DELETE FROM subscription_orders")
 		model.DB.Exec("DELETE FROM subscription_plans")
 		model.DB.Exec("DELETE FROM user_subscriptions")

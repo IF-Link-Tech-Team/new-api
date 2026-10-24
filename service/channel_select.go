@@ -77,9 +77,14 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 	productType := common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)
 	priceBook := common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceBook)
 	if priceBook == model.WalletPriceBook || (priceBook == "" && productType == model.ProductTypeWallet) {
-		var price *model.PriceBookPrice
 		var err error
-		if priceBook == model.WalletPriceBook {
+		// One request can attempt several channels. Freeze the override decision
+		// per exact model, including "use global pricing", so retries cannot mix
+		// an old pre-consume price with a newly published route/version. This is
+		// request-local, never a cross-request price cache.
+		snapshotKey := "iflink_wallet_price_snapshot:" + modelName
+		price, snapshotted := common.GetContextKeyType[*model.PriceBookPrice](ctx, constant.ContextKey(snapshotKey))
+		if !snapshotted && priceBook == model.WalletPriceBook {
 			price, err = model.ResolvePriceBookPrice(model.DB, priceBook, modelName, "")
 			if err != nil {
 				return nil, fmt.Errorf("cannot resolve wallet price book: %w", err)
@@ -88,19 +93,29 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 		// Wallet product pricing is opt-in. Existing installations that have no
 		// wallet price row must retain the legacy global pricing/routing path.
 		// Once any row exists, however, disabled or future-only rows fail closed.
-		if price == nil {
-			configured, err := model.HasProductPriceConfiguration(productType, modelName)
+		if !snapshotted && price == nil {
+			configured, err := model.HasProductPriceConfiguration(model.ProductTypeWallet, modelName)
 			if err != nil {
 				return nil, fmt.Errorf("cannot inspect legacy wallet pricing: %w", err)
 			}
 			if !configured {
-				return nil, nil
+				ctx.Set(snapshotKey, price)
+			} else {
+				legacyPrice, err := model.GetCurrentProductPriceSnapshot(model.ProductTypeWallet, modelName)
+				if err != nil {
+					return nil, fmt.Errorf("legacy wallet price is disabled or not yet effective: %w", err)
+				}
+				price = &model.PriceBookPrice{AllowedChannels: legacyPrice.AllowedChannels, MaxUpstreamCost: legacyPrice.MaxUpstreamCost, BillingMultiplier: legacyPrice.BillingMultiplier, PriceVersion: legacyPrice.PriceVersion, FallbackAllowed: legacyPrice.FallbackAllowed}
 			}
-			legacyPrice, err := model.GetCurrentProductPriceSnapshot(productType, modelName)
-			if err != nil {
-				return nil, fmt.Errorf("legacy wallet price is disabled or not yet effective: %w", err)
-			}
-			price = &model.PriceBookPrice{AllowedChannels: legacyPrice.AllowedChannels, MaxUpstreamCost: legacyPrice.MaxUpstreamCost, BillingMultiplier: legacyPrice.BillingMultiplier, PriceVersion: legacyPrice.PriceVersion, FallbackAllowed: legacyPrice.FallbackAllowed}
+		}
+		if price == nil {
+			common.SetContextKey(ctx, constant.ContextKeyTokenPriceBook, "")
+			common.SetContextKey(ctx, constant.ContextKeyTokenPriceVersion, "")
+			common.SetContextKey(ctx, constant.ContextKeyTokenBillingMultiplier, 1.0)
+			common.SetContextKey(ctx, constant.ContextKeyTokenAllowedChannels, "")
+			common.SetContextKey(ctx, constant.ContextKeyTokenMaxUpstreamCost, "")
+			common.SetContextKey(ctx, constant.ContextKeyTokenFallbackAllowed, false)
+			return nil, nil
 		}
 		var channelIds []int
 		if err := common.UnmarshalJsonStr(price.AllowedChannels, &channelIds); err != nil {
@@ -110,6 +125,7 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 		if err := common.UnmarshalJsonStr(price.MaxUpstreamCost, &maxCost); err != nil {
 			return nil, err
 		}
+		ctx.Set(snapshotKey, price)
 		common.SetContextKey(ctx, constant.ContextKeyTokenBillingMultiplier, price.BillingMultiplier)
 		common.SetContextKey(ctx, constant.ContextKeyTokenPriceVersion, price.PriceVersion)
 		common.SetContextKey(ctx, constant.ContextKeyTokenAllowedChannels, price.AllowedChannels)

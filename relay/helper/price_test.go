@@ -166,6 +166,7 @@ func TestModelPriceHelperWalletBookBoundary(t *testing.T) {
 		{name: "disabled current override rejects", book: model.WalletPriceBook, configured: true, wantError: true},
 		{name: "future current override rejects", book: model.WalletPriceBook, configured: true, enabled: true, future: true, wantError: true},
 		{name: "historical disabled version settles", book: model.WalletPriceBook, version: "v1", configured: true, wantQuota: 1000},
+		{name: "current override freezes for retry", book: model.WalletPriceBook, configured: true, enabled: true, wantQuota: 1000},
 		{name: "missing product never uses global", book: "product:91", version: "v1", wantError: true},
 		{name: "database error never uses global", book: model.WalletPriceBook, brokenDB: true, wantError: true},
 	} {
@@ -223,6 +224,27 @@ func TestModelPriceHelperWalletBookBoundary(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantQuota, priceData.QuotaToPreConsume)
+			if tc.configured && tc.version == "" {
+				assert.Equal(t, "v1", info.ProductPriceVersion)
+				assert.Equal(t, "v1", info.TieredBillingSnapshot.PriceVersion)
+				newPrice := price
+				newPrice.Id, newPrice.PriceVersion = 0, "v2"
+				newPrice.BillingExpression = `tier("new", p * 9)`
+				newPrice.EffectiveAt = model.GetDBTimestamp()
+				require.NoError(t, db.Create(&newPrice).Error)
+				retryPrice, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+				require.NoError(t, err)
+				assert.Equal(t, priceData.QuotaToPreConsume, retryPrice.QuotaToPreConsume)
+				assert.Equal(t, price.BillingExpression, info.TieredBillingSnapshot.ExprString)
+				newInfo := *info
+				newInfo.ProductPriceVersion = ""
+				newCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				newCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+				newRequestPrice, err := ModelPriceHelper(newCtx, &newInfo, 1000, &types.TokenCountMeta{})
+				require.NoError(t, err)
+				assert.Equal(t, 4500, newRequestPrice.QuotaToPreConsume)
+				assert.Equal(t, "v2", newInfo.ProductPriceVersion)
+			}
 			if !tc.legacy && !tc.configured {
 				assert.Empty(t, info.ProductPriceBook)
 				assert.Empty(t, common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceBook))

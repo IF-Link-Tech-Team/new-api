@@ -82,7 +82,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 				if legacyErr != nil {
 					return hosttypes.PriceData{}, fmt.Errorf("legacy wallet price unavailable during migration: %w", legacyErr)
 				}
-				bookPrice = &model.PriceBookPrice{BillingMultiplier: legacyPrice.BillingMultiplier, BillingExpression: legacyPrice.BillingExpression}
+				bookPrice = &model.PriceBookPrice{PriceVersion: legacyPrice.PriceVersion, BillingMultiplier: legacyPrice.BillingMultiplier, BillingExpression: legacyPrice.BillingExpression}
 				err = nil
 			}
 		}
@@ -106,6 +106,8 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			// The immutable product/model/version row is authoritative. This permits
 			// IF.Learn to share one entitlement pool while DeepSeek settles at 0.60
 			// and Qwen settles at 1.00, without stacking a token/global multiplier.
+			info.ProductPriceVersion = bookPrice.PriceVersion
+			common.SetContextKey(c, constant.ContextKeyTokenPriceVersion, bookPrice.PriceVersion)
 			info.ProductBillingMultiplier = bookPrice.BillingMultiplier
 			common.SetContextKey(c, constant.ContextKeyTokenBillingMultiplier, bookPrice.BillingMultiplier)
 			groupRatioInfo := HandleGroupRatio(c, info)
