@@ -3,12 +3,15 @@ package model
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const WalletPriceBook = "wallet"
@@ -161,6 +164,145 @@ func (p *PriceBookPrice) BeforeUpdate(tx *gorm.DB) error {
 		}
 	}
 	tx.Statement.SetColumn("UpdatedAt", common.GetTimestamp())
+	return nil
+}
+
+func CreateLegacyProductPrice(db *gorm.DB, price *ProductPrice) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(price).Error; err != nil {
+			return err
+		}
+		return SyncLegacyProductPriceBooks(tx, *price)
+	})
+}
+
+func SetLegacyProductPriceEnabled(db *gorm.DB, id int, enabled bool) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		var price ProductPrice
+		if err := lockForUpdate(tx).First(&price, id).Error; err != nil {
+			return err
+		}
+		price.Enabled, price.UpdatedAt = enabled, common.GetTimestamp()
+		if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&ProductPrice{}).Where("id = ?", id).
+			Updates(map[string]any{"enabled": price.Enabled, "updated_at": price.UpdatedAt}).Error; err != nil {
+			return err
+		}
+		return SyncLegacyProductPriceBooks(tx, price)
+	})
+}
+
+// SyncLegacyProductPriceBooks mirrors an administrative legacy-price write in
+// the same transaction. The old catalog remains the write authority during
+// expansion. Frozen economics cannot be replaced; only its sale switch changes.
+func SyncLegacyProductPriceBooks(tx *gorm.DB, price ProductPrice) error {
+	if err := price.ValidateV1(); err != nil {
+		return err
+	}
+	books := map[string]bool{}
+	if price.ProductType == ProductTypeWallet {
+		books[WalletPriceBook] = true
+	} else if RequiresStrictV1RoutePolicy(price.ProductType) {
+		type scope struct {
+			PlanId     int
+			ModelScope string
+		}
+		for _, source := range []struct {
+			model any
+			id    string
+		}{
+			{&SubscriptionPlan{}, "id"},
+			{&SubscriptionOrder{}, "plan_id"},
+			{&UserSubscription{}, "plan_id"},
+		} {
+			var scopes []scope
+			if err := tx.Model(source.model).Select(source.id+" AS plan_id, model_scope").Distinct().Where("product_type = ?", price.ProductType).Find(&scopes).Error; err != nil {
+				return err
+			}
+			for _, item := range scopes {
+				for _, modelName := range explicitModelIds(item.ModelScope) {
+					if modelName == price.Model {
+						book, err := ProductPriceBook(item.PlanId)
+						if err != nil {
+							return err
+						}
+						books[book] = true
+						break
+					}
+				}
+			}
+		}
+	}
+	for _, book := range slices.Sorted(maps.Keys(books)) {
+		if err := syncLegacyPriceBookPrice(tx, price, book); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syncLegacyPriceBookPrice(tx *gorm.DB, price ProductPrice, book string) error {
+	entry := PriceBookPrice{
+		PriceBook: book, Model: price.Model, PriceVersion: price.PriceVersion, EffectiveAt: price.EffectiveAt,
+		OfficialReferencePrice: price.OfficialReferencePrice, UserSellingPrice: price.UserSellingPrice,
+		UpstreamSettlementPrice: price.UpstreamSettlementPrice, BillingExpression: price.BillingExpression,
+		BillingMultiplier: price.BillingMultiplier, AllowedChannels: price.AllowedChannels,
+		MaxUpstreamCost: price.MaxUpstreamCost, FallbackAllowed: price.FallbackAllowed,
+		Enabled: price.Enabled, CreatedAt: price.CreatedAt, UpdatedAt: price.UpdatedAt,
+	}
+	if err := entry.Validate(); err != nil {
+		return err
+	}
+	// A unique-key insert also serializes concurrent publication of the
+	// same target. Never use an upsert that overwrites frozen economics.
+	if err := tx.Session(&gorm.Session{SkipHooks: true}).Clauses(clause.OnConflict{DoNothing: true}).Create(&entry).Error; err != nil {
+		return err
+	}
+	var existing PriceBookPrice
+	if err := lockForUpdate(tx).Where("price_book = ? AND model = ? AND price_version = ?", book, price.Model, price.PriceVersion).First(&existing).Error; err != nil {
+		return err
+	}
+	entry.Id, entry.CreatedAt = existing.Id, existing.CreatedAt
+	entry.Enabled, entry.UpdatedAt = existing.Enabled, existing.UpdatedAt
+	if !reflect.DeepEqual(entry, existing) {
+		return fmt.Errorf("price book dual-write conflict: %s/%s/%s", book, price.Model, price.PriceVersion)
+	}
+	if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&PriceBookPrice{}).Where("id = ?", existing.Id).
+		Updates(map[string]any{"enabled": price.Enabled, "updated_at": price.UpdatedAt}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+// SyncSubscriptionPlanPriceBook materializes prices before an administrator's
+// new/updated legacy plan becomes visible. Historical rows are never deleted.
+func SyncSubscriptionPlanPriceBook(tx *gorm.DB, plan *SubscriptionPlan) error {
+	if !RequiresStrictV1RoutePolicy(plan.ProductType) {
+		return nil
+	}
+	book, err := ProductPriceBook(plan.Id)
+	if err != nil {
+		return err
+	}
+	models := explicitModelIds(plan.ModelScope)
+	slices.Sort(models)
+	for _, modelName := range models {
+		var prices []ProductPrice
+		if err := lockForUpdate(tx).Where("product_type = ? AND model = ?", plan.ProductType, modelName).Order("id").Find(&prices).Error; err != nil {
+			return err
+		}
+		foundVersion := false
+		for _, price := range prices {
+			if price.PriceVersion == plan.PriceVersion {
+				foundVersion = true
+			}
+			if err := syncLegacyPriceBookPrice(tx, price, book); err != nil {
+				return err
+			}
+		}
+		if !foundVersion {
+			return fmt.Errorf("plan price book missing price: %s/%s", modelName, plan.PriceVersion)
+		}
+	}
 	return nil
 }
 

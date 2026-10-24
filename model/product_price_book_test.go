@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,6 +40,13 @@ func TestProductPriceBookMigration(t *testing.T) {
 			}
 			db, err := gorm.Open(dialect, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 			require.NoError(t, err)
+			oldDB, oldType := DB, common.MainDatabaseType()
+			DB = db
+			common.SetMainDatabaseType(common.DatabaseType(engine))
+			t.Cleanup(func() {
+				DB = oldDB
+				common.SetMainDatabaseType(oldType)
+			})
 			sqlDB, err := db.DB()
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
@@ -160,6 +168,83 @@ func TestProductPriceBookMigration(t *testing.T) {
 			require.ErrorContains(t, db.Save(&immutable).Error, "immutable")
 			require.ErrorContains(t, db.Model(&entries[0]).Updates(map[string]any{"billing_multiplier": 0.1}).Error, "immutable")
 			require.ErrorContains(t, db.Model(&PriceBookPrice{}).Where("id = ?", entries[0].Id).Update("enabled", false).Error, "individual version id")
+
+			t.Run("transactional administrative dual write", func(t *testing.T) {
+				newPrice := pack
+				newPrice.Id, newPrice.PriceVersion = 0, "admin-v2"
+				require.NoError(t, CreateLegacyProductPrice(db, &newPrice))
+				for _, book := range []string{"product:41", "product:42", "product:43", "product:44"} {
+					price, err := ResolvePriceBookPrice(db, book, pack.Model, newPrice.PriceVersion)
+					require.NoError(t, err)
+					assert.Equal(t, pack.BillingExpression, price.BillingExpression)
+				}
+				newPlan := SubscriptionPlan{Id: 45, ProductType: pack.ProductType, ModelScope: pack.Model, PriceVersion: newPrice.PriceVersion}
+				require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+					if err := tx.Session(&gorm.Session{SkipHooks: true}).Create(&newPlan).Error; err != nil {
+						return err
+					}
+					return SyncSubscriptionPlanPriceBook(tx, &newPlan)
+				}))
+				var newPlanRows []PriceBookPrice
+				require.NoError(t, db.Where("price_book = ?", "product:45").Find(&newPlanRows).Error)
+				require.Len(t, newPlanRows, 3)
+				for _, price := range newPlanRows {
+					assert.Equal(t, pack.Model, price.Model, "new plans cannot inherit other models of the same old type")
+				}
+				incompletePlan := newPlan
+				incompletePlan.Id, incompletePlan.PriceVersion = 46, "missing-version"
+				require.ErrorContains(t, db.Transaction(func(tx *gorm.DB) error {
+					if err := tx.Session(&gorm.Session{SkipHooks: true}).Create(&incompletePlan).Error; err != nil {
+						return err
+					}
+					return SyncSubscriptionPlanPriceBook(tx, &incompletePlan)
+				}), "missing price")
+				var incompleteCount int64
+				require.NoError(t, db.Model(&SubscriptionPlan{}).Where("id = ?", incompletePlan.Id).Count(&incompleteCount).Error)
+				assert.Zero(t, incompleteCount)
+				require.NoError(t, db.Model(&PriceBookPrice{}).Where("price_book = ?", "product:46").Count(&incompleteCount).Error)
+				assert.Zero(t, incompleteCount, "failed plan saves must not leave partially materialized prices")
+				// Only a sale switch may be mirrored into an existing version.
+				if engine != "sqlite" {
+					start, results := make(chan struct{}), make(chan error, 2)
+					for _, enabled := range []bool{true, false} {
+						go func() {
+							<-start
+							results <- SetLegacyProductPriceEnabled(db, newPrice.Id, enabled)
+						}()
+					}
+					close(start)
+					for range 2 {
+						require.NoError(t, <-results)
+					}
+					var source ProductPrice
+					require.NoError(t, db.First(&source, newPrice.Id).Error)
+					var targets []PriceBookPrice
+					require.NoError(t, db.Where("model = ? AND price_version = ?", newPrice.Model, newPrice.PriceVersion).Find(&targets).Error)
+					require.Len(t, targets, 5)
+					for _, target := range targets {
+						assert.Equal(t, source.Enabled, target.Enabled, "competing administrators must leave both catalogs consistent")
+					}
+				}
+				require.NoError(t, SetLegacyProductPriceEnabled(db, newPrice.Id, false))
+				paid, err := ResolvePriceBookPrice(db, "product:45", pack.Model, newPrice.PriceVersion)
+				require.NoError(t, err)
+				assert.False(t, paid.Enabled)
+				assert.Equal(t, pack.BillingExpression, paid.BillingExpression)
+				// A conflict in one target must roll back every source/target write.
+				require.NoError(t, db.Model(&PriceBookPrice{}).Where("price_book = ? AND price_version = ?", "product:42", newPrice.PriceVersion).
+					UpdateColumn("billing_expression", `tier("conflict", p * 9)`).Error)
+				require.ErrorContains(t, SetLegacyProductPriceEnabled(db, newPrice.Id, true), "dual-write conflict")
+				var afterPrice ProductPrice
+				require.NoError(t, db.First(&afterPrice, newPrice.Id).Error)
+				assert.False(t, afterPrice.Enabled)
+				paid, err = ResolvePriceBookPrice(db, "product:41", pack.Model, newPrice.PriceVersion)
+				require.NoError(t, err)
+				assert.False(t, paid.Enabled)
+				// Restore the deliberate conflict for the remaining backfill checks.
+				require.NoError(t, db.Model(&PriceBookPrice{}).Where("price_book = ? AND price_version = ?", "product:42", newPrice.PriceVersion).
+					UpdateColumn("billing_expression", pack.BillingExpression).Error)
+			})
 
 			// A conflicting migrated row must never be overwritten or leave a
 			// partly copied wallet catalog behind.

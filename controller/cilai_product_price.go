@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 
@@ -57,7 +58,7 @@ func AdminCreateProductPrice(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if err := model.DB.Create(&req.Price).Error; err != nil {
+	if err := model.CreateLegacyProductPrice(model.DB, &req.Price); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -91,15 +92,13 @@ func AdminSetProductPriceEnabled(c *gin.Context) {
 		common.ApiErrorMsg(c, "参数错误")
 		return
 	}
-	result := model.DB.Session(&gorm.Session{SkipHooks: true}).Model(&model.ProductPrice{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"enabled": *req.Enabled, "updated_at": common.GetTimestamp(),
-	})
-	if result.Error != nil {
-		common.ApiError(c, result.Error)
+	err = model.SetLegacyProductPriceEnabled(model.DB, id, *req.Enabled)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		common.ApiErrorMsg(c, "价格版本不存在")
 		return
 	}
-	if result.RowsAffected == 0 {
-		common.ApiErrorMsg(c, "价格版本不存在")
+	if err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, nil)

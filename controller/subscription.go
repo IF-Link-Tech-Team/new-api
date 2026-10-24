@@ -550,7 +550,12 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	err := model.DB.Create(&req.Plan).Error
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&req.Plan).Error; err != nil {
+			return err
+		}
+		return model.SyncSubscriptionPlanPriceBook(tx, &req.Plan)
+	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -680,7 +685,7 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		if err := tx.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
 			return err
 		}
-		return nil
+		return model.SyncSubscriptionPlanPriceBook(tx, &req.Plan)
 	})
 	if err != nil {
 		common.ApiError(c, err)
