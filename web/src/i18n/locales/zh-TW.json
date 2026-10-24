@@ -7561,6 +7561,11 @@
     "Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.": "按順序填寫渠道 ID：首選、第一備用、第二備用。關閉備援時僅使用第一個渠道。所有候選都必須通過可用性與成本檢查。",
     "product route mode must be global or ordered": "商品選路方式必須為全域或順序",
     "wallet overrides do not support product route ordering": "錢包價格覆蓋不支援商品渠道順序",
-    "ordered product route is not configured": "商品渠道順序尚未設定"
+    "ordered product route is not configured": "商品渠道順序尚未設定",
+    "Payment reservation lifetime (seconds)": "待付款名額保留時間（秒）",
+    "Unpaid orders reserve a purchase slot until this deadline. Payments received after release require manual compensation; quota is not issued automatically.": "待付款訂單在此期限內占用限購名額。釋放後收到付款將轉為待補償，不會自動發放額度。",
+    "invalid product reservation lifetime": "待付款名額保留時間無效",
+    "Product payment received after reservation release; compensation required": "名額釋放後收到商品付款，需要補償處理",
+    "Payment received; awaiting compensation review": "已收款，等待補償處理"
   }
 }

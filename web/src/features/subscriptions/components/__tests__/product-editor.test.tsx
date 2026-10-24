@@ -111,6 +111,12 @@ it('creates a draft without requesting templates or offering fixed product types
     screen.getByRole('switch', { name: 'Allow redemption codes' })
   ).toHaveAttribute('aria-disabled', 'true')
   await user.type(screen.getByLabelText('Plan Title'), 'Flexible promotion')
+  const reservation = screen.getByLabelText(
+    'Payment reservation lifetime (seconds)'
+  )
+  expect(reservation).toHaveValue(1800)
+  await user.clear(reservation)
+  await user.type(reservation, '2400')
   await user.click(screen.getByRole('button', { name: 'Save changes' }))
   await waitFor(() => expect(post).toHaveBeenCalled())
   expect(post).toHaveBeenCalledWith(
@@ -124,6 +130,7 @@ it('creates a draft without requesting templates or offering fixed product types
         enabled: false,
         listed: false,
         redemption_enabled: false,
+        reservation_ttl_seconds: 2400,
       }),
     })
   )

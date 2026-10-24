@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -14,6 +15,41 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+func TestProductOrderSelfStatusPreservesPaymentPrivacy(t *testing.T) {
+	user, _ := setupAccessTokenAudit(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.SubscriptionOrder{}))
+	now := model.GetDBTimestamp()
+	for i, status := range []string{common.TopUpStatusPending, model.SubscriptionOrderStatusPaidReview} {
+		order := model.SubscriptionOrder{UserId: user.Id, TradeNo: fmt.Sprintf("self-order-%d", i), Status: status,
+			ReservationExpiresAt: now - 10, ProviderPayload: "private-provider-payload", ProviderTradeNo: "private-provider-transaction"}
+		require.NoError(t, model.DB.Create(&order).Error)
+	}
+	require.NoError(t, model.DB.Create(&model.SubscriptionOrder{UserId: user.Id + 1, TradeNo: "other-users-order"}).Error)
+	router := gin.New()
+	router.GET("/orders", func(c *gin.Context) {
+		c.Set("id", user.Id)
+		GetSubscriptionSelfOrders(c)
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/orders", nil))
+	var result struct {
+		Success bool                         `json:"success"`
+		Data    []SubscriptionOrderStatusDTO `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	require.True(t, result.Success, response.Body.String())
+	require.Len(t, result.Data, 2)
+	assert.Equal(t, model.SubscriptionOrderStatusPaidReview, result.Data[0].Status)
+	assert.Equal(t, common.TopUpStatusExpired, result.Data[1].Status)
+	assert.Equal(t, now-10, result.Data[1].ReservationExpiresAt)
+	for _, private := range []string{"private-provider-payload", "private-provider-transaction", "other-users-order"} {
+		assert.NotContains(t, response.Body.String(), private)
+	}
+	var original model.SubscriptionOrder
+	require.NoError(t, model.DB.Where("trade_no = ?", "self-order-0").First(&original).Error)
+	assert.Equal(t, common.TopUpStatusPending, original.Status, "displaying expiry must not change payment evidence")
+}
 
 func TestProductPriceBookAdministrativeAPI(t *testing.T) {
 	admin, _ := setupAccessTokenAudit(t)

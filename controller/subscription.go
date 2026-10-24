@@ -195,23 +195,24 @@ func AdminBootstrapMonthlyProducts(c *gin.Context) {
 }
 
 type SubscriptionOrderStatusDTO struct {
-	TradeNo            string  `json:"trade_no"`
-	Status             string  `json:"status"`
-	ProvisioningStatus string  `json:"provisioning_status"`
-	ProvisioningError  string  `json:"provisioning_error,omitempty"`
-	OrderType          string  `json:"order_type"`
-	ProductType        string  `json:"product_type"`
-	ProductCode        string  `json:"product_code"`
-	ProductFamily      string  `json:"product_family"`
-	SourceTier         int     `json:"source_tier"`
-	TargetTier         int     `json:"target_tier"`
-	PlanTitle          string  `json:"plan_title"`
-	Money              float64 `json:"money"`
-	Currency           string  `json:"currency"`
-	PaymentMethod      string  `json:"payment_method"`
-	UserSubscriptionId *int    `json:"user_subscription_id,omitempty"`
-	CreateTime         int64   `json:"create_time"`
-	CompleteTime       int64   `json:"complete_time"`
+	TradeNo              string  `json:"trade_no"`
+	Status               string  `json:"status"`
+	ProvisioningStatus   string  `json:"provisioning_status"`
+	ProvisioningError    string  `json:"provisioning_error,omitempty"`
+	OrderType            string  `json:"order_type"`
+	ProductType          string  `json:"product_type"`
+	ProductCode          string  `json:"product_code"`
+	ProductFamily        string  `json:"product_family"`
+	SourceTier           int     `json:"source_tier"`
+	TargetTier           int     `json:"target_tier"`
+	PlanTitle            string  `json:"plan_title"`
+	Money                float64 `json:"money"`
+	Currency             string  `json:"currency"`
+	PaymentMethod        string  `json:"payment_method"`
+	UserSubscriptionId   *int    `json:"user_subscription_id,omitempty"`
+	CreateTime           int64   `json:"create_time"`
+	CompleteTime         int64   `json:"complete_time"`
+	ReservationExpiresAt int64   `json:"reservation_expires_at"`
 }
 
 // ---- User APIs ----
@@ -322,15 +323,21 @@ func GetSubscriptionSelfOrders(c *gin.Context) {
 		return
 	}
 	result := make([]SubscriptionOrderStatusDTO, 0, len(orders))
+	now := model.GetDBTimestamp()
 	for _, order := range orders {
+		status := order.Status
+		if status == common.TopUpStatusPending && order.ReservationExpiresAt > 0 && order.ReservationExpiresAt <= now {
+			status = common.TopUpStatusExpired
+		}
 		result = append(result, SubscriptionOrderStatusDTO{
-			TradeNo: order.TradeNo, Status: order.Status,
+			TradeNo: order.TradeNo, Status: status,
 			ProvisioningStatus: order.ProvisioningStatus, ProvisioningError: order.ProvisioningError,
 			OrderType: order.OrderType, ProductType: order.ProductType, ProductCode: order.ProductCode,
 			ProductFamily: order.ProductFamily, SourceTier: order.SourceTier, TargetTier: order.TargetTier,
 			PlanTitle: order.PlanTitleSnapshot, Money: order.Money, Currency: order.CurrencySnapshot,
 			PaymentMethod: order.PaymentMethod, UserSubscriptionId: order.UserSubscriptionId,
 			CreateTime: order.CreateTime, CompleteTime: order.CompleteTime,
+			ReservationExpiresAt: order.ReservationExpiresAt,
 		})
 	}
 	common.ApiSuccess(c, result)

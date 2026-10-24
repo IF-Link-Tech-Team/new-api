@@ -40,6 +40,7 @@ export const subscriptionPlanSchema = z.object({
   allow_balance_pay: z.boolean().optional().default(true),
   allow_wallet_overflow: z.boolean().optional().default(true),
   max_purchase_per_user: z.number(),
+  reservation_ttl_seconds: z.number().optional(),
   total_amount: z.number(),
   upgrade_group: z.string().optional(),
   downgrade_group: z.string().optional(),
@@ -226,6 +227,7 @@ export interface SubscriptionOrderStatus {
   user_subscription_id?: number
   create_time: number
   complete_time: number
+  reservation_expires_at?: number
 }
 
 export interface CreateUserSubscriptionRequest {

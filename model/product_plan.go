@@ -15,6 +15,10 @@ import (
 
 var ErrProductPlanConflict = errors.New("product configuration changed; reload before saving")
 
+const DefaultProductReservationTTL int64 = 30 * 60
+const SubscriptionOrderStatusPaidReview = "paid_review"
+const ProvisioningStatusCompensationPending = "compensation_pending"
+
 // CreateProductPlan starts an explicit product-owned draft. Price publication
 // requires its generated ID, so activation is always a later operation.
 func CreateProductPlan(db *gorm.DB, plan *SubscriptionPlan) error {
@@ -37,6 +41,9 @@ func CreateProductPlan(db *gorm.DB, plan *SubscriptionPlan) error {
 		candidate.AllowWalletOverflow = common.GetPointer(false)
 	}
 	candidate.Category = NormalizeSubscriptionCategory(candidate.Category)
+	if candidate.ReservationTTLSeconds == 0 {
+		candidate.ReservationTTLSeconds = DefaultProductReservationTTL
+	}
 	candidate.NormalizeDefaults()
 	err := db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&candidate).Error; err != nil {
@@ -139,6 +146,9 @@ func (p *SubscriptionPlan) ValidateProductPlan() error {
 	if p.PriceAmount < 0 || math.IsNaN(p.PriceAmount) || math.IsInf(p.PriceAmount, 0) || p.TotalAmount < 0 || p.TotalAmount > common.MaxWalletQuota || p.MaxPurchasePerUser < 0 {
 		return errors.New("invalid product price, quota or purchase limit")
 	}
+	if p.ReservationTTLSeconds < 0 || p.ReservationTTLSeconds > common.MaxWalletQuota {
+		return errors.New("invalid product reservation lifetime")
+	}
 	// Both supported currencies settle in cents. Keep the order amount equal
 	// to the external charge and within the existing DECIMAL(10,6) column.
 	if p.PriceAmount > 9999.99 || !decimal.NewFromFloat(p.PriceAmount).Equal(decimal.NewFromFloat(p.PriceAmount).Round(2)) {
@@ -195,6 +205,45 @@ func (p *SubscriptionPlan) ValidateProductPlan() error {
 		}
 	}
 	return nil
+}
+
+// productReservationTimeTx uses current database wall time, including after
+// waiting for row locks. PostgreSQL NOW() freezes at transaction start; using
+// it here could revive a reservation that expired while a callback waited.
+func productReservationTimeTx(tx *gorm.DB) (int64, error) {
+	query := "SELECT UNIX_TIMESTAMP()"
+	switch tx.Dialector.Name() {
+	case "postgres":
+		query = "SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()))::bigint"
+	case "sqlite":
+		query = "SELECT CAST(strftime('%s','now') AS INTEGER)"
+	}
+	var now int64
+	if err := tx.Raw(query).Scan(&now).Error; err != nil {
+		return 0, err
+	}
+	if now <= 0 {
+		return 0, errors.New("invalid database reservation time")
+	}
+	return now, nil
+}
+
+// parkPaidProductOrderTx acknowledges a verified payment only after persisting
+// it. It does not claim a cash refund happened or issue quota after a released
+// reservation. Finance must explicitly resolve this durable compensation state.
+func parkPaidProductOrderTx(tx *gorm.DB, order *SubscriptionOrder, method string, receipt PaymentReceipt, reason string) error {
+	order.Status = SubscriptionOrderStatusPaidReview
+	order.ProvisioningStatus = ProvisioningStatusCompensationPending
+	order.ProvisioningError = reason
+	order.CompleteTime = getDBTimestampTx(tx)
+	order.PaidMoney, _ = receipt.Amount.Float64()
+	order.PaidCurrency = strings.ToUpper(strings.TrimSpace(receipt.Currency))
+	order.ProviderTradeNo = strings.TrimSpace(receipt.ProviderTradeNo)
+	order.ProviderPayload = receipt.ProviderPayload
+	if method != "" {
+		order.PaymentMethod = method
+	}
+	return tx.Save(order).Error
 }
 
 // validateProductPlanPrices separates new sales from paid issuance: sale

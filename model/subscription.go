@@ -182,6 +182,9 @@ type SubscriptionPlan struct {
 
 	// Max purchases per user (0 = unlimited)
 	MaxPurchasePerUser int `json:"max_purchase_per_user" gorm:"type:int;default:0"`
+	// New product orders freeze this deadline. Zero preserves the default for
+	// clients created before this field existed; historical orders keep no TTL.
+	ReservationTTLSeconds int64 `json:"reservation_ttl_seconds" gorm:"bigint;not null;default:0"`
 
 	// Upgrade user group after purchase (empty = no change)
 	UpgradeGroup string `json:"upgrade_group" gorm:"type:varchar(64);default:''"`
@@ -304,12 +307,13 @@ type SubscriptionOrder struct {
 	PlanId int     `json:"plan_id" gorm:"index"`
 	Money  float64 `json:"money"`
 
-	TradeNo         string `json:"trade_no" gorm:"unique;type:varchar(255);index"`
-	PaymentMethod   string `json:"payment_method" gorm:"type:varchar(50)"`
-	PaymentProvider string `json:"payment_provider" gorm:"type:varchar(50);default:''"`
-	Status          string `json:"status"`
-	CreateTime      int64  `json:"create_time"`
-	CompleteTime    int64  `json:"complete_time"`
+	TradeNo              string `json:"trade_no" gorm:"unique;type:varchar(255);index"`
+	PaymentMethod        string `json:"payment_method" gorm:"type:varchar(50)"`
+	PaymentProvider      string `json:"payment_provider" gorm:"type:varchar(50);default:''"`
+	Status               string `json:"status"`
+	CreateTime           int64  `json:"create_time"`
+	CompleteTime         int64  `json:"complete_time"`
+	ReservationExpiresAt int64  `json:"reservation_expires_at" gorm:"bigint;not null;default:0"`
 
 	ProviderPayload string  `json:"provider_payload" gorm:"type:text"`
 	PaidMoney       float64 `json:"paid_money" gorm:"type:decimal(10,6);not null;default:0"`
@@ -515,6 +519,13 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 	if tx == nil || userId <= 0 || planId <= 0 || strings.TrimSpace(tradeNo) == "" {
 		return nil, nil, errors.New("invalid subscription order args")
 	}
+	// Acquire the user serialization lock before any consistent table read.
+	// MySQL REPEATABLE READ would otherwise retain a snapshot taken before a
+	// competing checkout commits, even after waiting for this user's row lock.
+	var lockedUser User
+	if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&lockedUser).Error; err != nil {
+		return nil, nil, err
+	}
 	plan, err := getSubscriptionPlanByIdTx(tx, planId)
 	if err != nil {
 		return nil, nil, err
@@ -553,12 +564,6 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		return nil, nil, err
 	}
 
-	// The user row is the global serialization point for new monthly periods,
-	// upgrades, and concurrent callbacks across all three tiers.
-	var lockedUser User
-	if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&lockedUser).Error; err != nil {
-		return nil, nil, err
-	}
 	if plan.ProductType == ProductTypePackDeepSeekBigfish {
 		if err := checkBigfishPurchaseHistoryTx(tx, userId); err != nil {
 			return nil, nil, err
@@ -602,6 +607,18 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 	}
 	order.SnapshotPlan(plan)
 	if plan.PriceBook != "" {
+		ttl := plan.ReservationTTLSeconds
+		if ttl == 0 {
+			ttl = DefaultProductReservationTTL
+		}
+		order.CreateTime, err = productReservationTimeTx(tx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ttl < 0 || ttl > math.MaxInt64-order.CreateTime {
+			return nil, nil, errors.New("invalid product reservation lifetime")
+		}
+		order.ReservationExpiresAt = order.CreateTime + ttl
 		data, err := common.Marshal(plan)
 		if err != nil {
 			return nil, nil, err
@@ -673,6 +690,12 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		var pendingCount int64
 		pendingQuery := tx.Model(&SubscriptionOrder{}).
 			Where("user_id = ? AND order_type = ? AND status = ?", userId, SubscriptionOrderTypePurchase, common.TopUpStatusPending)
+		if plan.PriceBook != "" {
+			// Expiry is effective at the deadline, even if no cleanup worker has
+			// run. Do not update order rows while holding the user lock: callbacks
+			// take the order lock first, so that would invert their lock order.
+			pendingQuery = pendingQuery.Where("reservation_expires_at = 0 OR reservation_expires_at > ?", order.CreateTime)
+		}
 		if plan.ProductType == ProductTypeMonthlySubscription {
 			pendingQuery = pendingQuery.Where("product_family = ?", plan.ProductFamily)
 		} else {
@@ -1453,6 +1476,7 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	var logMoney float64
 	var logPaymentMethod string
 	var upgradeGroup string
+	var compensationReason string
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order SubscriptionOrder
 		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
@@ -1465,6 +1489,11 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			if err := validatePaymentReceipt(order.Money, order.CurrencySnapshot, receipt); err != nil {
 				return err
 			}
+		}
+		if order.Status == SubscriptionOrderStatusPaidReview {
+			// The verified receipt is durable; repeated callbacks must neither
+			// issue an entitlement nor erase the compensation evidence.
+			return nil
 		}
 		if order.Status == common.TopUpStatusSuccess {
 			// Idempotent recovery is safe because new orders persist the exact
@@ -1488,20 +1517,39 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			}
 			return nil
 		}
+		if order.Status != common.TopUpStatusPending && order.Status != common.TopUpStatusExpired {
+			return ErrSubscriptionOrderStatusInvalid
+		}
+		// Lock before the first consistent table read, as checkout does. This
+		// keeps the issuance limit check fresh on MySQL REPEATABLE READ too.
+		var userRow User
+		if err := lockForUpdate(tx).Select("id").Where("id = ?", order.UserId).First(&userRow).Error; err != nil {
+			return err
+		}
+		var reservationReleased bool
+		if order.ProductPlanSnapshot != "" {
+			now, err := productReservationTimeTx(tx)
+			if err != nil {
+				return err
+			}
+			reservationReleased = order.Status == common.TopUpStatusExpired ||
+				(order.ReservationExpiresAt > 0 && order.ReservationExpiresAt <= now)
+		}
+		if reservationReleased {
+			if receipt == nil {
+				return ErrSubscriptionOrderStatusInvalid
+			}
+			if err := parkPaidProductOrderTx(tx, &order, actualPaymentMethod, *receipt, "reservation_released"); err != nil {
+				return err
+			}
+			logUserId, compensationReason = order.UserId, order.ProvisioningError
+			return nil
+		}
 		if order.Status != common.TopUpStatusPending {
 			return ErrSubscriptionOrderStatusInvalid
 		}
 		plan, err := getSubscriptionPlanByIdTx(tx, order.PlanId)
 		if err != nil {
-			return err
-		}
-		if !plan.Enabled {
-			// still allow completion for already purchased orders
-		}
-		// 锁定用户行：并发完成同一用户的不同订单（包括多实例部署下）时，
-		// 使 CreateUserSubscriptionFromPlanTx 的 MaxPurchasePerUser 检查按用户串行。
-		var userRow User
-		if err := lockForUpdate(tx).Select("id").Where("id = ?", order.UserId).First(&userRow).Error; err != nil {
 			return err
 		}
 		provisionPlan, err := provisionPlanFromOrder(tx, &order, plan)
@@ -1550,6 +1598,10 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	})
 	if err != nil {
 		return err
+	}
+	if compensationReason != "" {
+		RecordLog(logUserId, LogTypeSystem, common.NewMessage("Product payment received after reservation release; compensation required"))
+		return nil
 	}
 	if upgradeGroup != "" && logUserId > 0 {
 		refreshSubscriptionUserGroupCache(logUserId, common.LogText("subscription payment completion"))

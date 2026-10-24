@@ -45,6 +45,11 @@ export function getPlanFormSchema(t: TFunction) {
     allow_balance_pay: z.boolean(),
     allow_wallet_overflow: z.boolean(),
     max_purchase_per_user: z.coerce.number().min(0),
+    reservation_ttl_seconds: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(Number.MAX_SAFE_INTEGER),
     total_amount: z.coerce.number().min(0),
     upgrade_group: z.string().optional(),
     downgrade_group: z.string().optional(),
@@ -83,6 +88,7 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   allow_balance_pay: true,
   allow_wallet_overflow: false,
   max_purchase_per_user: 0,
+  reservation_ttl_seconds: 1800,
   total_amount: 0,
   upgrade_group: '',
   downgrade_group: '',
@@ -135,6 +141,7 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     allow_balance_pay: plan.allow_balance_pay !== false,
     allow_wallet_overflow: plan.allow_wallet_overflow !== false,
     max_purchase_per_user: Number(plan.max_purchase_per_user || 0),
+    reservation_ttl_seconds: Number(plan.reservation_ttl_seconds || 1800),
     total_amount: quotaUnitsToDollars(Number(plan.total_amount || 0)),
     upgrade_group: plan.upgrade_group || '',
     category: plan.category || 'package',
@@ -207,6 +214,8 @@ export function formValuesToPlanPayload(
       payload.plan.listed = false
       payload.plan.redemption_enabled = false
     }
+  } else {
+    delete payload.plan.reservation_ttl_seconds
   }
   return payload
 }

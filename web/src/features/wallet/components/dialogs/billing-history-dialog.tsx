@@ -186,11 +186,18 @@ export function BillingHistoryDialog({
                 if (provisioned) {
                   statusLabel = '权益与 Key 已到账'
                   statusVariant = 'success'
+                } else if (order.status === 'paid_review') {
+                  statusLabel = t(
+                    'Payment received; awaiting compensation review'
+                  )
+                  statusVariant = 'danger'
                 } else if (failed) {
                   statusLabel = '到账异常，等待恢复'
                   statusVariant = 'danger'
                 } else if (order.status === 'pending') {
                   statusLabel = '等待支付'
+                } else if (order.status === 'expired') {
+                  statusLabel = t('Expired')
                 }
                 return (
                   <div

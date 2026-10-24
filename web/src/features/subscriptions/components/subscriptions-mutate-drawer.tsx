@@ -644,6 +644,37 @@ export function SubscriptionsMutateDrawer({
                 />
               </div>
 
+              {productOwned && (
+                <FormField
+                  control={form.control}
+                  name='reservation_ttl_seconds'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        {t('Payment reservation lifetime (seconds)')}
+                      </FormLabel>
+                      <FormControl>
+                        <Input
+                          {...field}
+                          type='number'
+                          min={1}
+                          step={1}
+                          onChange={(e) =>
+                            field.onChange(Number(e.target.value))
+                          }
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Unpaid orders reserve a purchase slot until this deadline. Payments received after release require manual compensation; quota is not issued automatically.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
               <FormField
                 control={form.control}
                 name='sort_order'

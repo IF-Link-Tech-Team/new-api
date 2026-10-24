@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/glebarez/sqlite"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
@@ -108,7 +109,9 @@ func TestProductPriceBookMigration(t *testing.T) {
 			// rows, then expand twice. These additions may not mutate old data.
 			require.NoError(t, db.Migrator().DropColumn(&SubscriptionPlan{}, "PriceBook"))
 			require.NoError(t, db.Migrator().DropColumn(&SubscriptionPlan{}, "ConfigRevision"))
+			require.NoError(t, db.Migrator().DropColumn(&SubscriptionPlan{}, "ReservationTTLSeconds"))
 			require.NoError(t, db.Migrator().DropColumn(&SubscriptionOrder{}, "ProductPlanSnapshot"))
+			require.NoError(t, db.Migrator().DropColumn(&SubscriptionOrder{}, "ReservationExpiresAt"))
 			for range 2 {
 				require.NoError(t, db.AutoMigrate(&PriceBookPrice{}, &SubscriptionPlan{}, &SubscriptionOrder{}))
 				require.NoError(t, BackfillProductPriceBooks(db))
@@ -321,6 +324,9 @@ func TestProductPriceBookMigration(t *testing.T) {
 			})
 
 			t.Run("transactional plans bypass display cache", func(t *testing.T) {
+				require.NoError(t, db.AutoMigrate(&User{}))
+				t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(&User{})) })
+				require.NoError(t, db.Create(&User{Id: 123, Username: "display-cache-buyer", Status: common.UserStatusEnabled, Group: "default"}).Error)
 				for _, id := range []int{51, 52} {
 					InvalidateSubscriptionPlanCache(id)
 					t.Cleanup(func() { InvalidateSubscriptionPlanCache(id) })
@@ -574,6 +580,98 @@ func TestProductPriceBookMigration(t *testing.T) {
 					require.NoError(t, PurchaseSubscriptionWithBalance(user.Id, product.Id))
 					require.NoError(t, db.First(&buyer, user.Id).Error)
 					assert.Equal(t, 8000000, buyer.Quota, "USD wallet purchase must not apply the CNY exchange rate")
+				})
+				t.Run("reservation expiry releases limit and late receipts remain durable", func(t *testing.T) {
+					product := SubscriptionPlan{Title: "Limited promotion", Currency: "CNY", PriceAmount: 17.25,
+						DurationUnit: SubscriptionDurationDay, DurationValue: 3, TotalAmount: 1000000,
+						ModelScope: "reserved-model", MaxPurchasePerUser: 1, ReservationTTLSeconds: 47}
+					require.NoError(t, CreateProductPlan(db, &product))
+					product.Enabled, product.PriceVersion = true, "reservation-v1"
+					version := entries[0]
+					version.Id, version.PriceBook, version.Model, version.PriceVersion = 0, "", product.ModelScope, product.PriceVersion
+					version.Enabled, version.EffectiveAt = true, 0
+					require.NoError(t, CreateProductPriceBookVersion(db, product.Id, &version))
+					require.NoError(t, UpdateProductPlan(db, &product, 1))
+					first, _, err := CreateSubscriptionOrder(user.Id, product.Id, "reserve-first-"+engine, "alipay", "alipay", true)
+					require.NoError(t, err)
+					assert.Equal(t, first.CreateTime+47, first.ReservationExpiresAt)
+					_, _, err = CreateSubscriptionOrder(user.Id, product.Id, "reserve-blocked-"+engine, "alipay", "alipay", true)
+					require.ErrorContains(t, err, "含待支付订单")
+					// A deadline is authoritative without a background cleanup write.
+					require.NoError(t, db.Model(first).UpdateColumn("reservation_expires_at", getDBTimestampTx(db)-1).Error)
+					var second *SubscriptionOrder
+					if engine == "sqlite" {
+						second, _, err = CreateSubscriptionOrder(user.Id, product.Id, "reserve-second-"+engine, "alipay", "alipay", true)
+						require.NoError(t, err)
+					} else {
+						// Two new checkouts race the released slot while a late payment
+						// callback is replayed. Exactly one new reservation may win.
+						type checkoutResult struct {
+							order *SubscriptionOrder
+							err   error
+						}
+						start, results, callbacks := make(chan struct{}), make(chan checkoutResult, 2), make(chan error, 2)
+						for i := range 2 {
+							go func() {
+								<-start
+								order, _, err := CreateSubscriptionOrder(user.Id, product.Id, fmt.Sprintf("reserve-race-%s-%d", engine, i), "alipay", "alipay", true)
+								results <- checkoutResult{order, err}
+							}()
+							go func() {
+								<-start
+								callbacks <- CompleteSubscriptionOrderWithReceipt(first.TradeNo, "alipay", "alipay", PaymentReceipt{
+									Amount: decimal.RequireFromString("17.25"), Currency: "CNY",
+									ProviderTradeNo: "synthetic-" + first.TradeNo, ProviderPayload: "synthetic-receipt",
+								})
+							}()
+						}
+						close(start)
+						var successful, rejected int
+						for range 2 {
+							result := <-results
+							if result.err == nil {
+								successful++
+								second = result.order
+							} else {
+								require.ErrorContains(t, result.err, "含待支付订单")
+								rejected++
+							}
+						}
+						for range 2 {
+							require.NoError(t, <-callbacks)
+						}
+						require.Equal(t, 1, successful)
+						require.Equal(t, 1, rejected)
+					}
+					require.NoError(t, ExpireSubscriptionOrder(second.TradeNo, "alipay"))
+					third, _, err := CreateSubscriptionOrder(user.Id, product.Id, "reserve-third-"+engine, "alipay", "alipay", true)
+					require.NoError(t, err, "explicit provider cancellation also releases the slot")
+					for _, late := range []*SubscriptionOrder{first, second} {
+						receipt := PaymentReceipt{Amount: decimal.RequireFromString("17.25"), Currency: "CNY", ProviderTradeNo: "synthetic-" + late.TradeNo, ProviderPayload: "synthetic-receipt"}
+						underpaid := receipt
+						underpaid.Amount = decimal.RequireFromString("17.24")
+						require.Error(t, CompleteSubscriptionOrderWithReceipt(late.TradeNo, "alipay", "alipay", underpaid))
+						require.ErrorIs(t, CompleteSubscriptionOrderWithReceipt(late.TradeNo, "wrong-provider", "alipay", receipt), ErrPaymentMethodMismatch)
+						for range 2 {
+							require.NoError(t, CompleteSubscriptionOrderWithReceipt(late.TradeNo, "alipay", "alipay", receipt))
+						}
+						var parked SubscriptionOrder
+						require.NoError(t, db.First(&parked, late.Id).Error)
+						assert.Equal(t, SubscriptionOrderStatusPaidReview, parked.Status)
+						assert.Equal(t, ProvisioningStatusCompensationPending, parked.ProvisioningStatus)
+						assert.Equal(t, "reservation_released", parked.ProvisioningError)
+						assert.Equal(t, 17.25, parked.PaidMoney)
+						assert.Equal(t, "CNY", parked.PaidCurrency)
+						assert.Equal(t, receipt.ProviderTradeNo, parked.ProviderTradeNo)
+						assert.Equal(t, receipt.ProviderPayload, parked.ProviderPayload)
+						assert.Nil(t, parked.UserSubscriptionId)
+					}
+					var issued int64
+					require.NoError(t, db.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", user.Id, product.Id).Count(&issued).Error)
+					assert.Zero(t, issued, "late callbacks must not consume another reservation or issue quota")
+					require.NoError(t, CompleteSubscriptionOrder(third.TradeNo, "", "alipay", "alipay"))
+					require.NoError(t, db.Model(&UserSubscription{}).Where("user_id = ? AND plan_id = ?", user.Id, product.Id).Count(&issued).Error)
+					assert.EqualValues(t, 1, issued)
 				})
 			})
 

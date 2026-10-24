@@ -7561,6 +7561,11 @@
     "Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.": "Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.",
     "product route mode must be global or ordered": "product route mode must be global or ordered",
     "wallet overrides do not support product route ordering": "wallet overrides do not support product route ordering",
-    "ordered product route is not configured": "ordered product route is not configured"
+    "ordered product route is not configured": "ordered product route is not configured",
+    "Payment reservation lifetime (seconds)": "Payment reservation lifetime (seconds)",
+    "Unpaid orders reserve a purchase slot until this deadline. Payments received after release require manual compensation; quota is not issued automatically.": "Unpaid orders reserve a purchase slot until this deadline. Payments received after release require manual compensation; quota is not issued automatically.",
+    "invalid product reservation lifetime": "invalid product reservation lifetime",
+    "Product payment received after reservation release; compensation required": "Product payment received after reservation release; compensation required",
+    "Payment received; awaiting compensation review": "Payment received; awaiting compensation review"
   }
 }
