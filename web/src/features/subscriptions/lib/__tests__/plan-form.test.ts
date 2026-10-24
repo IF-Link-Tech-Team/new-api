@@ -83,7 +83,7 @@ describe('plan form model scope conversion', () => {
     assert.equal(values.redemption_enabled, false)
     assert.equal(values.course_eligible, true)
 
-    const payload = formValuesToPlanPayload(values)
+    const payload = formValuesToPlanPayload(values, plan)
     assert.equal(payload.plan.product_type, 'pack_k3')
     assert.equal(payload.plan.currency, 'CNY')
     assert.equal(payload.plan.product_code, 'k3-pack-49')
@@ -118,11 +118,32 @@ describe('plan form defaults for legacy plans', () => {
     assert.equal(formValuesToPlanPayload(values).plan.currency, 'USD')
   })
 
-  test('payload of defaults carries an empty legacy product contract', () => {
-    const payload = formValuesToPlanPayload(PLAN_FORM_DEFAULTS)
+  test('new product is a template-free draft even when sale flags are supplied', () => {
+    const payload = formValuesToPlanPayload({
+      ...PLAN_FORM_DEFAULTS,
+      enabled: true,
+      listed: true,
+      redemption_enabled: true,
+    })
     assert.equal(payload.plan.product_type, '')
     assert.equal(payload.plan.model_scope, '')
-    assert.equal(payload.plan.listed, true)
-    assert.equal(payload.plan.redemption_enabled, true)
+    assert.equal(payload.product_owned_pricing, true)
+    assert.equal(payload.plan.billing_multiplier, 1)
+    assert.equal(payload.plan.enabled, false)
+    assert.equal(payload.plan.listed, false)
+    assert.equal(payload.plan.redemption_enabled, false)
+  })
+
+  test('generic update carries its book and current revision without losing display metadata', () => {
+    const plan = buildPlan({
+      price_book: 'product:7',
+      config_revision: 4,
+      display_metadata: '{"badge":"Sale"}',
+      billing_multiplier: 1,
+    })
+    const payload = formValuesToPlanPayload(planToFormValues(plan), plan, 5)
+    assert.equal(payload.expected_revision, 5)
+    assert.equal(payload.plan.price_book, 'product:7')
+    assert.equal(payload.plan.display_metadata, plan.display_metadata)
   })
 })

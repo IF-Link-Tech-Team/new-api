@@ -2,12 +2,14 @@ package model
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -517,6 +519,58 @@ func TestProductPriceBookMigration(t *testing.T) {
 						require.NoError(t, second)
 					}
 				}
+				t.Run("currency-safe checkout and wallet debit", func(t *testing.T) {
+					oldRate, oldUnit := operation_setting.USDExchangeRate, common.QuotaPerUnit
+					t.Cleanup(func() { operation_setting.USDExchangeRate, common.QuotaPerUnit = oldRate, oldUnit })
+					operation_setting.USDExchangeRate, common.QuotaPerUnit = 7.3, 500000
+					product := SubscriptionPlan{Title: "Currency-safe promotion", PriceAmount: 14.6, Currency: "CNY", DurationUnit: SubscriptionDurationDay, DurationValue: 30, TotalAmount: 1000000, ModelScope: "operator-model"}
+					require.NoError(t, CreateProductPlan(db, &product))
+					for _, amount := range []float64{0.001, 10000} {
+						invalid := product
+						invalid.PriceAmount = amount
+						require.ErrorContains(t, invalid.ValidateProductPlan(), "two decimal places")
+					}
+					product.PriceVersion, product.Enabled = "balance-v1", true
+					version := entries[0]
+					version.Id, version.PriceBook, version.Model, version.PriceVersion = 0, "", product.ModelScope, product.PriceVersion
+					version.Enabled, version.EffectiveAt = true, 0
+					require.NoError(t, CreateProductPriceBookVersion(db, product.Id, &version))
+					require.NoError(t, UpdateProductPlan(db, &product, 1))
+					_, _, err := CreateSubscriptionOrder(user.Id, product.Id, "cny-waffo-"+engine, PaymentMethodWaffoPancake, PaymentProviderWaffoPancake, false)
+					require.ErrorContains(t, err, "USD product")
+					require.NoError(t, db.Model(&User{}).Where("id = ?", user.Id).UpdateColumn("quota", 10000000).Error)
+					for _, rate := range []float64{0, -1, math.NaN(), math.Inf(1)} {
+						operation_setting.USDExchangeRate = rate
+						require.ErrorContains(t, PurchaseSubscriptionWithBalance(user.Id, product.Id), "exchange rate")
+					}
+					operation_setting.USDExchangeRate = 7.3
+					for _, unit := range []float64{0, -1, math.NaN(), math.Inf(1)} {
+						common.QuotaPerUnit = unit
+						require.ErrorContains(t, PurchaseSubscriptionWithBalance(user.Id, product.Id), "Quota unit")
+					}
+					common.QuotaPerUnit = 500000
+					var count int64
+					require.NoError(t, db.Model(&SubscriptionOrder{}).Where("plan_id = ?", product.Id).Count(&count).Error)
+					assert.Zero(t, count, "failed conversion must roll back the pending order too")
+					operation_setting.USDExchangeRate = 7.3
+					require.NoError(t, PurchaseSubscriptionWithBalance(user.Id, product.Id))
+					var buyer User
+					require.NoError(t, db.First(&buyer, user.Id).Error)
+					assert.Equal(t, 9000000, buyer.Quota, "14.60 CNY is 2 USD, not 14.60 USD of wallet quota")
+					var purchase SubscriptionOrder
+					require.NoError(t, db.Where("plan_id = ?", product.Id).First(&purchase).Error)
+					assert.Equal(t, "CNY", purchase.CurrencySnapshot)
+					assert.JSONEq(t, `{"charged_quota":1000000,"cash_amount":14.6,"cash_currency":"CNY","cash_per_usd":7.3}`, purchase.ProviderPayload)
+					product.Currency, product.PriceAmount = "USD", 2
+					require.NoError(t, UpdateProductPlan(db, &product, 2))
+					for _, provider := range []string{PaymentProviderAlipay, PaymentProviderIFLinkPay, PaymentProviderEpay} {
+						_, _, err := CreateSubscriptionOrder(user.Id, product.Id, "usd-"+provider+"-"+engine, provider, provider, true)
+						require.ErrorContains(t, err, "CNY product")
+					}
+					require.NoError(t, PurchaseSubscriptionWithBalance(user.Id, product.Id))
+					require.NoError(t, db.First(&buyer, user.Id).Error)
+					assert.Equal(t, 8000000, buyer.Quota, "USD wallet purchase must not apply the CNY exchange rate")
+				})
 			})
 
 			// A conflicting migrated row must never be overwritten or leave a

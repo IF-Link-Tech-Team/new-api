@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -137,6 +138,11 @@ func (p *SubscriptionPlan) ValidateProductPlan() error {
 	}
 	if p.PriceAmount < 0 || math.IsNaN(p.PriceAmount) || math.IsInf(p.PriceAmount, 0) || p.TotalAmount < 0 || p.TotalAmount > common.MaxWalletQuota || p.MaxPurchasePerUser < 0 {
 		return errors.New("invalid product price, quota or purchase limit")
+	}
+	// Both supported currencies settle in cents. Keep the order amount equal
+	// to the external charge and within the existing DECIMAL(10,6) column.
+	if p.PriceAmount > 9999.99 || !decimal.NewFromFloat(p.PriceAmount).Equal(decimal.NewFromFloat(p.PriceAmount).Round(2)) {
+		return errors.New("product cash price must fit its storage limit and use at most two decimal places")
 	}
 	if p.Currency != "CNY" && p.Currency != "USD" {
 		return errors.New("product currency must be CNY or USD")

@@ -24,7 +24,47 @@ import type {
   ProductPrice,
   ProductPriceFilters,
   ProductPricePayload,
+  ProductPriceBookVersion,
+  ProductPriceBookPage,
 } from './types'
+
+export async function getProductPriceBookVersions(
+  planId: number,
+  beforeId = 0
+): Promise<ApiResponse<ProductPriceBookPage>> {
+  const params = new URLSearchParams({ limit: '20' })
+  if (beforeId > 0) params.set('before_id', String(beforeId))
+  const res = await api.get(
+    `/api/subscription/admin/plans/${planId}/prices?${params}`
+  )
+  return requireServerSuccess(res.data)
+}
+
+export async function createProductPriceBookVersion(
+  planId: number,
+  data: ProductPricePayload
+): Promise<ApiResponse<ProductPriceBookVersion>> {
+  const { product_type: _legacyType, ...price } = data.price
+  const res = await api.post(`/api/subscription/admin/plans/${planId}/prices`, {
+    price,
+  })
+  return requireServerSuccess(res.data)
+}
+
+export async function setProductPriceBookVersionEnabled(
+  planId: number,
+  priceId: number,
+  enabled: boolean,
+  expectedRevision: number
+): Promise<
+  ApiResponse<{ price: ProductPriceBookVersion; config_revision: number }>
+> {
+  const res = await api.patch(
+    `/api/subscription/admin/plans/${planId}/prices/${priceId}`,
+    { enabled, expected_revision: expectedRevision }
+  )
+  return requireServerSuccess(res.data)
+}
 
 export async function getAdminProductPrices(
   filters?: ProductPriceFilters

@@ -97,6 +97,7 @@ import {
   type PlanFormValues,
 } from '../lib'
 import type { PlanRecord } from '../types'
+import { ProductPriceBookEditor } from './product-price-book-editor'
 import { useSubscriptions } from './subscriptions-provider'
 
 interface Props {
@@ -112,6 +113,8 @@ export function SubscriptionsMutateDrawer({
 }: Props) {
   const { t } = useTranslation()
   const isEdit = !!currentRow?.plan?.id
+  const productOwned = !isEdit || !!currentRow?.plan.price_book
+  const [revision, setRevision] = useState(currentRow?.plan.config_revision)
   const { triggerRefresh } = useSubscriptions()
   const { meta: currencyMeta } = getCurrencyDisplay()
   const tokensOnly = currencyMeta.kind === 'tokens'
@@ -131,6 +134,7 @@ export function SubscriptionsMutateDrawer({
 
   useEffect(() => {
     if (open) {
+      setRevision(currentRow?.plan.config_revision)
       if (currentRow?.plan) {
         form.reset(planToFormValues(currentRow.plan))
       } else {
@@ -175,12 +179,12 @@ export function SubscriptionsMutateDrawer({
     watchedTitle.trim().length > 0 &&
     Number(watchedPrice ?? 0) > 0
 
-  // Product contract data: templates drive the read-only constraint hints and
-  // the model scope filter; enabled models feed the MultiSelect options.
+  // Only legacy plans retain template constraints during the migration.
+  // Generic plans preserve selected models even when a channel is disabled.
   const { data: templatesData } = useQuery({
     queryKey: ['admin-product-templates'],
     queryFn: getAdminProductTemplates,
-    enabled: open,
+    enabled: open && !productOwned,
   })
   const templates = useMemo(() => templatesData?.data || [], [templatesData])
   const { data: enabledModelsData } = useQuery({
@@ -194,16 +198,18 @@ export function SubscriptionsMutateDrawer({
   )
 
   const watchedProductType = form.watch('product_type')
+  const selectedModels = form.watch('model_scope')
   const selectedTemplate = findTemplateForProductType(
     templates,
     watchedProductType || ''
   )
   const modelScopeOptions = useMemo(
     () =>
-      filterModelScopeOptions(enabledModels, selectedTemplate).map(
-        (modelName) => ({ value: modelName, label: modelName })
-      ),
-    [enabledModels, selectedTemplate]
+      (productOwned
+        ? [...new Set([...enabledModels, ...selectedModels])]
+        : filterModelScopeOptions(enabledModels, selectedTemplate)
+      ).map((modelName) => ({ value: modelName, label: modelName })),
+    [enabledModels, selectedTemplate, productOwned, selectedModels]
   )
   const templatePriceSummary = formatTemplatePriceRules(selectedTemplate)
   const templateModelScope = parseTemplateModelScope(selectedTemplate)
@@ -211,15 +217,20 @@ export function SubscriptionsMutateDrawer({
   const onSubmit = async (values: PlanFormValues) => {
     setIsSubmitting(true)
     try {
-      const payload = formValuesToPlanPayload(values)
+      const payload = formValuesToPlanPayload(
+        values,
+        currentRow?.plan,
+        revision
+      )
       if (isEdit && currentRow?.plan?.id) {
         const res = await updatePlan(currentRow.plan.id, payload)
         if (res.success) {
-          // PUT preserves redemption_enabled (PATCH is authoritative for it);
-          // sync it here when the operator flipped the switch in the drawer.
+          // Legacy PUT preserves redemption_enabled. Generic PUT includes it
+          // in the same revision-checked transaction as the other fields.
           if (
+            !productOwned &&
             values.redemption_enabled !==
-            (currentRow.plan.redemption_enabled !== false)
+              (currentRow.plan.redemption_enabled !== false)
           ) {
             await patchPlanFlags(currentRow.plan.id, {
               redemption_enabled: values.redemption_enabled,
@@ -410,9 +421,13 @@ export function SubscriptionsMutateDrawer({
                         />
                       </FormControl>
                       <FormDescription>
-                        {t(
-                          'Amount the user pays to purchase this plan; the actual currency depends on the payment gateway.'
-                        )}
+                        {productOwned
+                          ? t(
+                              'Cash price in the selected currency; quota is configured separately.'
+                            )
+                          : t(
+                              'Amount the user pays to purchase this plan; the actual currency depends on the payment gateway.'
+                            )}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
@@ -457,6 +472,39 @@ export function SubscriptionsMutateDrawer({
                   )}
                 />
               </div>
+
+              {productOwned && (
+                <FormField
+                  control={form.control}
+                  name='currency'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Currency')}</FormLabel>
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        items={[
+                          { value: 'CNY', label: 'CNY' },
+                          { value: 'USD', label: 'USD' },
+                        ]}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            <SelectItem value='CNY'>CNY</SelectItem>
+                            <SelectItem value='USD'>USD</SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
 
               <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
                 <FormField
@@ -561,7 +609,7 @@ export function SubscriptionsMutateDrawer({
                       </Select>
                       <FormDescription>
                         {t(
-                          'Traffic packs are one-shot quota packages; subscriptions are long-running plans. Controls which user page renders them.'
+                          'Category controls where this product appears; quota and reset rules are configured independently.'
                         )}
                       </FormDescription>
                       <FormMessage />
@@ -631,6 +679,7 @@ export function SubscriptionsMutateDrawer({
                         <Switch
                           checked={field.value}
                           onCheckedChange={field.onChange}
+                          disabled={!isEdit}
                         />
                       </FormControl>
                     </FormItem>
@@ -681,248 +730,300 @@ export function SubscriptionsMutateDrawer({
                 <IconBadge tone='chart-3' size='xs'>
                   <Package />
                 </IconBadge>
-                {t('Product Contract')}
+                {productOwned
+                  ? t('Product models and pricing')
+                  : t('Product Contract')}
               </h3>
 
-              <FormField
-                control={form.control}
-                name='product_type'
-                render={({ field }) => {
-                  const items = templates.map((template) => ({
-                    value: template.product_type,
-                    label: template.display_name
-                      ? `${template.display_name} (${template.product_type})`
-                      : template.product_type,
-                  }))
-                  if (
-                    field.value &&
-                    !templates.some(
-                      (template) => template.product_type === field.value
-                    )
-                  ) {
-                    items.push({ value: field.value, label: field.value })
-                  }
-                  return (
-                    <FormItem>
-                      <FormLabel>{t('Product Type')}</FormLabel>
-                      {isEdit ? (
-                        <FormControl>
-                          <Input
-                            value={field.value || t('None (legacy plan)')}
-                            disabled
-                          />
-                        </FormControl>
-                      ) : (
-                        <Select
-                          items={[
-                            {
-                              value: '__none__',
-                              label: t('None (legacy plan)'),
-                            },
-                            ...items,
-                          ]}
-                          onValueChange={(v) =>
-                            field.onChange(v === '__none__' ? '' : v)
-                          }
-                          value={field.value || '__none__'}
-                        >
-                          <FormControl>
-                            <SelectTrigger>
-                              <SelectValue
-                                placeholder={t('None (legacy plan)')}
+              {!productOwned && (
+                <>
+                  <FormField
+                    control={form.control}
+                    name='product_type'
+                    render={({ field }) => {
+                      const items = templates.map((template) => ({
+                        value: template.product_type,
+                        label: template.display_name
+                          ? `${template.display_name} (${template.product_type})`
+                          : template.product_type,
+                      }))
+                      if (
+                        field.value &&
+                        !templates.some(
+                          (template) => template.product_type === field.value
+                        )
+                      ) {
+                        items.push({ value: field.value, label: field.value })
+                      }
+                      return (
+                        <FormItem>
+                          <FormLabel>{t('Product Type')}</FormLabel>
+                          {isEdit ? (
+                            <FormControl>
+                              <Input
+                                value={field.value || t('None (legacy plan)')}
+                                disabled
                               />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent alignItemWithTrigger={false}>
-                            <SelectGroup>
-                              <SelectItem value='__none__'>
-                                {t('None (legacy plan)')}
-                              </SelectItem>
-                              {items.map((item) => (
-                                <SelectItem key={item.value} value={item.value}>
-                                  {item.label}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          </SelectContent>
-                        </Select>
-                      )}
-                      <FormDescription>
-                        {t(
-                          'Product type binds the plan to a product template contract. It can only be chosen at creation time.'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )
-                }}
-              />
+                            </FormControl>
+                          ) : (
+                            <Select
+                              items={[
+                                {
+                                  value: '__none__',
+                                  label: t('None (legacy plan)'),
+                                },
+                                ...items,
+                              ]}
+                              onValueChange={(v) =>
+                                field.onChange(v === '__none__' ? '' : v)
+                              }
+                              value={field.value || '__none__'}
+                            >
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue
+                                    placeholder={t('None (legacy plan)')}
+                                  />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent alignItemWithTrigger={false}>
+                                <SelectGroup>
+                                  <SelectItem value='__none__'>
+                                    {t('None (legacy plan)')}
+                                  </SelectItem>
+                                  {items.map((item) => (
+                                    <SelectItem
+                                      key={item.value}
+                                      value={item.value}
+                                    >
+                                      {item.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          )}
+                          <FormDescription>
+                            {t(
+                              'Product type binds the plan to a product template contract. It can only be chosen at creation time.'
+                            )}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )
+                    }}
+                  />
 
-              {selectedTemplate && (
-                <div className='text-muted-foreground bg-muted/50 flex flex-col gap-1 rounded-md px-3 py-2 text-xs'>
-                  <span className='text-foreground font-medium'>
-                    {t('Template constraints')}
-                    {selectedTemplate.locked
-                      ? ` · ${t('Locked template')}`
-                      : ''}
-                  </span>
-                  {templatePriceSummary && (
-                    <span>
-                      {t('Allowed prices for this type: {{prices}}', {
-                        prices: templatePriceSummary,
-                      })}
-                    </span>
+                  {selectedTemplate && (
+                    <div className='text-muted-foreground bg-muted/50 flex flex-col gap-1 rounded-md px-3 py-2 text-xs'>
+                      <span className='text-foreground font-medium'>
+                        {t('Template constraints')}
+                        {selectedTemplate.locked
+                          ? ` · ${t('Locked template')}`
+                          : ''}
+                      </span>
+                      {templatePriceSummary && (
+                        <span>
+                          {t('Allowed prices for this type: {{prices}}', {
+                            prices: templatePriceSummary,
+                          })}
+                        </span>
+                      )}
+                      {selectedTemplate.duration_days > 0 && (
+                        <span>
+                          {t('Fixed duration: {{days}} days', {
+                            days: selectedTemplate.duration_days,
+                          })}
+                        </span>
+                      )}
+                      {selectedTemplate.billing_multiplier > 0 && (
+                        <span>
+                          {t('Billing multiplier: {{value}}', {
+                            value: selectedTemplate.billing_multiplier,
+                          })}
+                        </span>
+                      )}
+                      {templateModelScope.length > 0 && (
+                        <span>
+                          {t('Allowed models: {{models}}', {
+                            models: templateModelScope.join(', '),
+                          })}
+                        </span>
+                      )}
+                      {selectedTemplate.max_purchase_per_user > 0 && (
+                        <span>
+                          {t('Max purchases per user: {{count}}', {
+                            count: selectedTemplate.max_purchase_per_user,
+                          })}
+                        </span>
+                      )}
+                      {selectedTemplate.price_version && (
+                        <span>
+                          {t('Price version: {{version}}', {
+                            version: selectedTemplate.price_version,
+                          })}
+                        </span>
+                      )}
+                    </div>
                   )}
-                  {selectedTemplate.duration_days > 0 && (
-                    <span>
-                      {t('Fixed duration: {{days}} days', {
-                        days: selectedTemplate.duration_days,
-                      })}
-                    </span>
-                  )}
-                  {selectedTemplate.billing_multiplier > 0 && (
-                    <span>
-                      {t('Billing multiplier: {{value}}', {
-                        value: selectedTemplate.billing_multiplier,
-                      })}
-                    </span>
-                  )}
-                  {templateModelScope.length > 0 && (
-                    <span>
-                      {t('Allowed models: {{models}}', {
-                        models: templateModelScope.join(', '),
-                      })}
-                    </span>
-                  )}
-                  {selectedTemplate.max_purchase_per_user > 0 && (
-                    <span>
-                      {t('Max purchases per user: {{count}}', {
-                        count: selectedTemplate.max_purchase_per_user,
-                      })}
-                    </span>
-                  )}
-                  {selectedTemplate.price_version && (
-                    <span>
-                      {t('Price version: {{version}}', {
-                        version: selectedTemplate.price_version,
-                      })}
-                    </span>
-                  )}
-                </div>
+
+                  <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                    <FormField
+                      control={form.control}
+                      name='product_code'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Product Code')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              disabled={isEdit}
+                              placeholder={t(
+                                'e.g. deepseek-bigfish-lite-20261017'
+                              )}
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t(
+                              'Unique product code; cannot be changed after creation'
+                            )}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name='product_tier'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Product Tier')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              type='number'
+                              min={0}
+                              onChange={(e) =>
+                                field.onChange(
+                                  Number.parseInt(e.target.value, 10) || 0
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t(
+                              'Tier index used by tiered templates; 0 when unused'
+                            )}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name='product_family'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Product Family')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              placeholder={t('e.g. deepseek_classroom')}
+                            />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name='price_version'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Price Version')}</FormLabel>
+                          <FormControl>
+                            <Input {...field} placeholder='v2026-10' />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+
+                    <FormField
+                      control={form.control}
+                      name='billing_multiplier'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Billing Multiplier')}</FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              type='number'
+                              step='0.01'
+                              min={0}
+                              onChange={(e) =>
+                                field.onChange(
+                                  Number.parseFloat(e.target.value) || 0
+                                )
+                              }
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            {t(
+                              'Plan-level billing multiplier; 0 lets the server apply the template default.'
+                            )}
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                </>
               )}
 
-              <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-                <FormField
-                  control={form.control}
-                  name='product_code'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Product Code')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          disabled={isEdit}
-                          placeholder={t('e.g. deepseek-bigfish-lite-20261017')}
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        {t(
-                          'Unique product code; cannot be changed after creation'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
+              {productOwned && (
+                <>
+                  {!isEdit && (
+                    <FormDescription>
+                      {t(
+                        'Save a draft first, then add model price versions before enabling sales or redemption.'
+                      )}
+                    </FormDescription>
                   )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name='product_tier'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Product Tier')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type='number'
-                          min={0}
-                          onChange={(e) =>
-                            field.onChange(
-                              Number.parseInt(e.target.value, 10) || 0
-                            )
-                          }
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        {t(
-                          'Tier index used by tiered templates; 0 when unused'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
+                  <FormField
+                    control={form.control}
+                    name='price_version'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Price Version')}</FormLabel>
+                        <FormControl>
+                          <Input {...field} placeholder='v2026-10' />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'All selected models must have an enabled price with this version before new sales can start.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  {currentRow?.plan && (
+                    <ProductPriceBookEditor
+                      product={currentRow.plan}
+                      revision={revision || 0}
+                      disabled={isSubmitting}
+                      onRevisionChange={(nextRevision) => {
+                        setRevision(nextRevision)
+                        triggerRefresh()
+                      }}
+                    />
                   )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name='product_family'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Product Family')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          placeholder={t('e.g. deepseek_classroom')}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name='price_version'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Price Version')}</FormLabel>
-                      <FormControl>
-                        <Input {...field} placeholder='v2026-10' />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name='billing_multiplier'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Billing Multiplier')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type='number'
-                          step='0.01'
-                          min={0}
-                          onChange={(e) =>
-                            field.onChange(
-                              Number.parseFloat(e.target.value) || 0
-                            )
-                          }
-                        />
-                      </FormControl>
-                      <FormDescription>
-                        {t(
-                          'Plan-level billing multiplier; 0 lets the server apply the template default.'
-                        )}
-                      </FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
+                </>
+              )}
 
               <FormField
                 control={form.control}
@@ -936,15 +1037,20 @@ export function SubscriptionsMutateDrawer({
                         selected={field.value}
                         onChange={field.onChange}
                         placeholder={t('Select models allowed by this plan')}
-                        emptyText={t('No models available for this template')}
+                        emptyText={t('No models available')}
                         maxVisibleChips={6}
+                        allowCreate={productOwned}
                         copyChipOnClick
                       />
                     </FormControl>
                     <FormDescription>
-                      {t(
-                        'Restricts which models may consume this plan. Empty means every model. Options are filtered to the template scope when one is selected.'
-                      )}
+                      {productOwned
+                        ? t(
+                            'Select the exact models this product can use. Each model has its own product price.'
+                          )
+                        : t(
+                            'Restricts which models may consume this plan. Empty means every model. Options are filtered to the template scope when one is selected.'
+                          )}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -964,6 +1070,7 @@ export function SubscriptionsMutateDrawer({
                         <Switch
                           checked={field.value}
                           onCheckedChange={field.onChange}
+                          disabled={!isEdit}
                         />
                       </FormControl>
                     </FormItem>
@@ -982,47 +1089,52 @@ export function SubscriptionsMutateDrawer({
                         <Switch
                           checked={field.value}
                           onCheckedChange={field.onChange}
+                          disabled={!isEdit}
                         />
                       </FormControl>
                     </FormItem>
                   )}
                 />
 
-                <FormField
-                  control={form.control}
-                  name='course_eligible'
-                  render={({ field }) => (
-                    <FormItem className={sideDrawerSwitchItemClassName()}>
-                      <FormLabel className='!mt-0'>
-                        {t('Course eligible')}
-                      </FormLabel>
-                      <FormControl>
-                        <Switch
-                          checked={field.value}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
+                {!productOwned && (
+                  <FormField
+                    control={form.control}
+                    name='course_eligible'
+                    render={({ field }) => (
+                      <FormItem className={sideDrawerSwitchItemClassName()}>
+                        <FormLabel className='!mt-0'>
+                          {t('Course eligible')}
+                        </FormLabel>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                )}
 
-                <FormField
-                  control={form.control}
-                  name='fallback_allowed'
-                  render={({ field }) => (
-                    <FormItem className={sideDrawerSwitchItemClassName()}>
-                      <FormLabel className='!mt-0'>
-                        {t('Allow route fallback')}
-                      </FormLabel>
-                      <FormControl>
-                        <Switch
-                          checked={field.value}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
-                    </FormItem>
-                  )}
-                />
+                {!productOwned && (
+                  <FormField
+                    control={form.control}
+                    name='fallback_allowed'
+                    render={({ field }) => (
+                      <FormItem className={sideDrawerSwitchItemClassName()}>
+                        <FormLabel className='!mt-0'>
+                          {t('Allow route fallback')}
+                        </FormLabel>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                )}
               </div>
             </SideDrawerSection>
 

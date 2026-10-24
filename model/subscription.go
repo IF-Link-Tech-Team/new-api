@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/samber/hot"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -529,6 +531,20 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 	}
 	if plan.PriceAmount < 0 {
 		return nil, nil, errors.New("套餐价格不能为负数")
+	}
+	if plan.PriceBook != "" {
+		// Check the locked plan, rather than the controller's display-cache
+		// copy. These gateways have a fixed settlement currency.
+		switch paymentProvider {
+		case PaymentProviderAlipay, PaymentProviderIFLinkPay, PaymentProviderEpay:
+			if plan.Currency != "CNY" {
+				return nil, nil, errors.New("this payment provider requires a CNY product")
+			}
+		case PaymentProviderWaffoPancake:
+			if plan.Currency != "USD" {
+				return nil, nil, errors.New("this payment provider requires a USD product")
+			}
+		}
 	}
 	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, nil, err
@@ -1681,9 +1697,46 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			return common.NewMessage("This plan does not allow balance redemption")
 		}
 
-		requiredQuota, err := calcSubscriptionBalanceQuota(order.Money)
-		if err != nil {
-			return err
+		var requiredQuota int
+		var balancePayload string
+		if plan.PriceBook != "" {
+			// Wallet quota is USD-denominated. Product cash price keeps its own
+			// currency; never debit a CNY amount as though it were USD. Persist
+			// the exact rate and debit with the successful order for accounting.
+			if common.QuotaPerUnit <= 0 || math.IsNaN(common.QuotaPerUnit) || math.IsInf(common.QuotaPerUnit, 0) {
+				return common.NewMessage("Quota unit is misconfigured")
+			}
+			quotaAmount := decimal.NewFromFloat(order.Money).Mul(decimal.NewFromFloat(common.QuotaPerUnit))
+			rate := 1.0
+			if plan.Currency == "CNY" {
+				rate = operation_setting.USDExchangeRate
+				if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
+					return errors.New("product balance payment requires a valid CNY per USD exchange rate")
+				}
+				whole, remainder := quotaAmount.QuoRem(decimal.NewFromFloat(rate), 0)
+				if remainder.IsPositive() {
+					whole = whole.Add(decimal.NewFromInt(1))
+				}
+				quotaAmount = whole
+			}
+			requiredQuota, err = common.WalletQuotaFromDecimalStrict(quotaAmount.Ceil())
+			if err != nil {
+				return err
+			}
+			payload, err := common.Marshal(map[string]any{
+				"charged_quota": requiredQuota, "cash_amount": order.Money,
+				"cash_currency": plan.Currency, "cash_per_usd": rate,
+			})
+			if err != nil {
+				return err
+			}
+			balancePayload = string(payload)
+		} else {
+			requiredQuota, err = calcSubscriptionBalanceQuota(order.Money)
+			if err != nil {
+				return err
+			}
+			balancePayload = fmt.Sprintf("charged_quota=%d", requiredQuota)
 		}
 
 		var user User
@@ -1700,7 +1753,7 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			}
 		}
 
-		order.ProviderPayload = fmt.Sprintf("charged_quota=%d", requiredQuota)
+		order.ProviderPayload = balancePayload
 		var subscription *UserSubscription
 		if order.OrderType == SubscriptionOrderTypeUpgrade {
 			subscription, err = upgradeMonthlySubscriptionTx(tx, order, plan)

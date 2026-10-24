@@ -78,10 +78,10 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   custom_seconds: 0,
   quota_reset_period: 'never',
   quota_reset_custom_seconds: 0,
-  enabled: true,
+  enabled: false,
   sort_order: 0,
   allow_balance_pay: true,
-  allow_wallet_overflow: true,
+  allow_wallet_overflow: false,
   max_purchase_per_user: 0,
   total_amount: 0,
   upgrade_group: '',
@@ -94,13 +94,13 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   product_code: '',
   product_family: '',
   product_tier: 0,
-  billing_multiplier: 0,
+  billing_multiplier: 1,
   price_version: '',
   model_scope: [],
   course_eligible: false,
   fallback_allowed: false,
-  listed: true,
-  redemption_enabled: true,
+  listed: false,
+  redemption_enabled: false,
 }
 
 // Plan model_scope is a comma-separated string on the wire; the form edits it
@@ -156,8 +156,13 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
   }
 }
 
-export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
-  return {
+export function formValuesToPlanPayload(
+  values: PlanFormValues,
+  currentPlan?: SubscriptionPlan,
+  revision?: number
+): PlanPayload {
+  const productOwned = !currentPlan || !!currentPlan.price_book
+  const payload: PlanPayload = {
     plan: {
       ...values,
       price_amount: Number(values.price_amount || 0),
@@ -188,4 +193,20 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
       redemption_enabled: values.redemption_enabled,
     },
   }
+  if (productOwned) {
+    payload.product_owned_pricing = true
+    payload.expected_revision = revision ?? currentPlan?.config_revision
+    payload.plan.price_book = currentPlan?.price_book
+    payload.plan.display_metadata = currentPlan?.display_metadata
+    payload.plan.product_type = ''
+    payload.plan.product_tier = 0
+    payload.plan.billing_multiplier = 1
+    payload.plan.course_eligible = false
+    if (!currentPlan) {
+      payload.plan.enabled = false
+      payload.plan.listed = false
+      payload.plan.redemption_enabled = false
+    }
+  }
+  return payload
 }

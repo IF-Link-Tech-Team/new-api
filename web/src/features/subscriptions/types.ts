@@ -53,6 +53,9 @@ export const subscriptionPlanSchema = z.object({
   product_tier: z.number().optional(),
   billing_multiplier: z.number().optional(),
   price_version: z.string().optional(),
+  price_book: z.string().optional(),
+  config_revision: z.number().optional(),
+  display_metadata: z.string().optional(),
   model_scope: z.string().optional(),
   course_eligible: z.boolean().optional(),
   fallback_allowed: z.boolean().optional(),
@@ -162,6 +165,8 @@ export interface ApiResponse<T = unknown> {
 
 export interface PlanPayload {
   plan: Partial<SubscriptionPlan>
+  product_owned_pricing?: boolean
+  expected_revision?: number
 }
 
 export interface SubscriptionPayRequest {

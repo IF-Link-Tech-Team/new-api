@@ -55,6 +55,15 @@ export const productPriceSchema = z.object({
 
 export type ProductPrice = z.infer<typeof productPriceSchema>
 
+export type ProductPriceBookVersion = Omit<ProductPrice, 'product_type'> & {
+  price_book: string
+}
+
+export interface ProductPriceBookPage {
+  items: ProductPriceBookVersion[]
+  next_id: number
+}
+
 export interface ApiResponse<T = unknown> {
   success: boolean
   message?: string

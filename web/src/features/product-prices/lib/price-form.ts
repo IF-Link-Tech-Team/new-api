@@ -21,13 +21,15 @@ import { z } from 'zod'
 
 import type { PriceComponents, ProductPricePayload } from '../types'
 
-export function getPriceFormSchema(t: TFunction) {
+export function getPriceFormSchema(t: TFunction, productOwned = false) {
   return z.object({
-    product_type: z.string().min(1, t('Please select a product type')),
+    product_type: z
+      .string()
+      .min(productOwned ? 0 : 1, t('Please select a product type')),
     model: z.string().trim().min(1, t('Please enter the exact model ID')),
     price_version: z.string().trim().min(1, t('Please enter a price version')),
     effective_at: z.coerce.number().min(0),
-    billing_multiplier: z.coerce.number().min(0),
+    billing_multiplier: z.coerce.number().positive(),
     billing_expression: z
       .string()
       .trim()
@@ -38,15 +40,19 @@ export function getPriceFormSchema(t: TFunction) {
       .min(1, t('Please enter at least one channel ID')),
     official_input: z.coerce.number().min(0),
     official_cached_input: z.coerce.number().min(0),
+    official_cache_creation: z.coerce.number().min(0),
     official_output: z.coerce.number().min(0),
     selling_input: z.coerce.number().min(0),
     selling_cached_input: z.coerce.number().min(0),
+    selling_cache_creation: z.coerce.number().min(0),
     selling_output: z.coerce.number().min(0),
     upstream_input: z.coerce.number().min(0),
     upstream_cached_input: z.coerce.number().min(0),
+    upstream_cache_creation: z.coerce.number().min(0),
     upstream_output: z.coerce.number().min(0),
     cost_input: z.coerce.number().min(0),
     cost_cached_input: z.coerce.number().min(0),
+    cost_cache_creation: z.coerce.number().min(0),
     cost_output: z.coerce.number().min(0),
     fallback_allowed: z.boolean(),
     enabled: z.boolean(),
@@ -65,31 +71,37 @@ export const PRICE_FORM_DEFAULTS: PriceFormValues = {
   allowed_channels: '',
   official_input: 0,
   official_cached_input: 0,
+  official_cache_creation: 0,
   official_output: 0,
   selling_input: 0,
   selling_cached_input: 0,
+  selling_cache_creation: 0,
   selling_output: 0,
   upstream_input: 0,
   upstream_cached_input: 0,
+  upstream_cache_creation: 0,
   upstream_output: 0,
   cost_input: 0,
   cost_cached_input: 0,
+  cost_cache_creation: 0,
   cost_output: 0,
   fallback_allowed: false,
   enabled: true,
 }
 
-// Price component fields travel as JSON strings; the form edits the three
-// core components (input / cached input / output) as numbers.
+// Prices travel as JSON strings. An omitted historical cache-write component
+// remains distinct from an explicitly configured zero.
 export function buildPriceComponents(
   input: number,
   cachedInput: number,
-  output: number
+  output: number,
+  cacheCreation?: number
 ): string {
   const components: PriceComponents = {
     input,
     cached_input: cachedInput,
     output,
+    ...(cacheCreation === undefined ? {} : { cache_creation: cacheCreation }),
   }
   return JSON.stringify(components)
 }
@@ -134,7 +146,7 @@ export function parseChannelIds(raw: string): number[] | null {
   for (const part of parts) {
     if (!/^\d+$/.test(part)) return null
     const id = Number.parseInt(part, 10)
-    if (id <= 0 || seen.has(id)) return null
+    if (!Number.isSafeInteger(id) || id <= 0 || seen.has(id)) return null
     seen.add(id)
     ids.push(id)
   }
@@ -158,22 +170,26 @@ export function formValuesToPricePayload(
       official_reference_price: buildPriceComponents(
         Number(values.official_input || 0),
         Number(values.official_cached_input || 0),
-        Number(values.official_output || 0)
+        Number(values.official_output || 0),
+        Number(values.official_cache_creation || 0)
       ),
       user_selling_price: buildPriceComponents(
         Number(values.selling_input || 0),
         Number(values.selling_cached_input || 0),
-        Number(values.selling_output || 0)
+        Number(values.selling_output || 0),
+        Number(values.selling_cache_creation || 0)
       ),
       upstream_settlement_price: buildPriceComponents(
         Number(values.upstream_input || 0),
         Number(values.upstream_cached_input || 0),
-        Number(values.upstream_output || 0)
+        Number(values.upstream_output || 0),
+        Number(values.upstream_cache_creation || 0)
       ),
       max_upstream_cost: buildPriceComponents(
         Number(values.cost_input || 0),
         Number(values.cost_cached_input || 0),
-        Number(values.cost_output || 0)
+        Number(values.cost_output || 0),
+        Number(values.cost_cache_creation || 0)
       ),
       fallback_allowed: values.fallback_allowed,
       enabled: values.enabled,
