@@ -1,5 +1,8 @@
 {
   "translation": {
+    "price book version already exists": "この料金バージョンは既に存在します",
+    "price book must match the requested product": "料金表は指定した商品に属している必要があります",
+    "wallet is not a saleable product": "ウォレットは販売商品ではありません",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

@@ -16,6 +16,8 @@ import (
 
 const WalletPriceBook = "wallet"
 
+var ErrPriceBookVersionExists = errors.New("price book version already exists")
+
 // PriceBookPrice is the expansion-stage successor of ProductPrice. The old
 // catalog stays intact until orders, keys and relay reads have been migrated.
 // Price and route data share the same immutable version.
@@ -165,6 +167,47 @@ func (p *PriceBookPrice) BeforeUpdate(tx *gorm.DB) error {
 	}
 	tx.Statement.SetColumn("UpdatedAt", common.GetTimestamp())
 	return nil
+}
+
+// CreateProductPriceBookVersion stages a new immutable version for a concrete
+// product. Selecting it for new sales is a separate plan change; existing
+// orders, entitlements and other products are never changed here.
+func CreateProductPriceBookVersion(db *gorm.DB, planId int, price *PriceBookPrice) error {
+	book, err := ProductPriceBook(planId)
+	if err != nil {
+		return err
+	}
+	if price == nil || (price.PriceBook != "" && price.PriceBook != book) {
+		return errors.New("price book must match the requested product")
+	}
+	candidate := *price
+	candidate.PriceBook = book
+	candidate.Id, candidate.CreatedAt, candidate.UpdatedAt = 0, 0, 0
+	if err := candidate.Validate(); err != nil {
+		return err
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
+		var plan SubscriptionPlan
+		if err := lockForUpdate(tx).First(&plan, planId).Error; err != nil {
+			return err
+		}
+		if plan.ProductType == ProductTypeWallet {
+			return errors.New("wallet is not a saleable product")
+		}
+		var count int64
+		if err := tx.Model(&PriceBookPrice{}).Where("price_book = ? AND model = ? AND price_version = ?",
+			book, candidate.Model, candidate.PriceVersion).Count(&count).Error; err != nil {
+			return err
+		}
+		if count != 0 {
+			return ErrPriceBookVersionExists
+		}
+		return tx.Create(&candidate).Error
+	})
+	if err == nil {
+		*price = candidate
+	}
+	return err
 }
 
 func CreateLegacyProductPrice(db *gorm.DB, price *ProductPrice) error {

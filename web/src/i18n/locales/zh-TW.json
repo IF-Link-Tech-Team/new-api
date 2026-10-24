@@ -1,5 +1,8 @@
 {
   "translation": {
+    "price book version already exists": "該模型的商品費率版本已存在，請建立新版本",
+    "price book must match the requested product": "價格簿必須屬於目前商品",
+    "wallet is not a saleable product": "錢包不是可售商品，請在模型定價中管理一般錢包價格",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

@@ -1,5 +1,8 @@
 {
   "translation": {
+    "price book version already exists": "该模型的商品费率版本已存在，请创建新版本",
+    "price book must match the requested product": "价格簿必须属于当前商品",
+    "wallet is not a saleable product": "钱包不是可售商品，请在模型定价中管理普通钱包价格",
     "Versioned base price": "版本基准价",
     "Sign in to view current prices": "登录后查看实时价格",
     "Current prices unavailable": "暂时无法读取价格，请到模型广场重试",

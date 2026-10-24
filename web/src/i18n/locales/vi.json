@@ -1,5 +1,8 @@
 {
   "translation": {
+    "price book version already exists": "Phiên bản giá này đã tồn tại",
+    "price book must match the requested product": "Bảng giá phải thuộc sản phẩm được yêu cầu",
+    "wallet is not a saleable product": "Ví không phải là sản phẩm để bán",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

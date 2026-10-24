@@ -1,5 +1,8 @@
 {
   "translation": {
+    "price book version already exists": "Эта версия цены уже существует",
+    "price book must match the requested product": "Прайс-лист должен относиться к указанному продукту",
+    "wallet is not a saleable product": "Кошелёк не является продаваемым продуктом",
     "360": "360",
     "1000": "1000",
     "10000": "10000",

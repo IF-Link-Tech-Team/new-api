@@ -246,6 +246,107 @@ func TestProductPriceBookMigration(t *testing.T) {
 					UpdateColumn("billing_expression", pack.BillingExpression).Error)
 			})
 
+			t.Run("product scoped version publication", func(t *testing.T) {
+				var plansBefore []SubscriptionPlan
+				require.NoError(t, db.Order("id").Find(&plansBefore).Error)
+				var sourcesBefore []ProductPrice
+				require.NoError(t, db.Order("id").Find(&sourcesBefore).Error)
+				generic := entries[0]
+				generic.PriceBook, generic.Model, generic.PriceVersion = "", "new-provider-model", "operator-scoped-v1"
+				generic.BillingMultiplier, generic.FallbackAllowed = 0.73, true
+				generic.Id, generic.CreatedAt, generic.UpdatedAt = 99, 1, 1
+				require.NoError(t, CreateProductPriceBookVersion(db, 41, &generic))
+				assert.Equal(t, "product:41", generic.PriceBook)
+				assert.NotEqual(t, 99, generic.Id)
+				assert.Greater(t, generic.CreatedAt, int64(1))
+				duplicate := generic
+				duplicate.BillingMultiplier = 0.99
+				require.ErrorIs(t, CreateProductPriceBookVersion(db, 41, &duplicate), ErrPriceBookVersionExists)
+				stored, err := ResolvePriceBookPrice(db, generic.PriceBook, generic.Model, generic.PriceVersion)
+				require.NoError(t, err)
+				assert.Equal(t, generic, *stored, "duplicate publication must not replace price or route terms")
+				other := generic
+				other.PriceBook, other.BillingMultiplier = "", 0.81
+				require.NoError(t, CreateProductPriceBookVersion(db, 42, &other))
+				assert.Equal(t, "product:42", other.PriceBook)
+				assert.NotEqual(t, generic.Id, other.Id)
+				for _, book := range []string{"wallet", "product:42", "product:041"} {
+					invalid := generic
+					invalid.PriceBook = book
+					require.Error(t, CreateProductPriceBookVersion(db, 41, &invalid), book)
+				}
+				missing := generic
+				missing.PriceBook = ""
+				require.ErrorIs(t, CreateProductPriceBookVersion(db, 999, &missing), gorm.ErrRecordNotFound)
+				assert.Empty(t, missing.PriceBook, "failed writes must not mutate the caller's snapshot")
+				require.Error(t, CreateProductPriceBookVersion(db, 0, &missing))
+				require.Error(t, CreateProductPriceBookVersion(db, 41, nil))
+				if engine != "sqlite" {
+					start, results := make(chan struct{}), make(chan error, 2)
+					for range 2 {
+						go func() {
+							candidate := generic
+							candidate.PriceVersion = "competing-publish"
+							<-start
+							results <- CreateProductPriceBookVersion(db, 41, &candidate)
+						}()
+					}
+					close(start)
+					first, second := <-results, <-results
+					if first == nil {
+						require.ErrorIs(t, second, ErrPriceBookVersionExists)
+					} else {
+						require.ErrorIs(t, first, ErrPriceBookVersionExists)
+						require.NoError(t, second)
+					}
+				}
+				var plansAfter []SubscriptionPlan
+				require.NoError(t, db.Order("id").Find(&plansAfter).Error)
+				assert.Equal(t, plansBefore, plansAfter, "publishing must not select a new sales version")
+				var sourcesAfter []ProductPrice
+				require.NoError(t, db.Order("id").Find(&sourcesAfter).Error)
+				assert.Equal(t, sourcesBefore, sourcesAfter, "product-specific prices must not change the legacy type-wide catalog")
+			})
+
+			t.Run("transactional plans bypass display cache", func(t *testing.T) {
+				for _, id := range []int{51, 52} {
+					InvalidateSubscriptionPlanCache(id)
+					t.Cleanup(func() { InvalidateSubscriptionPlanCache(id) })
+					plan := SubscriptionPlan{Id: id, Title: "committed plan", Enabled: true, PriceAmount: 10}
+					require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Create(&plan).Error)
+				}
+				cached, err := GetSubscriptionPlanById(51)
+				require.NoError(t, err)
+				require.True(t, cached.Enabled)
+				// Model cache invalidation can lag a write from another process.
+				require.NoError(t, db.Model(&SubscriptionPlan{}).Where("id = ?", 51).UpdateColumns(map[string]any{
+					"enabled": false, "price_amount": 12,
+				}).Error)
+				order, _, err := CreateSubscriptionOrder(123, 51, "cached-disabled-plan", "alipay", "alipay", true)
+				require.ErrorContains(t, err, "套餐未启用")
+				assert.Nil(t, order, "a stale enabled cache must not permit checkout")
+				require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+					fresh, err := getSubscriptionPlanByIdTx(tx, 51)
+					require.NoError(t, err)
+					assert.False(t, fresh.Enabled, "transactional sales must not trust the display cache")
+					assert.Equal(t, float64(12), fresh.PriceAmount)
+					return nil
+				}))
+				rollback := assert.AnError
+				require.ErrorIs(t, db.Transaction(func(tx *gorm.DB) error {
+					if err := tx.Model(&SubscriptionPlan{}).Where("id = ?", 52).UpdateColumn("title", "uncommitted plan").Error; err != nil {
+						return err
+					}
+					inTransaction, err := getSubscriptionPlanByIdTx(tx, 52)
+					require.NoError(t, err)
+					assert.Equal(t, "uncommitted plan", inTransaction.Title)
+					return rollback
+				}), rollback)
+				committed, err := GetSubscriptionPlanById(52)
+				require.NoError(t, err)
+				assert.Equal(t, "committed plan", committed.Title, "rolled-back data must never enter shared caches")
+			})
+
 			// A conflicting migrated row must never be overwritten or leave a
 			// partly copied wallet catalog behind.
 			require.NoError(t, db.Where("price_book = ?", ProductTypeWallet).Delete(&PriceBookPrice{}).Error)

@@ -820,7 +820,10 @@ func getSubscriptionPlanByIdTx(tx *gorm.DB, id int) (*SubscriptionPlan, error) {
 		return nil, errors.New("invalid plan id")
 	}
 	key := subscriptionPlanCacheKey(id)
-	if key != "" {
+	// Transactions must read their own database snapshot. A display cache may
+	// still contain a plan that was just disabled or repriced, and caching an
+	// uncommitted plan would leak a change even if its transaction rolls back.
+	if tx == nil && key != "" {
 		if cached, found, err := getSubscriptionPlanCache().Get(key); err == nil && found {
 			cached.NormalizeDefaults()
 			return &cached, nil
@@ -835,7 +838,9 @@ func getSubscriptionPlanByIdTx(tx *gorm.DB, id int) (*SubscriptionPlan, error) {
 		return nil, err
 	}
 	plan.NormalizeDefaults()
-	_ = getSubscriptionPlanCache().SetWithTTL(key, plan, subscriptionPlanCacheTTL())
+	if tx == nil {
+		_ = getSubscriptionPlanCache().SetWithTTL(key, plan, subscriptionPlanCacheTTL())
+	}
 	return &plan, nil
 }
 

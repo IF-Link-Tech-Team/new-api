@@ -1,5 +1,8 @@
 {
   "translation": {
+    "price book version already exists": "Cette version tarifaire existe déjà",
+    "price book must match the requested product": "La grille tarifaire doit appartenir au produit demandé",
+    "wallet is not a saleable product": "Le portefeuille n’est pas un produit à vendre",
     "360": "360",
     "1000": "1000",
     "10000": "10000",
