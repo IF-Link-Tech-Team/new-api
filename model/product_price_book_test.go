@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/glebarez/sqlite"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
@@ -803,6 +804,61 @@ func TestProductPriceBookMigration(t *testing.T) {
 				})
 			})
 
+			t.Run("converted products fence old writers and preserve legacy orders", func(t *testing.T) {
+				legacy := SubscriptionPlan{Id: 91, Title: "Frozen legacy terms", ProductType: ProductTypeLegacySubscription,
+					ProductCode: "stable-checkout-code", PriceAmount: 19.9, Currency: "USD",
+					DurationUnit: SubscriptionDurationDay, DurationValue: 7, TotalAmount: 1000000,
+					ModelScope: pack.Model, PriceVersion: pack.PriceVersion, BillingMultiplier: 1}
+				order := SubscriptionOrder{PlanId: legacy.Id, TradeNo: "pre-conversion-order"}
+				order.SnapshotPlan(&legacy)
+				converted := legacy
+				converted.PriceBook, converted.ProductType, converted.ConfigRevision = "product:91", "", 1
+				converted.Title, converted.TotalAmount = "New generic terms", 3000000
+				require.NoError(t, db.Create(&converted).Error)
+				for _, book := range []string{"", converted.PriceBook} {
+					order.PriceBook = book // backfilled old orders are still legacy
+					frozen, err := provisionPlanFromOrder(db, &order, &converted)
+					require.NoError(t, err)
+					assert.Empty(t, frozen.PriceBook)
+					assert.Equal(t, legacy.ProductType, frozen.ProductType)
+					assert.Equal(t, legacy.TotalAmount, frozen.TotalAmount)
+					assert.Equal(t, legacy.Title, frozen.Title)
+				}
+				unfrozen := SubscriptionOrder{PlanId: legacy.Id}
+				_, err := provisionPlanFromOrder(db, &unfrozen, &converted)
+				require.ErrorContains(t, err, "immutable plan snapshot", "an incomplete historical order cannot inherit new commercial terms")
+				require.ErrorIs(t, db.Transaction(func(tx *gorm.DB) error {
+					return UpdateLegacySubscriptionPlan(tx, converted.Id, map[string]any{"title": "stale overwrite", "enabled": false})
+				}), ErrProductPlanConflict)
+				var stored SubscriptionPlan
+				require.NoError(t, db.First(&stored, converted.Id).Error)
+				assert.Equal(t, converted.Title, stored.Title)
+				assert.Equal(t, converted.ConfigRevision, stored.ConfigRevision)
+
+				// Old orders/entitlements keep the book in the legacy sync scope.
+				// They must not give that old catalog control of generic sales.
+				order.ProductType = pack.ProductType
+				require.NoError(t, db.Create(&order).Error)
+				owned := entries[0]
+				owned.Id, owned.PriceBook, owned.Model, owned.PriceVersion = 0, converted.PriceBook, pack.Model, pack.PriceVersion
+				owned.Enabled, owned.BillingExpression = true, `tier("owned", p * 3 + c * 5)`
+				require.NoError(t, db.Create(&owned).Error)
+				oldPrice := pack
+				oldPrice.Enabled = false
+				require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return SyncLegacyProductPriceBooks(tx, oldPrice) }))
+				var after PriceBookPrice
+				require.NoError(t, db.First(&after, owned.Id).Error)
+				assert.Equal(t, owned, after, "legacy toggles must not modify generic prices")
+				oldPrice.PriceVersion = "legacy-after-conversion"
+				require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return SyncLegacyProductPriceBooks(tx, oldPrice) }))
+				var count int64
+				require.NoError(t, db.Model(&PriceBookPrice{}).Where("price_book = ? AND price_version = ?", converted.PriceBook, oldPrice.PriceVersion).Count(&count).Error)
+				assert.Zero(t, count, "legacy publication must not add versions to a converted product")
+			})
+			t.Run("generic sale cost checks preserve paid versions", func(t *testing.T) {
+				testGenericProductCostFloor(t, db)
+			})
+
 			// A conflicting migrated row must never be overwritten or leave a
 			// partly copied wallet catalog behind.
 			require.NoError(t, db.Where("price_book = ?", ProductTypeWallet).Delete(&PriceBookPrice{}).Error)
@@ -923,6 +979,17 @@ func TestProductionPriceBookBackfill(t *testing.T) {
 	if os.Getenv("PRICE_BOOK_PRODUCTION_REHEARSAL") != "1" {
 		t.Skip("requires isolated production restore")
 	}
+	// TestMain initializes schema but not runtime options. The shape check
+	// must see the restored site's groups, rather than only compiled defaults.
+	originalGroups := ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroups)) })
+	for _, key := range []string{"GroupRatio", "group_ratio_setting.group_ratio"} {
+		var option Option
+		require.NoError(t, DB.Where(map[string]any{"key": key}).Find(&option).Error)
+		if option.Value != "" {
+			require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(option.Value))
+		}
+	}
 	var legacyBefore []ProductPrice
 	var plansBefore []SubscriptionPlan
 	var ordersBefore []SubscriptionOrder
@@ -960,19 +1027,69 @@ func TestProductionPriceBookBackfill(t *testing.T) {
 	require.Positive(t, count)
 	t.Logf("legacy prices=%d plans=%d orders=%d entitlements=%d copied prices=%d; originals unchanged; migration twice passed",
 		len(legacyBefore), len(plansBefore), len(ordersBefore), len(subscriptionsBefore), count)
+	// Exercise real historical snapshots against a simulated converted live
+	// plan, without writing that conversion or issuing any entitlement.
+	plansByID := make(map[int]SubscriptionPlan, len(plansAfter))
+	var shapeCompatible, specialHandling, missingStableCode int
+	shapeBlockers := make(map[string]int)
+	for _, plan := range plansAfter {
+		plansByID[plan.Id] = plan
+		candidate := plan
+		candidate.PriceBook, _ = ProductPriceBook(plan.Id)
+		candidate.ProductType, candidate.TemplateId, candidate.BillingMultiplier = "", 0, 1
+		if err := candidate.ValidateProductPlan(); err == nil {
+			shapeCompatible++
+		} else {
+			specialHandling++
+			shapeBlockers[err.Error()]++
+		}
+		if plan.ProductCode == "" {
+			missingStableCode++
+		}
+	}
+	var checked, invalidHistorical, missingLivePlan int
+	for _, order := range ordersAfter {
+		if order.ProductType == "" || order.ProductPlanSnapshot != "" {
+			continue
+		}
+		live, found := plansByID[order.PlanId]
+		if !found {
+			missingLivePlan++
+			continue
+		}
+		before, err := provisionPlanFromOrder(DB, &order, &live)
+		if err != nil {
+			invalidHistorical++
+			continue
+		}
+		converted := live
+		converted.PriceBook, _ = ProductPriceBook(live.Id)
+		converted.ProductType, converted.TemplateId, converted.ConfigRevision = "", 0, 1
+		after, err := provisionPlanFromOrder(DB, &order, &converted)
+		require.NoError(t, err, "historical order reconstruction failed after simulated conversion")
+		require.True(t, reflect.DeepEqual(before, after), "historical fulfillment terms changed after simulated conversion")
+		checked++
+	}
+	t.Logf("read-only conversion preflight: shape-compatible=%d special-handling=%d missing-stable-code=%d historical-snapshots-checked=%d historical-invalid=%d missing-live-plan=%d; cost verification and route translation NOT certified; no conversion applied",
+		shapeCompatible, specialHandling, missingStableCode, checked, invalidHistorical, missingLivePlan)
+	t.Logf("conversion shape blocker counts (no product/customer records): %v", shapeBlockers)
 }
 
 func TestGenericProductCostFloorFailsClosed(t *testing.T) {
+	testGenericProductCostFloor(t, DB)
+}
+
+func testGenericProductCostFloor(t *testing.T, db *gorm.DB) {
 	modelName := "generic-cost-floor-test-model"
 	product := &SubscriptionPlan{
 		Title: "Generic cost floor test", PriceAmount: 10, Currency: "CNY",
 		DurationUnit: SubscriptionDurationDay, DurationValue: 1,
 		TotalAmount: 1000000, ModelScope: modelName,
 	}
-	require.NoError(t, CreateProductPlan(DB, product))
+	require.NoError(t, CreateProductPlan(db, product))
 	t.Cleanup(func() {
-		DB.Where("price_book = ?", product.PriceBook).Delete(&PriceBookPrice{})
-		DB.Delete(&SubscriptionPlan{}, product.Id)
+		require.NoError(t, db.Where("price_book = ?", product.PriceBook).Delete(&PriceBookPrice{}).Error)
+		require.NoError(t, db.Delete(&SubscriptionPlan{}, product.Id).Error)
 	})
 	price := PriceBookPrice{
 		Model: modelName, PriceVersion: "generic-cost-floor-v1", Enabled: true,
@@ -983,10 +1100,19 @@ func TestGenericProductCostFloorFailsClosed(t *testing.T) {
 		UpstreamSettlementPrice: `{"input":2,"output":1}`,
 		MaxUpstreamCost:         `{"input":2,"output":1}`,
 	}
-	require.ErrorContains(t, CreateProductPriceBookVersion(DB, product.Id, &price), "cost floor")
+	require.ErrorContains(t, CreateProductPriceBookVersion(db, product.Id, &price), "cost floor")
 
 	price.Enabled = false
-	require.NoError(t, CreateProductPriceBookVersion(DB, product.Id, &price))
+	require.NoError(t, CreateProductPriceBookVersion(db, product.Id, &price))
+	_, _, err := SetProductPriceBookVersionEnabled(db, product.Id, price.Id, true, product.ConfigRevision)
+	require.ErrorContains(t, err, "cost floor")
 	product.PriceVersion, product.Enabled = price.PriceVersion, true
-	require.ErrorContains(t, UpdateProductPlan(DB, product, product.ConfigRevision), "cost floor")
+	require.ErrorContains(t, UpdateProductPlan(db, product, product.ConfigRevision), "cost floor")
+	// Taking a version off sale or adding a new economic gate cannot deny a
+	// previously paid immutable order its historical version.
+	require.NoError(t, validateProductPlanPrices(db, product, false))
+	price.UserSellingPrice = `{"input":1.9999999999,"output":1}`
+	require.ErrorContains(t, validateProductPriceBookCostFloor(&price), "cost floor")
+	price.UserSellingPrice = price.MaxUpstreamCost
+	require.NoError(t, validateProductPriceBookCostFloor(&price))
 }

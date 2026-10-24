@@ -58,11 +58,11 @@ func subscriptionBillingMultipliers(productType string, modelScope string, price
 // URLs. V1 SKUs use their immutable product_code. The title-based fallback is
 // only for older configured plans that predate product_code.
 func subscriptionPlanProductID(plan model.SubscriptionPlan) string {
-	if plan.PriceBook != "" && plan.Id > 0 {
-		return strconv.Itoa(plan.Id)
-	}
 	if productCode := strings.ToLower(strings.TrimSpace(plan.ProductCode)); productCode != "" {
 		return productCode
+	}
+	if plan.PriceBook != "" && plan.Id > 0 {
+		return strconv.Itoa(plan.Id)
 	}
 	value := strings.ToLower(strings.TrimSpace(plan.Title + " " + plan.Subtitle + " " + plan.ModelScope))
 	words := strings.FieldsFunc(value, func(r rune) bool {
@@ -813,12 +813,16 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		if req.Plan.AllowWalletOverflow != nil {
 			updateMap["allow_wallet_overflow"] = *req.Plan.AllowWalletOverflow
 		}
-		if err := tx.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updateMap).Error; err != nil {
+		if err := model.UpdateLegacySubscriptionPlan(tx, id, updateMap); err != nil {
 			return err
 		}
 		return model.SyncSubscriptionPlanPriceBook(tx, &req.Plan)
 	})
 	if err != nil {
+		if errors.Is(err, model.ErrProductPlanConflict) {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}
@@ -900,7 +904,13 @@ func AdminUpdateSubscriptionPlanStatus(c *gin.Context) {
 	if req.RedemptionEnabled != nil {
 		updates["redemption_enabled"] = *req.RedemptionEnabled
 	}
-	if err := model.DB.Model(&model.SubscriptionPlan{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		return model.UpdateLegacySubscriptionPlan(tx, id, updates)
+	}); err != nil {
+		if errors.Is(err, model.ErrProductPlanConflict) {
+			c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+			return
+		}
 		common.ApiError(c, err)
 		return
 	}

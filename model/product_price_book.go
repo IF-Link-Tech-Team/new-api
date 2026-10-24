@@ -102,11 +102,10 @@ func (p *PriceBookPrice) productPrice() ProductPrice {
 	}
 }
 
-// validateProductPriceBookCostFloor is the deliberately conservative V1
-// guard for generic products. The configured upstream ceiling must not exceed
-// the customer price for any billing component; otherwise a route that is
-// within the product policy could still lose money. Forecasting, FX and
-// volume-weighted margin analysis belong to the separate read-only dashboard.
+// validateProductPriceBookCostFloor compares the configured unit-price fields
+// for new sales. This is only one sale gate, not proof of package profitability:
+// the executed expression/multipliers, quota exposure, net cash and verified
+// channel costs need separate verification. Paid issuance never runs this gate.
 func validateProductPriceBookCostFloor(p *PriceBookPrice) error {
 	if p == nil {
 		return errors.New("price book price is nil")
@@ -118,7 +117,6 @@ func validateProductPriceBookCostFloor(p *PriceBookPrice) error {
 	if err := common.UnmarshalJsonStr(strings.TrimSpace(p.MaxUpstreamCost), &cost); err != nil {
 		return fmt.Errorf("invalid max_upstream_cost: %w", err)
 	}
-	const epsilon = 1e-9
 	violations := []struct {
 		name string
 		cost float64
@@ -130,7 +128,7 @@ func validateProductPriceBookCostFloor(p *PriceBookPrice) error {
 		{"output", cost.Output, sale.Output},
 	}
 	for _, component := range violations {
-		if component.cost > component.sale+epsilon {
+		if component.cost > component.sale {
 			return fmt.Errorf("generic product cost floor violated for %s: max upstream cost %.6g exceeds user selling price %.6g", component.name, component.cost, component.sale)
 		}
 	}
@@ -382,6 +380,19 @@ func SyncLegacyProductPriceBooks(tx *gorm.DB, price ProductPrice) error {
 		}
 	}
 	for _, book := range slices.Sorted(maps.Keys(books)) {
+		if book != WalletPriceBook {
+			id, _ := strconv.Atoi(strings.TrimPrefix(book, "product:"))
+			var plan SubscriptionPlan
+			if err := lockForUpdate(tx).Where("id = ?", id).Find(&plan).Error; err != nil {
+				return err
+			}
+			// Historical orders still reference the old type. Once the live
+			// product owns this book, legacy admin writes lose authority over
+			// all its versions, including their sale switches.
+			if plan.PriceBook != "" {
+				continue
+			}
+		}
 		if err := syncLegacyPriceBookPrice(tx, price, book); err != nil {
 			return err
 		}

@@ -119,6 +119,19 @@ func UpdateProductPlan(db *gorm.DB, plan *SubscriptionPlan, expectedRevision int
 	return err
 }
 
+// UpdateLegacySubscriptionPlan fences an editor opened before conversion.
+// Call inside the transaction that also synchronizes the legacy price book.
+func UpdateLegacySubscriptionPlan(tx *gorm.DB, id int, updates map[string]any) error {
+	var current SubscriptionPlan
+	if err := lockForUpdate(tx).First(&current, id).Error; err != nil {
+		return err
+	}
+	if current.PriceBook != "" {
+		return ErrProductPlanConflict
+	}
+	return tx.Model(&SubscriptionPlan{}).Where("id = ? AND (price_book = ? OR price_book IS NULL)", id, "").Updates(updates).Error
+}
+
 // ValidateProductPlan enforces storage and accounting boundaries, never a
 // vendor, product family, fixed discount, face-value quota or template.
 func (p *SubscriptionPlan) ValidateProductPlan() error {
@@ -348,8 +361,10 @@ func validateProductPlanPrices(tx *gorm.DB, p *SubscriptionPlan, forSale bool) e
 		if err != nil {
 			return fmt.Errorf("product model %s: %w", name, err)
 		}
-		if err := validateProductPriceBookCostFloor(price); err != nil {
-			return fmt.Errorf("product model %s: %w", name, err)
+		if forSale {
+			if err := validateProductPriceBookCostFloor(price); err != nil {
+				return fmt.Errorf("product model %s: %w", name, err)
+			}
 		}
 		if forSale && (!price.Enabled || price.EffectiveAt > getDBTimestampTx(tx)) {
 			return fmt.Errorf("product price for model %s is disabled or not yet effective", name)

@@ -1308,8 +1308,15 @@ func provisionPlanFromOrder(tx *gorm.DB, order *SubscriptionOrder, livePlan *Sub
 		return nil, errors.New("product order is missing its immutable plan snapshot")
 	}
 	if order.ProductType == "" {
+		if livePlan.PriceBook != "" {
+			return nil, errors.New("legacy order is missing its immutable plan snapshot after product conversion")
+		}
 		return &plan, nil
 	}
+	// A live product may have been converted after checkout. Legacy orders
+	// retain their original contract, even when backfill added a price book to
+	// the order. Never inherit the new product's generic validation mode.
+	plan.PriceBook, plan.ConfigRevision, plan.TemplateId = "", 0, 0
 	plan.Title = order.PlanTitleSnapshot
 	plan.PriceAmount = order.TargetPriceAmount
 	plan.Currency = order.CurrencySnapshot
