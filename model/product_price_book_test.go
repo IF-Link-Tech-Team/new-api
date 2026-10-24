@@ -961,3 +961,32 @@ func TestProductionPriceBookBackfill(t *testing.T) {
 	t.Logf("legacy prices=%d plans=%d orders=%d entitlements=%d copied prices=%d; originals unchanged; migration twice passed",
 		len(legacyBefore), len(plansBefore), len(ordersBefore), len(subscriptionsBefore), count)
 }
+
+func TestGenericProductCostFloorFailsClosed(t *testing.T) {
+	modelName := "generic-cost-floor-test-model"
+	product := &SubscriptionPlan{
+		Title: "Generic cost floor test", PriceAmount: 10, Currency: "CNY",
+		DurationUnit: SubscriptionDurationDay, DurationValue: 1,
+		TotalAmount: 1000000, ModelScope: modelName,
+	}
+	require.NoError(t, CreateProductPlan(DB, product))
+	t.Cleanup(func() {
+		DB.Where("price_book = ?", product.PriceBook).Delete(&PriceBookPrice{})
+		DB.Delete(&SubscriptionPlan{}, product.Id)
+	})
+	price := PriceBookPrice{
+		Model: modelName, PriceVersion: "generic-cost-floor-v1", Enabled: true,
+		BillingExpression: `tier("base", p + c)`, BillingMultiplier: 1,
+		AllowedChannels:         `[1]`,
+		OfficialReferencePrice:  `{"input":1,"output":1}`,
+		UserSellingPrice:        `{"input":1,"output":1}`,
+		UpstreamSettlementPrice: `{"input":2,"output":1}`,
+		MaxUpstreamCost:         `{"input":2,"output":1}`,
+	}
+	require.ErrorContains(t, CreateProductPriceBookVersion(DB, product.Id, &price), "cost floor")
+
+	price.Enabled = false
+	require.NoError(t, CreateProductPriceBookVersion(DB, product.Id, &price))
+	product.PriceVersion, product.Enabled = price.PriceVersion, true
+	require.ErrorContains(t, UpdateProductPlan(DB, product, product.ConfigRevision), "cost floor")
+}

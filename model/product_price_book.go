@@ -102,6 +102,41 @@ func (p *PriceBookPrice) productPrice() ProductPrice {
 	}
 }
 
+// validateProductPriceBookCostFloor is the deliberately conservative V1
+// guard for generic products. The configured upstream ceiling must not exceed
+// the customer price for any billing component; otherwise a route that is
+// within the product policy could still lose money. Forecasting, FX and
+// volume-weighted margin analysis belong to the separate read-only dashboard.
+func validateProductPriceBookCostFloor(p *PriceBookPrice) error {
+	if p == nil {
+		return errors.New("price book price is nil")
+	}
+	var sale, cost PriceComponents
+	if err := common.UnmarshalJsonStr(strings.TrimSpace(p.UserSellingPrice), &sale); err != nil {
+		return fmt.Errorf("invalid user_selling_price: %w", err)
+	}
+	if err := common.UnmarshalJsonStr(strings.TrimSpace(p.MaxUpstreamCost), &cost); err != nil {
+		return fmt.Errorf("invalid max_upstream_cost: %w", err)
+	}
+	const epsilon = 1e-9
+	violations := []struct {
+		name string
+		cost float64
+		sale float64
+	}{
+		{"input", cost.Input, sale.Input},
+		{"cached_input", cost.CachedInput, sale.CachedInput},
+		{"cache_creation", cost.CacheCreation, sale.CacheCreation},
+		{"output", cost.Output, sale.Output},
+	}
+	for _, component := range violations {
+		if component.cost > component.sale+epsilon {
+			return fmt.Errorf("generic product cost floor violated for %s: max upstream cost %.6g exceeds user selling price %.6g", component.name, component.cost, component.sale)
+		}
+	}
+	return nil
+}
+
 func (p *PriceBookPrice) BeforeCreate(tx *gorm.DB) error {
 	if err := p.Validate(); err != nil {
 		return err
@@ -201,6 +236,11 @@ func CreateProductPriceBookVersion(db *gorm.DB, planId int, price *PriceBookPric
 	if err := candidate.Validate(); err != nil {
 		return err
 	}
+	if candidate.Enabled {
+		if err := validateProductPriceBookCostFloor(&candidate); err != nil {
+			return err
+		}
+	}
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var plan SubscriptionPlan
 		if err := lockForUpdate(tx).First(&plan, planId).Error; err != nil {
@@ -249,6 +289,11 @@ func SetProductPriceBookVersionEnabled(db *gorm.DB, planId, priceId int, enabled
 		}
 		if err := lockForUpdate(tx).Where("id = ? AND price_book = ?", priceId, book).First(&price).Error; err != nil {
 			return err
+		}
+		if enabled {
+			if err := validateProductPriceBookCostFloor(&price); err != nil {
+				return err
+			}
 		}
 		if err := tx.Model(&price).Update("enabled", enabled).Error; err != nil {
 			return err

@@ -348,6 +348,9 @@ func validateProductPlanPrices(tx *gorm.DB, p *SubscriptionPlan, forSale bool) e
 		if err != nil {
 			return fmt.Errorf("product model %s: %w", name, err)
 		}
+		if err := validateProductPriceBookCostFloor(price); err != nil {
+			return fmt.Errorf("product model %s: %w", name, err)
+		}
 		if forSale && (!price.Enabled || price.EffectiveAt > getDBTimestampTx(tx)) {
 			return fmt.Errorf("product price for model %s is disabled or not yet effective", name)
 		}
