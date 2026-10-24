@@ -37,6 +37,7 @@ func TestProductPriceBookAdministrativeAPI(t *testing.T) {
 	group := router.Group("/api/subscription/admin", middleware.AdminAuth())
 	group.GET("/plans/:id/prices", AdminListProductPriceBookVersions)
 	group.POST("/plans/:id/prices", AdminCreateProductPriceBookVersion)
+	group.PATCH("/plans/:id/prices/:price_id", AdminSetProductPriceBookVersionEnabled)
 	group.POST("/plans", AdminCreateSubscriptionPlan)
 	group.PUT("/plans/:id", AdminUpdateSubscriptionPlan)
 	group.PATCH("/plans/:id", AdminUpdateSubscriptionPlanStatus)
@@ -174,5 +175,47 @@ func TestProductPriceBookAdministrativeAPI(t *testing.T) {
 		assert.EqualValues(t, 2, after.ConfigRevision)
 		assert.Equal(t, "Revised promotion", after.Title)
 		assert.False(t, after.Enabled)
+		version := created.Data
+		version.Id, version.PriceBook = 0, ""
+		require.NoError(t, model.CreateProductPriceBookVersion(db, product.Id, &version))
+		togglePath := fmt.Sprintf("%s/prices/%d", path, version.Id)
+		payload := `{"enabled":false,"expected_revision":2}`
+		response = accessTokenRequest(router, http.MethodPatch, togglePath, read, "", payload)
+		assert.Equal(t, http.StatusForbidden, response.Code)
+		for _, invalid := range []string{`{}`, `{"enabled":false}`, `{"expected_revision":2}`} {
+			response = accessTokenRequest(router, http.MethodPatch, togglePath, write, "", invalid)
+			assert.Contains(t, response.Body.String(), `"success":false`)
+		}
+		crossProductPath := fmt.Sprintf("%s/prices/%d", path, created.Data.Id)
+		response = accessTokenRequest(router, http.MethodPatch, crossProductPath, write, "", payload)
+		assert.Contains(t, response.Body.String(), `"success":false`, "price ownership must be checked on the server")
+		payment.ComplianceConfirmed = false
+		response = accessTokenRequest(router, http.MethodPatch, togglePath, write, "", payload)
+		assert.Contains(t, response.Body.String(), `"success":false`)
+		payment.ComplianceConfirmed = true
+		response = accessTokenRequest(router, http.MethodPatch, togglePath, write, "", payload)
+		var toggled struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Price    model.PriceBookPrice `json:"price"`
+				Revision int64                `json:"config_revision"`
+			} `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &toggled))
+		require.True(t, toggled.Success, response.Body.String())
+		assert.False(t, toggled.Data.Price.Enabled)
+		assert.EqualValues(t, 3, toggled.Data.Revision)
+		response = accessTokenRequest(router, http.MethodPatch, togglePath, write, "", payload)
+		assert.Equal(t, http.StatusConflict, response.Code)
+		var untouched model.PriceBookPrice
+		require.NoError(t, db.First(&untouched, created.Data.Id).Error)
+		assert.True(t, untouched.Enabled)
+		var statusAudit model.AuditLog
+		require.NoError(t, model.LOG_DB.Where("action = ?", "subscription.price_book_version_status").First(&statusAudit).Error)
+		auditJSON, err := common.Marshal(statusAudit)
+		require.NoError(t, err)
+		assert.Contains(t, string(auditJSON), `"previous_revision":2`)
+		assert.Contains(t, string(auditJSON), `"config_revision":3`)
+		assert.NotContains(t, string(auditJSON), write)
 	})
 }

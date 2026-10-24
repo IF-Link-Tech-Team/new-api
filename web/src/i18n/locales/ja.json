@@ -1,5 +1,7 @@
 {
   "translation": {
+    "price book requires a positive product and price id": "商品 ID と価格 ID は正の整数である必要があります",
+    "Set price version ${price_version} for ${price_book}, model ${model}, enabled ${enabled}": "${price_book} のモデル ${model}、価格バージョン ${price_version} を設定、有効 ${enabled}",
     "product configuration changed; reload before saving": "product configuration changed; reload before saving",
     "new product must not specify a type, template or price book": "new product must not specify a type, template or price book",
     "product price book conversion requires an explicit migration": "product price book conversion requires an explicit migration",

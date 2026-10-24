@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"reflect"
 	"slices"
 	"strconv"
@@ -208,6 +209,52 @@ func CreateProductPriceBookVersion(db *gorm.DB, planId int, price *PriceBookPric
 		*price = candidate
 	}
 	return err
+}
+
+// SetProductPriceBookVersionEnabled changes only the new-sale switch. Legacy
+// plans remain owned by the legacy dual-write API until explicitly migrated.
+// Advancing the plan revision prevents an older editor from restoring a sale
+// state it loaded before this operation. Paid immutable versions stay readable.
+func SetProductPriceBookVersionEnabled(db *gorm.DB, planId, priceId int, enabled bool, expectedRevision int64) (*PriceBookPrice, int64, error) {
+	book, err := ProductPriceBook(planId)
+	if err != nil || priceId <= 0 {
+		return nil, 0, errors.New("price book requires a positive product and price id")
+	}
+	var price PriceBookPrice
+	var revision int64
+	err = db.Transaction(func(tx *gorm.DB) error {
+		var plan SubscriptionPlan
+		if err := lockForUpdate(tx).First(&plan, planId).Error; err != nil {
+			return err
+		}
+		if plan.PriceBook != book || plan.ProductType != "" {
+			return errors.New("product price book conversion requires an explicit migration")
+		}
+		if expectedRevision <= 0 || expectedRevision == math.MaxInt64 || expectedRevision != plan.ConfigRevision {
+			return ErrProductPlanConflict
+		}
+		if err := lockForUpdate(tx).Where("id = ? AND price_book = ?", priceId, book).First(&price).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&price).Update("enabled", enabled).Error; err != nil {
+			return err
+		}
+		revision = plan.ConfigRevision + 1
+		result := tx.Model(&SubscriptionPlan{}).Where("id = ? AND config_revision = ?", planId, expectedRevision).
+			Updates(map[string]any{"config_revision": revision, "updated_at": common.GetTimestamp()})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return ErrProductPlanConflict
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	InvalidateSubscriptionPlanCache(planId)
+	return &price, revision, nil
 }
 
 func CreateLegacyProductPrice(db *gorm.DB, price *ProductPrice) error {

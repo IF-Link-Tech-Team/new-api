@@ -104,6 +104,41 @@ func AdminCreateProductPriceBookVersion(c *gin.Context) {
 	common.ApiSuccess(c, req.Price)
 }
 
+func AdminSetProductPriceBookVersionEnabled(c *gin.Context) {
+	planId, planErr := strconv.Atoi(c.Param("id"))
+	priceId, priceErr := strconv.Atoi(c.Param("price_id"))
+	if planErr != nil || priceErr != nil || planId <= 0 || priceId <= 0 {
+		common.ApiErrorT(c, "Invalid ID")
+		return
+	}
+	var req struct {
+		Enabled          *bool  `json:"enabled"`
+		ExpectedRevision *int64 `json:"expected_revision"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil || req.ExpectedRevision == nil {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if !requirePaymentCompliance(c) {
+		return
+	}
+	price, revision, err := model.SetProductPriceBookVersionEnabled(model.DB, planId, priceId, *req.Enabled, *req.ExpectedRevision)
+	if errors.Is(err, model.ErrProductPlanConflict) {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "subscription.price_book_version_status", map[string]any{
+		"plan_id": planId, "price_book": price.PriceBook, "model": price.Model,
+		"price_version": price.PriceVersion, "version_id": price.Id, "enabled": price.Enabled,
+		"previous_revision": *req.ExpectedRevision, "config_revision": revision,
+	})
+	common.ApiSuccess(c, gin.H{"price": price, "config_revision": revision})
+}
+
 // AdminListProductPrices exposes the versioned product/model pricing catalog.
 // The rows are immutable snapshots; filters make it practical to audit a
 // single SKU or model before enabling sales.

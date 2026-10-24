@@ -216,6 +216,7 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.PATCH("/plans/:id", controller.AdminUpdateSubscriptionPlanStatus)
 			subscriptionAdminRoute.GET("/plans/:id/prices", controller.AdminListProductPriceBookVersions)
 			subscriptionAdminRoute.POST("/plans/:id/prices", controller.AdminCreateProductPriceBookVersion)
+			subscriptionAdminRoute.PATCH("/plans/:id/prices/:price_id", controller.AdminSetProductPriceBookVersionEnabled)
 			subscriptionAdminRoute.GET("/templates", controller.AdminListProductTemplates)
 			subscriptionAdminRoute.GET("/templates/:id", controller.AdminGetProductTemplate)
 			subscriptionAdminRoute.PUT("/templates/:id", controller.AdminUpdateProductTemplate)

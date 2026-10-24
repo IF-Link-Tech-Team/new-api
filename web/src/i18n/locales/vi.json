@@ -1,5 +1,7 @@
 {
   "translation": {
+    "price book requires a positive product and price id": "ID sản phẩm và giá phải là số nguyên dương",
+    "Set price version ${price_version} for ${price_book}, model ${model}, enabled ${enabled}": "Đặt phiên bản giá ${price_version} cho ${price_book}, mô hình ${model}, bật ${enabled}",
     "product configuration changed; reload before saving": "product configuration changed; reload before saving",
     "new product must not specify a type, template or price book": "new product must not specify a type, template or price book",
     "product price book conversion requires an explicit migration": "product price book conversion requires an explicit migration",

@@ -1,5 +1,7 @@
 {
   "translation": {
+    "price book requires a positive product and price id": "Идентификаторы товара и цены должны быть положительными",
+    "Set price version ${price_version} for ${price_book}, model ${model}, enabled ${enabled}": "Версия цены ${price_version} для ${price_book}, модель ${model}, включено ${enabled}",
     "product configuration changed; reload before saving": "product configuration changed; reload before saving",
     "new product must not specify a type, template or price book": "new product must not specify a type, template or price book",
     "product price book conversion requires an explicit migration": "product price book conversion requires an explicit migration",

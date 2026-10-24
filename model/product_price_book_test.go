@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -454,6 +455,57 @@ func TestProductPriceBookMigration(t *testing.T) {
 						go func() {
 							<-start
 							results <- UpdateProductPlan(db, &candidate, 3)
+						}()
+					}
+					close(start)
+					first, second := <-results, <-results
+					if first == nil {
+						require.ErrorIs(t, second, ErrProductPlanConflict)
+					} else {
+						require.ErrorIs(t, first, ErrProductPlanConflict)
+						require.NoError(t, second)
+					}
+				}
+				// Sale switches share the product revision with the editor. They
+				// cannot mutate another product or race a stale configuration save.
+				require.NoError(t, db.First(&plan, plan.Id).Error)
+				_, _, err = SetProductPriceBookVersionEnabled(db, 41, entries[0].Id, false, 1)
+				require.ErrorContains(t, err, "explicit migration")
+				_, _, err = SetProductPriceBookVersionEnabled(db, plan.Id, entries[0].Id, false, plan.ConfigRevision)
+				require.ErrorIs(t, err, gorm.ErrRecordNotFound)
+				_, _, err = SetProductPriceBookVersionEnabled(db, plan.Id, price.Id, false, plan.ConfigRevision-1)
+				require.ErrorIs(t, err, ErrProductPlanConflict)
+				// A failure after updating the price must roll the entire change
+				// back, including the sale switch and the configuration revision.
+				const callback = "test:price-switch-plan-failure"
+				require.NoError(t, db.Callback().Update().Before("gorm:update").Register(callback, func(tx *gorm.DB) {
+					if tx.Statement.Table == "subscription_plans" {
+						tx.AddError(errors.New("injected revision write failure"))
+					}
+				}))
+				_, _, err = SetProductPriceBookVersionEnabled(db, plan.Id, price.Id, false, plan.ConfigRevision)
+				require.NoError(t, db.Callback().Update().Remove(callback))
+				require.ErrorContains(t, err, "injected revision write failure")
+				var unchanged PriceBookPrice
+				require.NoError(t, db.First(&unchanged, price.Id).Error)
+				assert.True(t, unchanged.Enabled)
+				disabled, revision, err := SetProductPriceBookVersionEnabled(db, plan.Id, price.Id, false, plan.ConfigRevision)
+				require.NoError(t, err)
+				assert.False(t, disabled.Enabled)
+				assert.Equal(t, plan.ConfigRevision+1, revision)
+				_, _, err = CreateSubscriptionOrder(user.Id, plan.Id, "generic-disabled-"+engine, "alipay", "alipay", true)
+				require.ErrorContains(t, err, "disabled or not yet effective")
+				historicalPrice, err := ResolvePriceBookPrice(db, sub.PriceBook, sub.ModelScope, sub.PriceVersion)
+				require.NoError(t, err)
+				assert.Equal(t, price.BillingExpression, historicalPrice.BillingExpression)
+				assert.False(t, historicalPrice.Enabled, "paid entitlement retains access to its immutable price")
+				if engine != "sqlite" {
+					start, results := make(chan struct{}), make(chan error, 2)
+					for _, enabled := range []bool{true, false} {
+						go func() {
+							<-start
+							_, _, err := SetProductPriceBookVersionEnabled(db, plan.Id, price.Id, enabled, revision)
+							results <- err
 						}()
 					}
 					close(start)

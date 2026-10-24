@@ -1,5 +1,7 @@
 {
   "translation": {
+    "price book requires a positive product and price id": "商品 ID 和價格 ID 必須為正整數",
+    "Set price version ${price_version} for ${price_book}, model ${model}, enabled ${enabled}": "設定價格簿 ${price_book} 中模型 ${model} 的價格版本 ${price_version}，啟用狀態 ${enabled}",
     "product configuration changed; reload before saving": "商品配置已被修改，请刷新后再保存",
     "new product must not specify a type, template or price book": "创建商品时无需指定固定类型、模板或价格簿",
     "product price book conversion requires an explicit migration": "旧商品需要通过明确的迁移操作切换到独立价格簿",
