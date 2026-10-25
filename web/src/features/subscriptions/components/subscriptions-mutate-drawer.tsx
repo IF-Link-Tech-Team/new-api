@@ -97,6 +97,7 @@ import {
   type PlanFormValues,
 } from '../lib'
 import type { PlanRecord } from '../types'
+import { ProductDisplayEditor } from './product-display-editor'
 import { ProductPriceBookEditor } from './product-price-book-editor'
 import { useSubscriptions } from './subscriptions-provider'
 
@@ -1167,6 +1168,26 @@ export function SubscriptionsMutateDrawer({
                   />
                 )}
               </div>
+            </SideDrawerSection>
+
+            <SideDrawerSection>
+              <h3 className='text-sm font-medium'>
+                {t('Product card display')}
+              </h3>
+              <FormField
+                control={form.control}
+                name='display_metadata'
+                render={({ field }) => (
+                  <FormItem>
+                    <ProductDisplayEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      disabled={isSubmitting}
+                    />
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
             </SideDrawerSection>
 
             {/* Duration Settings */}

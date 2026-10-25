@@ -73,6 +73,7 @@ import {
   formValuesToPricePayload,
   type PriceFormValues,
 } from '../lib'
+import { ProductChannelOrder } from './product-channel-order'
 import { useProductPrices } from './product-prices-provider'
 
 interface Props {
@@ -456,6 +457,14 @@ export function ProductPriceVersionDrawer(
                     <FormControl>
                       <Input {...field} placeholder='14, 15' />
                     </FormControl>
+                    {props.product && (
+                      <ProductChannelOrder
+                        model={form.watch('model')}
+                        value={field.value}
+                        onChange={field.onChange}
+                        disabled={isSubmitting}
+                      />
+                    )}
                     <FormDescription>
                       {props.product && form.watch('route_mode') === 'ordered'
                         ? t(

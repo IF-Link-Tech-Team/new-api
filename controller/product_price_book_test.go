@@ -164,6 +164,7 @@ func TestProductPriceBookAdministrativeAPI(t *testing.T) {
 	group.POST("/plans", AdminCreateSubscriptionPlan)
 	group.PUT("/plans/:id", AdminUpdateSubscriptionPlan)
 	group.PATCH("/plans/:id", AdminUpdateSubscriptionPlanStatus)
+	group.POST("/plans/:id/migrate-product", middleware.RootAuth(), AdminMigrateSubscriptionPlanToProduct)
 	price := model.PriceBookPrice{
 		Id: 987, CreatedAt: 1, UpdatedAt: 1,
 		Model: "operator-model", PriceVersion: "operator-v2", BillingMultiplier: 0.73, Enabled: true,
@@ -190,6 +191,13 @@ func TestProductPriceBookAdministrativeAPI(t *testing.T) {
 	assert.NotEqual(t, 987, created.Data.Id)
 	assert.Greater(t, created.Data.CreatedAt, int64(1))
 	assert.Equal(t, 0.73, created.Data.BillingMultiplier)
+	t.Run("public multipliers follow the frozen product book including disabled historical versions", func(t *testing.T) {
+		assert.Equal(t, map[string]float64{"operator-model": 0.73}, subscriptionBillingMultipliers("", "product:41", "operator-model, operator-model,missing", "operator-v2"))
+		require.NoError(t, db.Model(&model.PriceBookPrice{}).Where("id = ?", created.Data.Id).UpdateColumn("enabled", false).Error)
+		assert.Equal(t, map[string]float64{"operator-model": 0.73}, subscriptionBillingMultipliers("", "product:41", "operator-model", "operator-v2"))
+		assert.Empty(t, subscriptionBillingMultipliers("", "product:42", "operator-model", "operator-v2"), "another product cannot supply a missing version")
+		require.NoError(t, db.Model(&model.PriceBookPrice{}).Where("id = ?", created.Data.Id).UpdateColumn("enabled", true).Error)
+	})
 	response = accessTokenRequest(router, http.MethodPost, path, write, "", string(body))
 	assert.Equal(t, http.StatusConflict, response.Code, response.Body.String())
 	// The same model/version in another product has independent terms.
@@ -340,5 +348,58 @@ func TestProductPriceBookAdministrativeAPI(t *testing.T) {
 		assert.Contains(t, string(auditJSON), `"previous_revision":2`)
 		assert.Contains(t, string(auditJSON), `"config_revision":3`)
 		assert.NotContains(t, string(auditJSON), write)
+	})
+
+	t.Run("explicit conversion requires root write scope and reviewed configuration", func(t *testing.T) {
+		require.NoError(t, db.AutoMigrate(&model.ProductPrice{}))
+		payment.ComplianceConfirmed = true
+		source := model.ProductPrice{
+			ProductType: model.ProductTypePackK3, Model: "conversion-model", PriceVersion: "conversion-v1",
+			OfficialReferencePrice: `{"input":2,"output":8}`, UserSellingPrice: `{"input":1.9,"output":7.6}`,
+			UpstreamSettlementPrice: `{"input":1,"output":4}`, MaxUpstreamCost: `{"input":1,"output":4}`,
+			BillingExpression: `tier("default",p*2+c*8)`, BillingMultiplier: 0.95, AllowedChannels: `[8,9]`, Enabled: true,
+		}
+		require.NoError(t, db.Create(&source).Error)
+		product := model.SubscriptionPlan{Title: "Existing promotion", ProductType: source.ProductType,
+			Currency: "CNY", PriceAmount: 19.9, TotalAmount: 9950000, DurationUnit: model.SubscriptionDurationDay, DurationValue: 30,
+			QuotaResetPeriod: model.SubscriptionResetNever, ModelScope: source.Model, PriceVersion: source.PriceVersion,
+			BillingMultiplier: 0.95, TemplateId: 3, Enabled: true, Listed: true,
+			AllowBalancePay: common.GetPointer(false), AllowWalletOverflow: common.GetPointer(false)}
+		require.NoError(t, db.Session(&gorm.Session{SkipHooks: true}).Create(&product).Error)
+		root := model.User{Username: "migration-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AuthVersion: 1}
+		require.NoError(t, db.Create(&root).Error)
+		rootRead, _ := createScopedAccessToken(t, root.Id, 0, "billing:read")
+		rootWrite, _ := createScopedAccessToken(t, root.Id, 0, "billing:write")
+		path := fmt.Sprintf("/api/subscription/admin/plans/%d/migrate-product", product.Id)
+		for _, token := range []string{read, write, rootRead} {
+			response := accessTokenRequest(router, http.MethodPost, path, token, "", `{"expected_revision":0}`)
+			assert.Equal(t, http.StatusForbidden, response.Code)
+		}
+		response := accessTokenRequest(router, http.MethodPost, path, rootWrite, "", `{"expected_revision":0}`)
+		var preview struct {
+			Success bool                         `json:"success"`
+			Data    model.ProductMigrationResult `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &preview))
+		require.True(t, preview.Success, response.Body.String())
+		var count int64
+		require.NoError(t, db.Model(&model.PriceBookPrice{}).Where("price_book = ?", preview.Data.PriceBook).Count(&count).Error)
+		assert.Zero(t, count, "preview never publishes prices")
+		body, err := common.Marshal(map[string]any{"expected_revision": 0, "fingerprint": preview.Data.Fingerprint, "apply": true})
+		require.NoError(t, err)
+		response = accessTokenRequest(router, http.MethodPost, path, rootWrite, "", string(body))
+		assert.Contains(t, response.Body.String(), `"success":false`, "a conversion needs an operator reason")
+		body, err = common.Marshal(map[string]any{"expected_revision": 0, "fingerprint": preview.Data.Fingerprint, "apply": true, "reason": "Reviewed preserved configuration"})
+		require.NoError(t, err)
+		response = accessTokenRequest(router, http.MethodPost, path, rootWrite, "", string(body))
+		assert.Contains(t, response.Body.String(), `"success":true`)
+		var audit model.AuditLog
+		require.NoError(t, model.LOG_DB.Where("action = ?", "subscription.product_migrate").First(&audit).Error)
+		assert.Equal(t, root.Id, audit.UserId)
+		var reason string
+		encodedReason, err := common.Marshal(audit.Other.Op.Params["reason"])
+		require.NoError(t, err)
+		require.NoError(t, common.Unmarshal(encodedReason, &reason))
+		assert.Equal(t, "Reviewed preserved configuration", reason)
 	})
 }

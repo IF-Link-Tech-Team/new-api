@@ -76,6 +76,7 @@ var auditContentTemplates = map[string]string{
 	"subscription.price_book_version_create": "Created price version ${price_version} for ${price_book}, model ${model}",
 	"subscription.price_book_version_status": "Set price version ${price_version} for ${price_book}, model ${model}, enabled ${enabled}",
 	"subscription.product_create":            "Created product draft ${plan_id} with ${price_book}",
+	"subscription.product_migrate":           "Migrated product ${plan_id} to ${price_book}, fingerprint ${fingerprint}, reason: ${reason}",
 	"subscription.product_update":            "Updated product ${plan_id} from revision ${old_revision} to ${revision}",
 }
 

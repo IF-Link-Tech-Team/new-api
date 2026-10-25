@@ -68,6 +68,20 @@ export function getPlanFormSchema(t: TFunction) {
     fallback_allowed: z.boolean(),
     listed: z.boolean(),
     redemption_enabled: z.boolean(),
+    display_metadata: z
+      .string()
+      .max(16384)
+      .refine((raw) => {
+        if (!raw) return true
+        try {
+          const value: unknown = JSON.parse(raw)
+          return (
+            value !== null && typeof value === 'object' && !Array.isArray(value)
+          )
+        } catch {
+          return false
+        }
+      }, t('Product display metadata must be a JSON object')),
   })
 }
 
@@ -107,6 +121,7 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
   fallback_allowed: false,
   listed: false,
   redemption_enabled: false,
+  display_metadata: '',
 }
 
 // Plan model_scope is a comma-separated string on the wire; the form edits it
@@ -160,6 +175,7 @@ export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
     fallback_allowed: plan.fallback_allowed === true,
     listed: plan.listed !== false,
     redemption_enabled: plan.redemption_enabled !== false,
+    display_metadata: plan.display_metadata || '',
   }
 }
 
@@ -204,7 +220,6 @@ export function formValuesToPlanPayload(
     payload.product_owned_pricing = true
     payload.expected_revision = revision ?? currentPlan?.config_revision
     payload.plan.price_book = currentPlan?.price_book
-    payload.plan.display_metadata = currentPlan?.display_metadata
     payload.plan.product_type = ''
     payload.plan.product_tier = 0
     payload.plan.billing_multiplier = 1

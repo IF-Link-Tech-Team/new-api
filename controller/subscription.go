@@ -24,10 +24,10 @@ type SubscriptionPlanDTO struct {
 	BillingMultipliers map[string]float64     `json:"billing_multipliers,omitempty"`
 }
 
-func subscriptionBillingMultipliers(productType string, modelScope string, priceVersion string) map[string]float64 {
+func subscriptionBillingMultipliers(productType string, priceBook string, modelScope string, priceVersion string) map[string]float64 {
 	productType = strings.TrimSpace(productType)
 	priceVersion = strings.TrimSpace(priceVersion)
-	if productType == "" || priceVersion == "" {
+	if (productType == "" && priceBook == "") || priceVersion == "" {
 		return nil
 	}
 
@@ -42,11 +42,17 @@ func subscriptionBillingMultipliers(productType string, modelScope string, price
 			continue
 		}
 		seen[modelName] = struct{}{}
-		price, err := model.GetProductPriceSnapshot(productType, modelName, priceVersion)
-		if err != nil {
-			continue
+		if priceBook != "" {
+			price, err := model.ResolvePriceBookPrice(model.DB, priceBook, modelName, priceVersion)
+			if err == nil && price != nil {
+				result[modelName] = price.BillingMultiplier
+			}
+		} else {
+			price, err := model.GetProductPriceSnapshot(productType, modelName, priceVersion)
+			if err == nil {
+				result[modelName] = price.BillingMultiplier
+			}
 		}
-		result[modelName] = price.BillingMultiplier
 	}
 	if len(result) == 0 {
 		return nil
@@ -218,19 +224,23 @@ type SubscriptionOrderStatusDTO struct {
 // ---- User APIs ----
 
 func GetSubscriptionPlans(c *gin.Context) {
-	var plans []model.SubscriptionPlan
-	query := model.DB.Where("listed = ?", true)
-	if err := query.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
+	items, err := model.GetStorefrontCatalog()
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	result := make([]SubscriptionPlanDTO, 0, len(plans))
-	for _, p := range plans {
-		p.NormalizeDefaults()
+	result := make([]SubscriptionPlanDTO, 0, len(items))
+	for _, item := range items {
+		p := item.Plan
+		// Display-only previews use the same catalog on all storefronts,
+		// while checkout continues to enforce the real listed+enabled gates.
+		if !p.Listed {
+			p.Enabled = false
+		}
 		result = append(result, SubscriptionPlanDTO{
 			Plan:               p,
 			ProductID:          subscriptionPlanProductID(p),
-			BillingMultipliers: subscriptionBillingMultipliers(p.ProductType, p.ModelScope, p.PriceVersion),
+			BillingMultipliers: subscriptionBillingMultipliers(p.ProductType, p.PriceBook, p.ModelScope, p.PriceVersion),
 		})
 	}
 	common.ApiSuccess(c, result)
@@ -249,7 +259,7 @@ func GetSubscriptionProduct(c *gin.Context) {
 	common.ApiSuccess(c, SubscriptionPlanDTO{
 		Plan:               *plan,
 		ProductID:          subscriptionPlanProductID(*plan),
-		BillingMultipliers: subscriptionBillingMultipliers(plan.ProductType, plan.ModelScope, plan.PriceVersion),
+		BillingMultipliers: subscriptionBillingMultipliers(plan.ProductType, plan.PriceBook, plan.ModelScope, plan.PriceVersion),
 	})
 }
 
@@ -280,6 +290,7 @@ func GetSubscriptionSelf(c *gin.Context) {
 			if summary.Subscription != nil {
 				item["billing_multipliers"] = subscriptionBillingMultipliers(
 					summary.Subscription.ProductType,
+					summary.Subscription.PriceBook,
 					summary.Subscription.ModelScope,
 					summary.Subscription.PriceVersion,
 				)

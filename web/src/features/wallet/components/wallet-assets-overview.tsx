@@ -38,7 +38,6 @@ import { ensureApiKeyPrefix } from '@/features/keys/lib/api-key'
 import type { ApiKey } from '@/features/keys/types'
 import { getSelfSubscriptionFull } from '@/features/subscriptions/api'
 import type { UserSubscriptionRecord } from '@/features/subscriptions/types'
-import { IF_LEARN_PRODUCT_NAME } from '@/features/traffic-packs/lib/product-display'
 import { getUserLogs } from '@/features/usage-logs/api'
 import { LOG_TYPE_ENUM } from '@/features/usage-logs/constants'
 import type { UsageLog } from '@/features/usage-logs/data/schema'
@@ -54,9 +53,6 @@ function formatDate(unix: number): string {
 }
 
 function entitlementName(item: UserSubscriptionRecord): string {
-  if (item.subscription.product_type === 'pack_deepseek_classroom') {
-    return IF_LEARN_PRODUCT_NAME
-  }
   return item.plan_title || item.subscription.product_code || 'Token Plan'
 }
 

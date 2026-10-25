@@ -19,13 +19,15 @@ For commercial licensing, please contact support@quantumnous.com
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { ProductChannelOrder } from '@/features/product-prices/components/product-channel-order'
 import { ProductPriceVersionDrawer } from '@/features/product-prices/components/product-prices-mutate-drawer'
 import { api } from '@/lib/api'
 
 import { subscriptionPlanSchema } from '../../types'
+import { ProductDisplayEditor } from '../product-display-editor'
 import { ProductPriceBookEditor } from '../product-price-book-editor'
 import { SubscriptionsMutateDrawer } from '../subscriptions-mutate-drawer'
 import { SubscriptionsProvider } from '../subscriptions-provider'
@@ -49,8 +51,65 @@ function Wrapper(props: { children: ReactNode }) {
   )
 }
 
+it('selects channels by name, keeps their model mapping, and reorders the persisted route', async () => {
+  const user = userEvent.setup()
+  const changed = vi.fn()
+  vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data: url.includes('/channel/search')
+        ? {
+            items: [
+              {
+                id: 14,
+                name: 'Primary',
+                models: 'operator-model',
+                status: 1,
+                model_mapping: '{"operator-model":"provider-alias"}',
+              },
+              { id: 15, name: 'Backup', models: 'operator-model', status: 1 },
+              { id: 16, name: 'Wrong model', models: 'other-model', status: 1 },
+            ],
+          }
+        : [],
+    },
+  }))
+  function Editor() {
+    const [value, setValue] = useState('14')
+    return (
+      <ProductChannelOrder
+        model='operator-model'
+        value={value}
+        onChange={(next) => {
+          setValue(next)
+          changed(next)
+        }}
+      />
+    )
+  }
+  render(<Editor />, { wrapper: Wrapper })
+  expect(await screen.findByText('1. Primary (#14)')).toBeVisible()
+  expect(screen.getByText('Upstream model: provider-alias')).toBeVisible()
+  await user.click(screen.getByRole('combobox'))
+  expect(
+    screen.queryByRole('option', { name: 'Wrong model (#16)' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('option', { name: 'Backup (#15)' }))
+  expect(changed).toHaveBeenLastCalledWith('14, 15')
+  await user.click(screen.getAllByRole('button', { name: 'Move up' })[1])
+  expect(changed).toHaveBeenLastCalledWith('15, 14')
+  await user.click(screen.getAllByRole('button', { name: 'Remove' })[1])
+  expect(changed).toHaveBeenLastCalledWith('15')
+})
+
 it('lets an operator choose product order and explains the fallback boundary', async () => {
   const user = userEvent.setup()
+  vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data: url.includes('/channel/search') ? { items: [] } : [],
+    },
+  }))
   const plan = subscriptionPlanSchema.parse({
     id: 7,
     title: 'Flexible promotion',
@@ -87,6 +146,41 @@ it('lets an operator choose product order and explains the fallback boundary', a
   expect(
     screen.getByRole('switch', { name: 'Allow route fallback' })
   ).not.toBeChecked()
+})
+
+it('edits product presentation without dropping badge tones or unknown metadata', async () => {
+  const user = userEvent.setup()
+  const changed = vi.fn()
+  function Editor() {
+    const [value, setValue] = useState(
+      '{"badges":[{"label":"Sale","tone":"accent"}],"internal_note":"keep"}'
+    )
+    return (
+      <ProductDisplayEditor
+        value={value}
+        onChange={(next) => {
+          setValue(next)
+          changed(JSON.parse(next))
+        }}
+      />
+    )
+  }
+  render(<Editor />)
+  await user.type(screen.getByLabelText('Purchase button label'), 'Get it')
+  await user.type(
+    screen.getByLabelText('Benefits (one per line)'),
+    'First{Enter}Second'
+  )
+  await user.click(screen.getByRole('switch', { name: 'Recommended product' }))
+  expect(changed).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      button_label: 'Get it',
+      benefits: ['First', 'Second'],
+      recommended: true,
+      badges: [{ label: 'Sale', tone: 'accent' }],
+      internal_note: 'keep',
+    })
+  )
 })
 
 it('creates a draft without requesting templates or offering fixed product types', async () => {

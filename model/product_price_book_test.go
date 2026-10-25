@@ -161,6 +161,7 @@ func TestProductPriceBookMigration(t *testing.T) {
 			paidPrice, err := ResolvePriceBookPrice(db, "product:43", pack.Model, historical.PriceVersion)
 			require.NoError(t, err)
 			assert.False(t, paidPrice.Enabled, "paid snapshots stay readable after disabling sales")
+			t.Run("explicit live product conversion preserves historical business data", func(t *testing.T) { testExplicitProductMigration(t, db) })
 			_, err = ResolvePriceBookPrice(db, "product:43", pack.Model, "")
 			require.ErrorContains(t, err, "frozen version")
 			_, err = ResolvePriceBookPrice(db, "product:43", pack.Model, "missing-version")

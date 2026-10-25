@@ -173,6 +173,37 @@ func TestStorefrontCatalogServesAnonymousRequestsWithoutCostFields(t *testing.T)
 	assert.NotContains(t, string(body), "9.99", "upstream settlement cost must never leak")
 }
 
+func TestProductPagesShareCatalogDiscoveryWithoutSellingUnlistedPreviews(t *testing.T) {
+	router := setupStorefrontCatalogTest(t)
+	router.GET("/plans", GetSubscriptionPlans)
+	for _, plan := range []model.SubscriptionPlan{
+		{Title: "Listed", Listed: true, Enabled: true},
+		{Title: "Preview", Enabled: true, DisplayMetadata: `{"preview":true}`},
+		{Title: "Hidden", Enabled: true},
+	} {
+		createStorefrontCatalogPlan(t, plan)
+	}
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/plans", nil))
+	var result struct {
+		Success bool                  `json:"success"`
+		Data    []SubscriptionPlanDTO `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
+	require.True(t, result.Success)
+	require.Len(t, result.Data, 2)
+	byTitle := map[string]bool{}
+	for _, item := range result.Data {
+		byTitle[item.Plan.Title] = item.Plan.Enabled
+	}
+	assert.Equal(t, map[string]bool{"Listed": true, "Preview": false}, byTitle)
+	items, err := model.GetStorefrontCatalog()
+	require.NoError(t, err)
+	for _, item := range items {
+		assert.True(t, item.Plan.Enabled, "display DTO must not mutate the shared catalog")
+	}
+}
+
 func TestPreserveUnsubmittedSubscriptionPlanFields(t *testing.T) {
 	existing := model.SubscriptionPlan{
 		Currency: "CNY", AllowedChannels: `{"model":[1]}`,

@@ -216,9 +216,10 @@ test('monthly cards show the three paid quotas and copy server-authorized model 
           currency: 'CNY',
           duration_value: 30,
           enabled: true,
-          redemption_enabled: true,
+          redemption_enabled: false,
           category: 'subscription',
-          product_type: 'monthly_subscription',
+          product_type: '',
+          price_book: `product:${item.tier + 4}`,
           product_tier: item.tier,
           model_scope: models.join(','),
           total_amount: item.quota,
@@ -281,7 +282,7 @@ test('monthly cards show the three paid quotas and copy server-authorized model 
     null
   )
   const purchaseButtons = [...host.querySelectorAll('button')].filter(
-    (button) => button.textContent === '立即购买'
+    (button) => button.textContent === 'Buy now'
   )
   assert.equal(purchaseButtons.length, 3)
   await act(async () => purchaseButtons[0]?.click())
