@@ -82,19 +82,65 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 	if snapshot == nil {
 		return resolveLegacyChannelSelectionPolicy(ctx, modelName)
 	}
-	var legacy *model.ChannelSelectionPolicy
-	if common.GetContextKeyInt(ctx, constant.ContextKeyTokenUserSubscriptionId) > 0 {
-		legacy, err = resolveLegacyChannelSelectionPolicy(ctx, modelName)
-		if err != nil {
-			return nil, err
-		}
-	}
 	// Token-only channel prices cannot safely price task, audio, image or
 	// tool-unit requests. Fail before submitting until their pricing adapters
 	// are implemented, rather than falling through to the system model price.
 	path := ctx.Request.URL.Path
 	if !apiChannelTokenPricingPath(path) || ctx.GetString("expected_task_plugin_key") != "" {
 		return nil, errors.New("API channel token pricing does not support this endpoint")
+	}
+	var legacy *model.ChannelSelectionPolicy
+	if common.GetContextKeyInt(ctx, constant.ContextKeyTokenUserSubscriptionId) > 0 {
+		productPrice, priceErr := model.RequestProductPrice(ctx, modelName)
+		if priceErr != nil {
+			return nil, priceErr
+		}
+		productRates, ratesErr := productPrice.ProductChannelRates()
+		if ratesErr != nil {
+			return nil, ratesErr
+		}
+		if len(productRates) > 0 {
+			common.SetContextKey(ctx, constant.ContextKeyTokenFallbackAllowed, productPrice.FallbackAllowed)
+			allowed := make(map[int]struct{}, len(productRates))
+			ordered := make([]int, 0, len(productRates))
+			for _, rate := range productRates {
+				allowed[rate.ChannelID] = struct{}{}
+				if rate.Position != nil {
+					ordered = append(ordered, rate.ChannelID)
+				}
+			}
+			apiAllowed := make(map[int]struct{}, len(snapshot.Rows))
+			apiOrdered := make([]int, 0, len(snapshot.Rows))
+			for _, row := range snapshot.Rows {
+				apiAllowed[row.ChannelID] = struct{}{}
+				if row.Position != nil {
+					apiOrdered = append(apiOrdered, row.ChannelID)
+				}
+			}
+			for id := range allowed {
+				if _, ok := apiAllowed[id]; !ok {
+					delete(allowed, id)
+				}
+			}
+			if len(allowed) == 0 {
+				return nil, fmt.Errorf("model %s has no product/API channel intersection", modelName)
+			}
+			if len(ordered) == 0 {
+				ordered = apiOrdered
+			}
+			filtered := ordered[:0]
+			for _, id := range ordered {
+				if _, ok := allowed[id]; ok {
+					filtered = append(filtered, id)
+				}
+			}
+			ordered = filtered
+			return &model.ChannelSelectionPolicy{AllowedChannelIds: allowed, OrderedChannelIds: ordered, FallbackAllowed: productPrice.FallbackAllowed, PreserveGroup: false, ProductType: common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)}, nil
+		}
+		legacy, err = resolveLegacyChannelSelectionPolicy(ctx, modelName)
+		if err != nil {
+			return nil, err
+		}
 	}
 	allowed := make(map[int]struct{}, len(snapshot.Rows))
 	ordered := make([]int, 0, len(snapshot.Rows))

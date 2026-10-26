@@ -1,5 +1,24 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
@@ -17,6 +36,11 @@ import {
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { PricingAmountInput } from '@/features/model-pricing/pricing-amount-input'
+import {
+  combineBillingExpr,
+  splitBillingExprAndRequestRules,
+} from '@/features/pricing/lib/billing-expr'
+import { TieredPricingEditor } from '@/features/system-settings/models/tiered-pricing-editor'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { publishAPIChannelPrices, type ChannelPriceRow } from './api'
@@ -33,10 +57,12 @@ export function ChannelPricesEditor(props: {
 }) {
   const { t } = useTranslation()
   const client = useQueryClient()
+  const [copyEpoch, setCopyEpoch] = useState<Record<number, number>>({})
   const form = useForm<ChannelPricesForm>({
     resolver: zodResolver(channelPricesSchema),
     defaultValues: priceFormDefaults(props.rows),
   })
+  const draftRows = form.watch('rows')
   const save = useMutation({
     mutationFn: publishAPIChannelPrices,
     onSuccess: async () => {
@@ -58,12 +84,17 @@ export function ChannelPricesEditor(props: {
             upstream_model: props.rows[index].upstream_model,
             enabled: value.enabled,
             position: value.position === '' ? null : Number(value.position),
-            selling_price: JSON.stringify({
-              input: Number(value.input),
-              cached_input: Number(value.cached_input),
-              cache_creation: Number(value.cache_creation),
-              output: Number(value.output),
-            }),
+            selling_price: value.expression_mode
+              ? ''
+              : JSON.stringify({
+                  input: Number(value.input),
+                  cached_input: Number(value.cached_input),
+                  cache_creation: Number(value.cache_creation),
+                  output: Number(value.output),
+                }),
+            billing_expression: value.expression_mode
+              ? value.billing_expression.trim()
+              : '',
           },
         ]
       }),
@@ -99,7 +130,18 @@ export function ChannelPricesEditor(props: {
       }
     >
       <Form {...form}>
-        <form id='api-channel-price-form' onSubmit={submit}>
+        <form
+          id='api-channel-price-form'
+          onSubmit={(event) => {
+            if (
+              event.currentTarget.querySelector('[data-billing-invalid="true"]')
+            ) {
+              event.preventDefault()
+              return
+            }
+            void submit(event)
+          }}
+        >
           <FieldGroup>
             <p className='text-muted-foreground text-sm'>
               {t(
@@ -144,35 +186,85 @@ export function ChannelPricesEditor(props: {
                     </FormItem>
                   )}
                 />
-                <FieldGroup className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
-                  {(
-                    [
-                      ['input', 'Input'],
-                      ['cached_input', 'Cached Input'],
-                      ['cache_creation', 'Cache Creation'],
-                      ['output', 'Output'],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <FormField
-                      key={key}
-                      control={form.control}
-                      name={`rows.${index}.${key}`}
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>{t(label)}</FormLabel>
-                          <FormControl>
-                            <PricingAmountInput
-                              {...field}
-                              onChange={field.onChange}
-                              disabled={save.isPending}
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-                  ))}
-                </FieldGroup>
+                <FormField
+                  control={form.control}
+                  name={`rows.${index}.expression_mode`}
+                  render={({ field }) => (
+                    <FormItem className='flex items-center justify-between gap-3'>
+                      <FormLabel>
+                        {t('Time-based or advanced pricing')}
+                      </FormLabel>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          disabled={save.isPending}
+                          onCheckedChange={(enabled) => {
+                            if (
+                              enabled &&
+                              !form.getValues(
+                                `rows.${index}.billing_expression`
+                              )
+                            ) {
+                              const value = form.getValues(`rows.${index}`)
+                              if (
+                                [
+                                  value.input,
+                                  value.cached_input,
+                                  value.cache_creation,
+                                  value.output,
+                                ].every(
+                                  (amount) =>
+                                    amount.trim() !== '' &&
+                                    Number.isFinite(Number(amount)) &&
+                                    Number(amount) >= 0
+                                )
+                              ) {
+                                form.setValue(
+                                  `rows.${index}.billing_expression`,
+                                  `tier("base", p * ${Number(value.input)} + cr * ${Number(value.cached_input)} + cc * ${Number(value.cache_creation)} + cc1h * ${Number(value.cache_creation)} + c * ${Number(value.output)})`,
+                                  { shouldDirty: true }
+                                )
+                              }
+                            }
+                            field.onChange(enabled)
+                          }}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {!draftRows[index]?.expression_mode && (
+                  <FieldGroup className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
+                    {(
+                      [
+                        ['input', 'Input'],
+                        ['cached_input', 'Cached Input'],
+                        ['cache_creation', 'Cache Creation'],
+                        ['output', 'Output'],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <FormField
+                        key={key}
+                        control={form.control}
+                        name={`rows.${index}.${key}`}
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{t(label)}</FormLabel>
+                            <FormControl>
+                              <PricingAmountInput
+                                {...field}
+                                onChange={field.onChange}
+                                disabled={save.isPending}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    ))}
+                  </FieldGroup>
+                )}
                 <FormField
                   control={form.control}
                   name={`rows.${index}.position`}
@@ -191,6 +283,58 @@ export function ChannelPricesEditor(props: {
                     </FormItem>
                   )}
                 />
+                {draftRows[index]?.expression_mode && (
+                  <FormField
+                    control={form.control}
+                    name={`rows.${index}.billing_expression`}
+                    render={({ field }) => {
+                      const split = splitBillingExprAndRequestRules(field.value)
+                      return (
+                        <FormItem>
+                          <FormLabel>
+                            {t('Advanced billing expression')}
+                          </FormLabel>
+                          <fieldset
+                            disabled={save.isPending}
+                            className='min-w-0'
+                          >
+                            <TieredPricingEditor
+                              key={`${row.channel_id}:${copyEpoch[index] ?? 0}`}
+                              modelName={`${row.model}:${row.channel_id}`}
+                              billingExpr={split.billingExpr}
+                              requestRuleExpr={split.requestRuleExpr}
+                              onBillingExprChange={(next) =>
+                                field.onChange(
+                                  combineBillingExpr(
+                                    next,
+                                    splitBillingExprAndRequestRules(
+                                      form.getValues(
+                                        `rows.${index}.billing_expression`
+                                      )
+                                    ).requestRuleExpr
+                                  )
+                                )
+                              }
+                              onRequestRuleExprChange={(next) =>
+                                field.onChange(
+                                  combineBillingExpr(
+                                    splitBillingExprAndRequestRules(
+                                      form.getValues(
+                                        `rows.${index}.billing_expression`
+                                      )
+                                    ).billingExpr,
+                                    next
+                                  )
+                                )
+                              }
+                            />
+                          </fieldset>
+                          <FormMessage />
+                        </FormItem>
+                      )
+                    }}
+                  />
+                )}
                 {index > 0 && (
                   <Button
                     type='button'
@@ -204,11 +348,17 @@ export function ChannelPricesEditor(props: {
                         'cached_input',
                         'cache_creation',
                         'output',
+                        'expression_mode',
+                        'billing_expression',
                       ] as const) {
                         form.setValue(`rows.${index}.${key}`, source[key], {
                           shouldDirty: true,
                         })
                       }
+                      setCopyEpoch((previous) => ({
+                        ...previous,
+                        [index]: (previous[index] ?? 0) + 1,
+                      }))
                     }}
                   >
                     {t('Copy prices from first channel')}

@@ -74,6 +74,22 @@ func UpdateProductPlan(db *gorm.DB, plan *SubscriptionPlan, expectedRevision int
 	}
 	candidate := *plan
 	err := db.Transaction(func(tx *gorm.DB) error {
+		// Catalog publication takes this fence before inspecting products. Take
+		// it before the plan lock too, so a concurrent enable cannot race a
+		// channel removal that just checked the old sale state.
+		channelPricing, err := APIChannelPricingMode()
+		if err != nil {
+			return err
+		}
+		if channelPricing {
+			fence := tx.Model(&APIChannelCatalog{}).Where("id = ?", 1).UpdateColumn("write_epoch", gorm.Expr("write_epoch + 1"))
+			if fence.Error != nil {
+				return fence.Error
+			}
+			if fence.RowsAffected != 1 {
+				return errors.New("API channel catalog is unavailable")
+			}
+		}
 		var current SubscriptionPlan
 		if err := lockForUpdate(tx).First(&current, candidate.Id).Error; err != nil {
 			return err
@@ -360,6 +376,24 @@ func validateProductPlanPrices(tx *gorm.DB, p *SubscriptionPlan, forSale bool) e
 		price, err := ResolvePriceBookPrice(query, p.PriceBook, name, p.PriceVersion)
 		if err != nil {
 			return fmt.Errorf("product model %s: %w", name, err)
+		}
+		if price.ChannelRates != "" {
+			enabled, err := APIChannelPricingMode()
+			if err != nil {
+				return err
+			}
+			if !enabled {
+				return errors.New("product channel rates require API channel pricing to be enabled")
+			}
+			if forSale {
+				_, rows, err := ReadAPIChannelCatalog(tx, name)
+				if err != nil {
+					return err
+				}
+				if err := validateProductChannelSales(tx, price, rows, false); err != nil {
+					return err
+				}
+			}
 		}
 		if forSale {
 			if err := validateProductPriceBookCostFloor(price); err != nil {

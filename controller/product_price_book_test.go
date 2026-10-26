@@ -56,7 +56,7 @@ func TestProductOrderSelfStatusPreservesPaymentPrivacy(t *testing.T) {
 func TestAPIChannelPricesRequireWriteScopeAndRootWithoutExposingCredentials(t *testing.T) {
 	admin, _ := setupAccessTokenAudit(t)
 	db := model.DB
-	require.NoError(t, db.AutoMigrate(&model.APIChannelCatalog{}, &model.APIChannelPrice{}, &model.Channel{}))
+	require.NoError(t, db.AutoMigrate(&model.APIChannelCatalog{}, &model.APIChannelPrice{}, &model.Channel{}, &model.SubscriptionPlan{}))
 	require.NoError(t, model.InitializeAPIChannelCatalog(db))
 	root := &model.User{Username: "catalog-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AuthVersion: 1}
 	require.NoError(t, db.Create(root).Error)

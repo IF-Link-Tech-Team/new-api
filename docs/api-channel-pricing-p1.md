@@ -41,6 +41,16 @@ P2 商品×模型×渠道倍率尚未接入：过渡期商品仍与原权益价�
 
 复用 `components/dialog`（弹层布局及窄屏行为）、`StaticDataTable`（列表/空态）、`SectionPageLayout`、Form/RHF/Zod，以及 `features/model-pricing/pricing-amount-input.tsx`。未复用整个原生 `model-pricing-panel.tsx`：该面板编辑模型全局费率/表达式，保存对象和 API 都不含渠道与目录修订；本批增加渠道编辑业务容器，仍使用原生金额输入和计费引擎。复制行为只把四项表单初值拷入另一渠道，不涉及剪贴板，不另写通用复制组件。
 
-## PR 需求来源
+## P2 增量：商品渠道倍率与分时定价（本地验证，未部署）
+
+- 商品价格版本只保存模型、渠道、倍率、顺序和是否允许备用；API 渠道价仍是基础售价权威。完整草稿一次追加，不覆盖旧版。复制前版会读取所有分页；版本冲突或失效渠道保留当前编辑并要求处理。
+- 新模式隐藏并拒绝旧完整费率的创建入口。商品候选取 API 销售许可与商品配置的交集，商品顺序优先；切换渠道时按实际渠道基础价乘该渠道商品倍率。关闭备用后不再自动放行失败转移。
+- 用户要求保留分时规则：API 行可选四项显式固定价或原生计费表达式；复用官方 TieredPricingEditor 与 billingexpr，不新增公式解释器。工作日、峰谷时段及时区继续由原生表达式表达，商品只乘倍率。
+- 停用部分 API 路线允许转向有效备用；拒绝删掉在售/可兑换商品或有效已售权益的最后一条可用路线。商品上架与 API 停用共享目录写锁，避免并发漏检。
+- Go 六包 `go test ./controller ./model ./service ./middleware ./relay/helper ./pkg/billingexpr -timeout 120s`：2957 项通过。实际 MySQL 8.4.13、PostgreSQL 16.14 与 SQLite 3.50.4 专项覆盖新建/升级和两次迁移。完整启动矩阵再次覆盖三库空库/基线升级，每种连续两次启动成功；本地记录 `/tmp/iflink-api-channel-p2-startup-matrix/`。
+- 前端三文件交互共20项通过；typecheck、修改范围 lint、构建通过。真实构建 UI 在 Chrome 验证分时编辑、复制商品渠道版本和倍率/顺序保存；1440×1000 和390×844截图见 `verification/product-channel-pricing/`。
+- 本批不发布商品、不自动调整已售权益、不回填生产价格；P3/P4及真实生产验收仍待完成。分时规则已实现，不代表历史数据迁移已执行。
+
+## PR 需求来源（沿用 P1）
 
 本 fork 关闭了 GitHub Issues。用户于本轮明确允许“以 30 号方案作为需求依据”，免建 Issue；此次是 IF.Link 自有 fork 的商业配置扩展，不向上游提交运营配置需求。

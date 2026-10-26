@@ -273,6 +273,7 @@ it('requires confirmation to disable a product price and returns the new revisio
       revision={3}
       disabled={false}
       onRevisionChange={onRevisionChange}
+      onVersionStaged={vi.fn()}
     />,
     { wrapper: Wrapper }
   )
@@ -328,6 +329,7 @@ it('offers retry after a failed price query and keeps creation disabled while th
       revision={3}
       disabled
       onRevisionChange={vi.fn()}
+      onVersionStaged={vi.fn()}
     />,
     { wrapper: Wrapper }
   )
@@ -339,4 +341,47 @@ it('offers retry after a failed price query and keeps creation disabled while th
   expect(
     screen.queryByRole('button', { name: 'Retry' })
   ).not.toBeInTheDocument()
+})
+
+it('shows only channel rate creation when API channel pricing is active', async () => {
+  vi.spyOn(api, 'get').mockImplementation(async (url) => ({
+    data: {
+      success: true,
+      data: url.includes('/api-channel-prices')
+        ? { active: true, revision: 8, bindings: [], prices: [] }
+          : [],
+    },
+  }))
+  const plan = subscriptionPlanSchema.parse({
+    id: 7,
+    title: 'Promotion',
+    price_amount: 10,
+    duration_unit: 'month',
+    duration_value: 1,
+    quota_reset_period: 'never',
+    enabled: false,
+    sort_order: 0,
+    max_purchase_per_user: 0,
+    total_amount: 10000,
+    price_book: 'product:7',
+    config_revision: 3,
+  })
+  render(
+    <ProductPriceBookEditor
+      product={plan}
+      revision={3}
+      disabled={false}
+      onRevisionChange={vi.fn()}
+      onVersionStaged={vi.fn()}
+    />,
+    { wrapper: Wrapper }
+  )
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('button', { name: 'Add Price Version' })
+    ).not.toBeInTheDocument()
+  )
+  expect(
+    screen.getByRole('button', { name: 'Configure model and channel rates' })
+  ).toBeEnabled()
 })

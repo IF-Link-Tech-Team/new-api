@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   useInfiniteQuery,
   useMutation,
+  useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
 import { useState } from 'react'
@@ -38,6 +39,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { getAPIChannelCatalog } from '@/features/api-channel-prices/api'
 import {
   getProductPriceBookVersions,
   setProductPriceBookVersionEnabled,
@@ -46,12 +48,15 @@ import { ProductPriceVersionDrawer } from '@/features/product-prices/components/
 import type { ProductPriceBookVersion } from '@/features/product-prices/types'
 
 import type { SubscriptionPlan } from '../types'
+import { ProductChannelVersionDrawer } from './product-channel-version-drawer'
 
 interface Props {
   product: SubscriptionPlan
   revision: number
   disabled: boolean
+  models?: string[]
   onRevisionChange: (revision: number) => void
+  onVersionStaged: (version: string) => void
 }
 
 // Reuses the price-version form and confirmation/state components. The product
@@ -60,7 +65,12 @@ export function ProductPriceBookEditor(props: Props) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [creating, setCreating] = useState(false)
+  const [channelCreating, setChannelCreating] = useState(false)
   const [target, setTarget] = useState<ProductPriceBookVersion | null>(null)
+  const catalog = useQuery({
+    queryKey: ['api-channel-prices'],
+    queryFn: getAPIChannelCatalog,
+  })
   const queryKey = ['product-price-book', props.product.id]
   const prices = useInfiniteQuery({
     queryKey,
@@ -87,13 +97,23 @@ export function ProductPriceBookEditor(props: Props) {
     prices.data?.pages.flatMap((page) => page.data?.items || []) || []
   return (
     <div className='flex min-w-0 flex-col gap-3'>
+      {!catalog.data?.active && (
+        <Button
+          type='button'
+          variant='outline'
+          disabled={props.disabled || toggle.isPending}
+          onClick={() => setCreating(true)}
+        >
+          {t('Add Price Version')}
+        </Button>
+      )}
       <Button
         type='button'
         variant='outline'
         disabled={props.disabled || toggle.isPending}
-        onClick={() => setCreating(true)}
+        onClick={() => setChannelCreating(true)}
       >
-        {t('Add Price Version')}
+        {t('Configure model and channel rates')}
       </Button>
       {prices.isPending && <LoadingState size='sm' />}
       {prices.isError && <ErrorState onRetry={() => void prices.refetch()} />}
@@ -165,6 +185,22 @@ export function ProductPriceBookEditor(props: Props) {
         product={props.product}
         onCreated={() => void queryClient.invalidateQueries({ queryKey })}
       />
+      {channelCreating && (
+        <ProductChannelVersionDrawer
+          product={{
+            ...props.product,
+            model_scope: props.models?.join(',') ?? props.product.model_scope,
+          }}
+          revision={props.revision}
+          versions={rows}
+          onClose={() => setChannelCreating(false)}
+          onRevisionChange={(revision) => {
+            props.onRevisionChange(revision)
+            void queryClient.invalidateQueries({ queryKey })
+          }}
+          onVersionStaged={props.onVersionStaged}
+        />
+      )}
       {target && (
         <ConfirmDialog
           open

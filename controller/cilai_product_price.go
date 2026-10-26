@@ -21,6 +21,36 @@ type adminSetProductPriceEnabledRequest struct {
 	Enabled *bool `json:"enabled"`
 }
 
+func AdminStageProductChannelVersion(c *gin.Context) {
+	planID, err := strconv.Atoi(c.Param("id"))
+	var req struct {
+		ExpectedRevision    int64                       `json:"expected_revision"`
+		ExpectedAPIRevision int64                       `json:"expected_api_revision"`
+		Version             string                      `json:"version"`
+		Models              []model.ProductChannelModel `json:"models"`
+		FallbackAllowed     *bool                       `json:"fallback_allowed"`
+		Reason              string                      `json:"reason"`
+	}
+	if err != nil || planID <= 0 || c.ShouldBindJSON(&req) != nil || req.FallbackAllowed == nil || strings.TrimSpace(req.Reason) == "" || len(req.Reason) > 2000 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	if !requirePaymentCompliance(c) {
+		return
+	}
+	revision, err := model.StageProductChannelVersion(model.DB, planID, req.ExpectedRevision, req.ExpectedAPIRevision, req.Version, req.Models, *req.FallbackAllowed)
+	if errors.Is(err, model.ErrProductPlanConflict) || errors.Is(err, model.ErrAPIChannelPriceConflict) || errors.Is(err, model.ErrPriceBookVersionExists) {
+		c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "subscription.channel_version_stage", map[string]any{"plan_id": planID, "version": req.Version, "revision": revision, "reason": req.Reason})
+	common.ApiSuccess(c, gin.H{"config_revision": revision})
+}
+
 // Product-scoped endpoints are the new price-book contract. The legacy
 // product-type API remains separate during expansion; these endpoints never
 // write it or silently activate a version for existing plans/entitlements.

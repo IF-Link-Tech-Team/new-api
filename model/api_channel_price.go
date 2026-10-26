@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -20,8 +21,9 @@ import (
 // APIChannelCatalog serializes publications across instances. Prices are append
 // only; a request reads one revision and retains all candidates at that revision.
 type APIChannelCatalog struct {
-	ID       int   `json:"-"`
-	Revision int64 `json:"revision"`
+	ID         int   `json:"-"`
+	Revision   int64 `json:"revision"`
+	WriteEpoch int64 `json:"-" gorm:"default:0"`
 }
 
 type APIChannelPrice struct {
@@ -31,7 +33,10 @@ type APIChannelPrice struct {
 	ChannelID     int    `json:"channel_id" gorm:"uniqueIndex:idx_api_channel_revision,priority:3;index:idx_api_channel_lookup,priority:2"`
 	UpstreamModel string `json:"upstream_model" gorm:"type:text"`
 	SellingPrice  string `json:"selling_price" gorm:"type:text"`
-	Enabled       bool   `json:"enabled"`
+	// PriceExpression preserves supported native billing rules such as
+	// weekday peak/off-peak prices. When set, it is the authoritative price.
+	PriceExpression string `json:"billing_expression" gorm:"type:text"`
+	Enabled         bool   `json:"enabled"`
 	// Nil inherits channel priority/weight. Distinct non-negative positions
 	// define an explicit model-level order; all enabled rows must participate.
 	Position  *int   `json:"position"`
@@ -111,6 +116,21 @@ func (p APIChannelPrice) Prices() (PriceComponents, error) {
 }
 
 func (p APIChannelPrice) BillingExpression() (string, error) {
+	if len(p.PriceExpression) > 20000 {
+		return "", errors.New("billing expression is too long")
+	}
+	if p.PriceExpression != "" {
+		if p.PriceExpression != strings.TrimSpace(p.PriceExpression) {
+			return "", errors.New("billing expression must not have surrounding whitespace")
+		}
+		if _, err := billingexpr.CompileFromCache(p.PriceExpression); err != nil {
+			return "", err
+		}
+		if billingexpr.UsesFixedPricing(p.PriceExpression) {
+			return "", errors.New("API channel prices must be token-based")
+		}
+		return p.PriceExpression, nil
+	}
 	prices, err := p.Prices()
 	if err != nil {
 		return "", err
@@ -300,6 +320,11 @@ func PublishAPIChannelPrices(db *gorm.DB, expectedRevision int64, changes []APIC
 			if _, err := row.BillingExpression(); err != nil {
 				return err
 			}
+			if row.PriceExpression != "" {
+				if err := billing_setting.SmokeTestExpr(row.PriceExpression); err != nil {
+					return fmt.Errorf("model %s channel %d: %w", row.Model, row.ChannelID, err)
+				}
+			}
 			// Disabled orphan rows can always be retired. Re-enabling requires a
 			// valid, exact client model and explicit mapping confirmation.
 			if row.Enabled {
@@ -343,7 +368,98 @@ func PublishAPIChannelPrices(db *gorm.DB, expectedRevision int64, changes []APIC
 				return errors.New("set a route position for every enabled channel, or inherit for all")
 			}
 		}
+		if err := validateAPIChannelProductReferences(tx, current, changes); err != nil {
+			return err
+		}
 		return tx.Create(&changes).Error
 	})
 	return newRevision, err
+}
+
+func validateAPIChannelProductReferences(tx *gorm.DB, current []APIChannelPrice, changes []APIChannelPrice) error {
+	removedModels := make(map[string]bool)
+	for _, row := range changes {
+		if !row.Enabled {
+			removedModels[row.Model] = true
+		}
+	}
+	if len(removedModels) == 0 {
+		return nil
+	}
+	future := make(map[string]APIChannelPrice, len(current)+len(changes))
+	for _, row := range current {
+		future[fmt.Sprintf("%s:%d", row.Model, row.ChannelID)] = row
+	}
+	for _, row := range changes {
+		future[fmt.Sprintf("%s:%d", row.Model, row.ChannelID)] = row
+	}
+	var channels []Channel
+	if err := tx.Select("id", "status", "models", "model_mapping").Find(&channels).Error; err != nil {
+		return err
+	}
+	bindings := make(map[int]Channel, len(channels))
+	for _, channel := range channels {
+		bindings[channel.Id] = channel
+	}
+	hasFutureRoute := func(model string, rates []ProductChannelRate) bool {
+		for _, rate := range rates {
+			row, ok := future[fmt.Sprintf("%s:%d", model, rate.ChannelID)]
+			channel := bindings[rate.ChannelID]
+			mapped, err := ResolveMappedModelName(channel.GetModelMapping(), model)
+			if ok && row.Enabled && channel.Status == common.ChannelStatusEnabled && slices.Contains(channel.GetModels(), model) && err == nil && mapped == row.UpstreamModel {
+				return true
+			}
+		}
+		return false
+	}
+	check := func(owner string, ownerID int, modelScope, book, version string) error {
+		if book == "" {
+			return nil
+		}
+		for _, model := range explicitModelIds(modelScope) {
+			if !removedModels[model] {
+				continue
+			}
+			price, err := ResolvePriceBookPrice(tx, book, model, version)
+			if err != nil {
+				return err
+			}
+			if price == nil || price.ChannelRates == "" {
+				continue
+			}
+			rates, err := price.ProductChannelRates()
+			if err != nil {
+				return err
+			}
+			if !hasFutureRoute(model, rates) {
+				return fmt.Errorf("cannot disable API channel: no usable API channel remains for %s %d model %s", owner, ownerID, model)
+			}
+		}
+		return nil
+	}
+	var plans []SubscriptionPlan
+	if err := tx.Select("id", "model_scope", "price_book", "price_version").
+		Where("(enabled = ? OR redemption_enabled = ?) AND (product_type = ? OR product_type IS NULL)", true, true, "").Find(&plans).Error; err != nil {
+		return err
+	}
+	for _, plan := range plans {
+		book, err := ProductPriceBook(plan.Id)
+		if err != nil || plan.PriceBook != book {
+			continue
+		}
+		if err := check("active product", plan.Id, plan.ModelScope, book, plan.PriceVersion); err != nil {
+			return err
+		}
+	}
+	var entitlements []UserSubscription
+	if err := tx.Select("id", "model_scope", "price_book", "price_version").
+		Where("status = ? AND end_time > ?", "active", getDBTimestampTx(tx)).Find(&entitlements).Error; err != nil {
+		return err
+	}
+	for _, entitlement := range entitlements {
+		if err := check("active entitlement", entitlement.Id, entitlement.ModelScope, entitlement.PriceBook, entitlement.PriceVersion); err != nil {
+			return err
+		}
+	}
+	return nil
 }

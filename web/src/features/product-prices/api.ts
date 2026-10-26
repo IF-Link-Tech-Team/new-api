@@ -30,10 +30,12 @@ import type {
 
 export async function getProductPriceBookVersions(
   planId: number,
-  beforeId = 0
+  beforeId = 0,
+  priceVersion?: string
 ): Promise<ApiResponse<ProductPriceBookPage>> {
   const params = new URLSearchParams({ limit: '20' })
   if (beforeId > 0) params.set('before_id', String(beforeId))
+  if (priceVersion) params.set('price_version', priceVersion)
   const res = await api.get(
     `/api/subscription/admin/plans/${planId}/prices?${params}`
   )
