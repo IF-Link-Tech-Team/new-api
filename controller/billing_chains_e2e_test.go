@@ -14,10 +14,12 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -303,4 +305,175 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	t.Logf("isolated_billing classroom_ga_quota=%d classroom_v41_quota=%d classroom_remaining=%d wallet_ga_quota=%d wallet_remaining=%d upstream_failures_refunded=2 channel15_calls=%d channel16_calls=%d",
 		classGAQuota, classV41Quota, entitlement.AmountTotal-entitlement.AmountUsed,
 		walletLog.Quota, walletAfterSuccess.Quota, upstreamCalls.Load(), forbiddenChannelCalls.Load())
+}
+
+func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	oldMemory, oldRedis, oldBatch, oldLogs := common.MemoryCacheEnabled, common.RedisEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled
+	oldRetry, oldQuota := common.RetryTimes, common.QuotaPerUnit
+	oldGroups := setting.UserUsableGroups2JSONString()
+	oldRatios := ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.MemoryCacheEnabled, common.RedisEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled = oldMemory, oldRedis, oldBatch, oldLogs
+		common.RetryTimes, common.QuotaPerUnit = oldRetry, oldQuota
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(oldGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldRatios))
+	})
+	db := setupModelListControllerTestDB(t)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	common.MemoryCacheEnabled, common.RedisEnabled, common.BatchUpdateEnabled, common.LogConsumeEnabled = false, false, false, true
+	common.RetryTimes, common.QuotaPerUnit = 1, 500_000
+	t.Setenv("IFLINK_API_CHANNEL_PRICING", "enabled")
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"default"}`))
+	// Native group prices must not multiply the absolute channel sales price.
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":7}`))
+	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Log{}, &model.BillingRefund{}, &model.APIChannelCatalog{}, &model.APIChannelPrice{}))
+	require.NoError(t, model.InitializeAPIChannelCatalog(db))
+	oldEstimate, oldSensitive := constant.CountToken, setting.CheckSensitiveEnabled
+	constant.CountToken, setting.CheckSensitiveEnabled = true, false
+	t.Cleanup(func() { constant.CountToken, setting.CheckSensitiveEnabled = oldEstimate, oldSensitive })
+	quotaSettings := operation_setting.GetQuotaSetting()
+	oldTrust := quotaSettings.TrustQuotaUSD
+	quotaSettings.TrustQuotaUSD = 0
+	t.Cleanup(func() { quotaSettings.TrustQuotaUSD = oldTrust })
+
+	var primaryCalls, backupCalls atomic.Int32
+	var mode string
+	var publicationRevision int64
+	var a, b model.APIChannelPrice
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls.Add(1)
+		if mode == "publish-during-request" {
+			changed := b
+			changed.SellingPrice = `{"input":200,"cached_input":20,"cache_creation":250,"output":800}`
+			var err error
+			publicationRevision, err = model.PublishAPIChannelPrices(db, publicationRevision, []model.APIChannelPrice{changed}, 1, "concurrent price change")
+			require.NoError(t, err)
+		}
+		if mode == "primary-success" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","model":"vendor-a","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100,"prompt_tokens_details":{"cached_tokens":200}}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"temporarily unavailable","type":"server_error"}}`))
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		require.Contains(t, string(body), `"model":"vendor-b"`)
+		w.Header().Set("Content-Type", "application/json")
+		if mode == "all-fail" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"backup unavailable","type":"server_error"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","model":"vendor-b","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100,"prompt_tokens_details":{"cached_tokens":200}}}`))
+	}))
+	defer backup.Close()
+	off := 0
+	for index, url := range []string{primary.URL, backup.URL} {
+		priority := int64(index * 100)
+		channel := model.Channel{Id: index + 101, Name: fmt.Sprintf("channel-%d", index), Type: constant.ChannelTypeOpenAI, Models: "channel-priced-model", Group: "default", Status: common.ChannelStatusEnabled, Key: "synthetic-provider-key", BaseURL: &url, AutoBan: &off, Priority: &priority, ModelMapping: common.GetPointer(fmt.Sprintf(`{"channel-priced-model":"vendor-%c"}`, 'a'+index))}
+		require.NoError(t, db.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(nil))
+	}
+	a = model.APIChannelPrice{Model: "channel-priced-model", ChannelID: 101, UpstreamModel: "vendor-a", Enabled: true, Position: common.GetPointer(0), SellingPrice: `{"input":1,"cached_input":0.1,"cache_creation":1.25,"output":4}`}
+	b = a
+	b.ChannelID, b.UpstreamModel, b.Position = 102, "vendor-b", common.GetPointer(1)
+	b.SellingPrice = `{"input":2,"cached_input":0.2,"cache_creation":2.5,"output":8}`
+	publicationRevision, err = model.PublishAPIChannelPrices(db, 0, []model.APIChannelPrice{a, b}, 1, "initial prices")
+	require.NoError(t, err)
+	router := gin.New()
+	router.Use(middleware.BodyStorageCleanup())
+	router.POST("/v1/chat/completions", middleware.TokenAuth(), middleware.Distribute(), func(c *gin.Context) { Relay(c, types.RelayFormatOpenAI) })
+
+	for index, scenario := range []struct {
+		mode        string
+		quota       int
+		wantCharge  int
+		wantStatus  int
+		wantBackup  bool
+		wantReceipt int64
+	}{
+		{"primary-success", 100000, 610, 200, false, 1},
+		{"backup-success", 100000, 1220, 200, true, 1},
+		{"publish-during-request", 100000, 1220, 200, true, 1},
+		{"all-fail", 100000, 0, 503, true, 1},
+		{"insufficient-backup", 1200, 0, 403, false, 1},
+		{"disabled-sales", 100000, 0, 503, false, 0},
+		{"forbidden-group", 100000, 0, 503, false, 0},
+	} {
+		t.Run(scenario.mode, func(t *testing.T) {
+			mode = scenario.mode
+			// Restore prices between cases; each request must freeze its own
+			// revision, including an in-flight concurrent publication.
+			var err error
+			publicationRevision, err = model.PublishAPIChannelPrices(db, publicationRevision, []model.APIChannelPrice{a, b}, 1, "scenario baseline")
+			require.NoError(t, err)
+			if mode == "disabled-sales" {
+				disabledA, disabledB := a, b
+				disabledA.Enabled, disabledB.Enabled = false, false
+				publicationRevision, err = model.PublishAPIChannelPrices(db, publicationRevision, []model.APIChannelPrice{disabledA, disabledB}, 1, "stop API sales")
+				require.NoError(t, err)
+			}
+			if mode == "forbidden-group" {
+				require.NoError(t, db.Model(&model.Ability{}).Where("channel_id IN ?", []int{101, 102}).Update("group", "private").Error)
+			}
+			beforePrimary := primaryCalls.Load()
+			user := model.User{Username: fmt.Sprintf("api-price-%d", index), AffCode: fmt.Sprintf("api-price-aff-%d", index), Status: common.UserStatusEnabled, Group: "default", Quota: scenario.quota}
+			require.NoError(t, db.Create(&user).Error)
+			token := model.Token{UserId: user.Id, Key: fmt.Sprintf("apipricetoken%d", index), Name: "test", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true, ProductType: model.ProductTypeWallet, EntitlementType: model.ProductTypeWallet}
+			require.NoError(t, token.Insert())
+			beforeBackup := backupCalls.Load()
+			// Large enough input to create a genuine reservation and make the
+			// dearer retry exceed the final case's remaining wallet balance.
+			body := fmt.Sprintf(`{"model":"channel-priced-model","messages":[{"role":"user","content":%q}],"max_tokens":10}`, strings.Repeat("hello ", 1200))
+			request := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer sk-"+token.Key)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			require.Equal(t, scenario.wantStatus, recorder.Code, recorder.Body.String())
+			require.Equal(t, scenario.wantBackup, backupCalls.Load() > beforeBackup)
+			require.Eventually(t, func() bool {
+				var after model.User
+				var pending int64
+				if db.First(&after, user.Id).Error != nil {
+					return false
+				}
+				if db.Model(&model.BillingRefund{}).Where("user_id = ? AND status NOT IN ?", user.Id, []string{model.BillingRefundSucceeded, model.BillingRefundSettled}).Count(&pending).Error != nil {
+					return false
+				}
+				return after.Quota == scenario.quota-scenario.wantCharge && pending == 0
+			}, 3*time.Second, 10*time.Millisecond)
+			var logs []model.Log
+			require.NoError(t, db.Where("user_id = ? AND type = ?", user.Id, model.LogTypeConsume).Find(&logs).Error)
+			if scenario.wantCharge > 0 {
+				require.Len(t, logs, 1)
+				require.Equal(t, scenario.wantCharge, logs[0].Quota)
+				wantChannel := 101
+				if scenario.wantBackup {
+					wantChannel = 102
+				}
+				require.Equal(t, wantChannel, logs[0].ChannelId)
+				require.Contains(t, logs[0].Other, "api_price_revision")
+			} else {
+				require.Empty(t, logs)
+			}
+			var receipts int64
+			require.NoError(t, db.Model(&model.BillingRefund{}).Where("user_id = ?", user.Id).Count(&receipts).Error)
+			require.EqualValues(t, scenario.wantReceipt, receipts, "rejected sales must not reserve; retries retain one durable receipt")
+			if scenario.wantReceipt == 0 {
+				require.Equal(t, beforePrimary, primaryCalls.Load(), "sales or group rejection must happen before upstream submission")
+			}
+		})
+	}
+	require.Positive(t, primaryCalls.Load())
 }

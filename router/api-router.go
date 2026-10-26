@@ -211,6 +211,8 @@ func SetApiRouter(router *gin.Engine) {
 		subscriptionAdminRoute.Use(middleware.AdminAuth())
 		{
 			subscriptionAdminRoute.GET("/plans", controller.AdminListSubscriptionPlans)
+			subscriptionAdminRoute.GET("/api-channel-prices", middleware.DisableCache(), controller.AdminListAPIChannelPrices)
+			subscriptionAdminRoute.POST("/api-channel-prices", middleware.RootAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.AdminPublishAPIChannelPrices)
 			subscriptionAdminRoute.GET("/compensation-orders", middleware.DisableCache(), controller.AdminListProductCompensationOrders)
 			subscriptionAdminRoute.POST("/compensation-orders/:trade_no/retry", middleware.RootAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.AdminRetryProductCompensation)
 			subscriptionAdminRoute.POST("/plans", controller.AdminCreateSubscriptionPlan)

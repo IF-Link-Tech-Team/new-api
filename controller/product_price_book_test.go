@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -50,6 +51,46 @@ func TestProductOrderSelfStatusPreservesPaymentPrivacy(t *testing.T) {
 	var original model.SubscriptionOrder
 	require.NoError(t, model.DB.Where("trade_no = ?", "self-order-0").First(&original).Error)
 	assert.Equal(t, common.TopUpStatusPending, original.Status, "displaying expiry must not change payment evidence")
+}
+
+func TestAPIChannelPricesRequireWriteScopeAndRootWithoutExposingCredentials(t *testing.T) {
+	admin, _ := setupAccessTokenAudit(t)
+	db := model.DB
+	require.NoError(t, db.AutoMigrate(&model.APIChannelCatalog{}, &model.APIChannelPrice{}, &model.Channel{}))
+	require.NoError(t, model.InitializeAPIChannelCatalog(db))
+	root := &model.User{Username: "catalog-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AuthVersion: 1}
+	require.NoError(t, db.Create(root).Error)
+	adminWrite, _ := createScopedAccessToken(t, admin.Id, 0, "billing:write")
+	rootRead, _ := createScopedAccessToken(t, root.Id, 0, "billing:read")
+	rootWrite, _ := createScopedAccessToken(t, root.Id, 0, "billing:write")
+	channel := model.Channel{Name: "catalog channel", Models: "sale-model", Key: "provider-key-never-in-response", Status: common.ChannelStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(&channel).Error)
+	engine := gin.New()
+	engine.GET("/api/subscription/admin/api-channel-prices", middleware.AdminAuth(), AdminListAPIChannelPrices)
+	engine.POST("/api/subscription/admin/api-channel-prices", middleware.AdminAuth(), middleware.RootAuth(), AdminPublishAPIChannelPrices)
+	body := fmt.Sprintf(`{"expected_revision":0,"reason":"reviewed prices","changes":[{"model":"sale-model","channel_id":%d,"upstream_model":"sale-model","selling_price":"{\"input\":1,\"cached_input\":0,\"cache_creation\":1,\"output\":4}","enabled":true,"position":null}]}`, channel.Id)
+	for _, test := range []struct {
+		token  string
+		status int
+	}{
+		{adminWrite, http.StatusForbidden}, {rootRead, http.StatusForbidden}, {rootWrite, http.StatusOK}, {rootWrite, http.StatusConflict},
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/subscription/admin/api-channel-prices", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+test.token)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, request)
+		require.Equal(t, test.status, response.Code, response.Body.String())
+		require.NotContains(t, response.Body.String(), channel.Key)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/subscription/admin/api-channel-prices", nil)
+	request.Header.Set("Authorization", "Bearer "+rootRead)
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Contains(t, response.Body.String(), "sale-model")
+	require.NotContains(t, response.Body.String(), channel.Key)
+	require.NotContains(t, response.Body.String(), rootRead)
 }
 
 func TestProductCompensationRequiresRootAndKeepsReceiptPrivate(t *testing.T) {

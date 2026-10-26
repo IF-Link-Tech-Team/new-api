@@ -146,6 +146,12 @@ func GetRandomSatisfiedChannelWithPolicy(group string, model string, retry int, 
 				noteCostPolicyExclusion(channel, model, policy)
 				continue
 			}
+			if policy.PreserveGroup {
+				if isChannelIDInList(group2model2channels[group][model], channelId) {
+					channels = append(channels, channelId)
+				}
+				continue
+			}
 			for _, channelGroup := range channel.GetGroups() {
 				if isChannelIDInList(group2model2channels[channelGroup][model], channelId) ||
 					(normalizedModel != "" && normalizedModel != model && isChannelIDInList(group2model2channels[channelGroup][normalizedModel], channelId)) {
@@ -261,6 +267,10 @@ func CacheGetChannel(id int) (*Channel, error) {
 // a disabled/over-cost first route from causing the next route to be skipped.
 // Explicit product allowlists can cross wallet groups, as in the global mode.
 func GetOrderedSatisfiedChannel(modelName string, filters []dto.ChannelFilter, policy *ChannelSelectionPolicy, attempted map[int]struct{}) (*Channel, error) {
+	return GetOrderedSatisfiedChannelInGroup("", modelName, filters, policy, attempted)
+}
+
+func GetOrderedSatisfiedChannelInGroup(group, modelName string, filters []dto.ChannelFilter, policy *ChannelSelectionPolicy, attempted map[int]struct{}) (*Channel, error) {
 	if policy == nil || len(policy.OrderedChannelIds) == 0 {
 		return nil, errors.New("ordered product route is not configured")
 	}
@@ -280,6 +290,9 @@ func GetOrderedSatisfiedChannel(modelName string, filters []dto.ChannelFilter, p
 			continue
 		}
 		if channel.Status != common.ChannelStatusEnabled || !ChannelSatisfiesPolicy(channel, modelName, policy) {
+			continue
+		}
+		if policy.PreserveGroup && !IsChannelEnabledForGroupModel(group, modelName, channel.Id) {
 			continue
 		}
 		if ok, _ := ChannelSatisfiesFilters(channel, modelName, filters); !ok {

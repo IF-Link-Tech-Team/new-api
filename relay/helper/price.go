@@ -67,6 +67,42 @@ func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hostty
 }
 
 func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens int, meta *types.TokenCountMeta) (hosttypes.PriceData, error) {
+	apiPrices, err := model.RequestAPIChannelPrices(c, info.OriginModelName)
+	if err != nil {
+		return hosttypes.PriceData{}, err
+	}
+	if apiPrices != nil {
+		channelID := c.GetInt("channel_id")
+		for _, row := range apiPrices.Rows {
+			if row.ChannelID != channelID {
+				continue
+			}
+			mapped, err := model.ResolveMappedModelName(c.GetString("model_mapping"), info.OriginModelName)
+			if err != nil || mapped != row.UpstreamModel {
+				return hosttypes.PriceData{}, errors.New("API channel model mapping changed")
+			}
+			expression, err := row.BillingExpression()
+			if err != nil {
+				return hosttypes.PriceData{}, err
+			}
+			info.APIChannelPrice = &relaycommon.APIChannelPriceAttempt{ChannelID: row.ChannelID, PriceID: row.ID, Revision: row.Revision}
+			// Wallet channel prices completely replace native/global pricing and
+			// legacy wallet multipliers. Product multipliers stay on their frozen
+			// entitlement version until the P2 channel-multiplier migration.
+			info.ProductBillingMultiplier = 1
+			if info.TokenUserSubscriptionId > 0 {
+				bookPrice, err := model.ResolvePriceBookPrice(model.DB, info.ProductPriceBook, info.OriginModelName, info.ProductPriceVersion)
+				if err != nil || bookPrice == nil {
+					return hosttypes.PriceData{}, errors.New("product price version unavailable")
+				}
+				info.ProductBillingMultiplier = bookPrice.BillingMultiplier
+			}
+			// API channel prices are absolute USD prices. Native group pricing
+			// must not silently add another sales multiplier.
+			return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, hosttypes.GroupRatioInfo{GroupRatio: 1}, expression)
+		}
+		return hosttypes.PriceData{}, errors.New("selected channel has no enabled API price")
+	}
 	if info.ProductPriceBook != "" {
 		bookPrice, err := model.ResolvePriceBookPrice(model.DB, info.ProductPriceBook, info.OriginModelName, info.ProductPriceVersion)
 		// During expansion the route selector may freeze a legacy wallet

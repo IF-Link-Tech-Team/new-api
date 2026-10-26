@@ -75,6 +75,72 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 	if ctx == nil {
 		return nil, nil
 	}
+	snapshot, err := model.RequestAPIChannelPrices(ctx, modelName)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot == nil {
+		return resolveLegacyChannelSelectionPolicy(ctx, modelName)
+	}
+	var legacy *model.ChannelSelectionPolicy
+	if common.GetContextKeyInt(ctx, constant.ContextKeyTokenUserSubscriptionId) > 0 {
+		legacy, err = resolveLegacyChannelSelectionPolicy(ctx, modelName)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Token-only channel prices cannot safely price task, audio, image or
+	// tool-unit requests. Fail before submitting until their pricing adapters
+	// are implemented, rather than falling through to the system model price.
+	path := ctx.Request.URL.Path
+	if !apiChannelTokenPricingPath(path) || ctx.GetString("expected_task_plugin_key") != "" {
+		return nil, errors.New("API channel token pricing does not support this endpoint")
+	}
+	allowed := make(map[int]struct{}, len(snapshot.Rows))
+	ordered := make([]int, 0, len(snapshot.Rows))
+	for _, row := range snapshot.Rows {
+		if legacy != nil {
+			if _, ok := legacy.AllowedChannelIds[row.ChannelID]; !ok {
+				continue
+			}
+		}
+		allowed[row.ChannelID] = struct{}{}
+		if row.Position != nil {
+			ordered = append(ordered, row.ChannelID)
+		}
+	}
+	if len(allowed) == 0 {
+		return nil, fmt.Errorf("model %s has no enabled API channel price", modelName)
+	}
+	policy := &model.ChannelSelectionPolicy{AllowedChannelIds: allowed, OrderedChannelIds: ordered, FallbackAllowed: true, PreserveGroup: true}
+	if legacy != nil {
+		policy.MaxUpstreamCost, policy.RequireCost, policy.ProductType = legacy.MaxUpstreamCost, legacy.RequireCost, legacy.ProductType
+		if strings.HasPrefix(common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceBook), "product:") {
+			policy.PreserveGroup = false
+			if len(legacy.OrderedChannelIds) > 0 {
+				policy.OrderedChannelIds = nil
+				for _, id := range legacy.OrderedChannelIds {
+					if _, ok := allowed[id]; ok {
+						policy.OrderedChannelIds = append(policy.OrderedChannelIds, id)
+					}
+				}
+				policy.FallbackAllowed = legacy.FallbackAllowed
+			}
+		}
+	}
+	return policy, nil
+}
+
+func apiChannelTokenPricingPath(path string) bool {
+	switch path {
+	case "/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/responses/compact", "/v1/embeddings", "/v1/rerank", "/v1/moderations", "/pg/chat/completions":
+		return true
+	}
+	return (strings.HasPrefix(path, "/v1beta/models/") || strings.HasPrefix(path, "/v1/models/")) &&
+		(strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent") || strings.HasSuffix(path, ":embedContent"))
+}
+
+func resolveLegacyChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.ChannelSelectionPolicy, error) {
 	productType := common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)
 	priceBook := common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceBook)
 	if priceBook == model.WalletPriceBook || (priceBook == "" && productType == model.ProductTypeWallet) {
@@ -417,7 +483,7 @@ func selectChannelForAttempt(param *RetryParam, group string, retry int, filters
 			attempted[id] = struct{}{}
 		}
 	}
-	return model.GetOrderedSatisfiedChannel(param.ModelName, filters, param.Policy, attempted)
+	return model.GetOrderedSatisfiedChannelInGroup(group, param.ModelName, filters, param.Policy, attempted)
 }
 
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {
@@ -520,6 +586,15 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		}
 		if !model.ChannelSatisfiesPolicy(channel, modelName, policy) {
 			return nil, "", &ChannelSelectError{StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, Message: "product_route_policy_rejected"}
+		}
+		if policy != nil && policy.PreserveGroup {
+			groups := []string{retry.TokenGroup}
+			if retry.TokenGroup == "auto" {
+				groups = GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup))
+			}
+			if !model.IsChannelEnabledForAnyGroupModel(groups, modelName, channel.Id) {
+				return nil, "", &ChannelSelectError{StatusCode: http.StatusForbidden, Code: types.ErrorCodeModelNotFound, Message: "channel_group_forbidden"}
+			}
 		}
 		if ok, kind := model.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
 			return nil, "", &ChannelSelectError{

@@ -144,6 +144,9 @@ func refreshTieredBillingGroup(relayInfo *relaycommon.RelayInfo) (*billingexpr.B
 	if snap == nil || snap.BillingMode != "tiered_expr" {
 		return nil, nil
 	}
+	if relayInfo.APIChannelPrice != nil {
+		return snap, nil
+	}
 
 	groupRatio := relayInfo.PriceData.GroupRatioInfo.GroupRatio
 	if snap.GroupRatio == groupRatio {

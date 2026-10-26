@@ -349,6 +349,11 @@ func InjectTieredBillingInfo(other *model.LogOther, relayInfo *relaycommon.Relay
 		return
 	}
 	other.SetPublic("billing_mode", "tiered_expr")
+	if price := relayInfo.APIChannelPrice; price != nil {
+		other.SetPublic("api_price_id", price.PriceID)
+		other.SetPublic("api_price_revision", price.Revision)
+		other.SetAdmin("api_price_attempts", relayInfo.APIChannelPriceAttempts)
+	}
 	other.SetPublic("expr_b64", base64.StdEncoding.EncodeToString([]byte(snap.ExprString)))
 	if result != nil {
 		if tokens := result.BillingTokens; tokens != nil && result.BillingUnit == billingexpr.BillingUnitToken {

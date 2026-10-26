@@ -80,3 +80,22 @@ func RefundFailedRequestBilling(c *gin.Context, info *relaycommon.RelayInfo, api
 	service.ChargeViolationFeeIfNeeded(c, info, apiErr)
 	return apiErr
 }
+
+// PrepareSelectedChannelBilling reprices each attempt using the candidate set
+// frozen by the distributor. PreConsumeBilling reuses the same billing session
+// and enforces an atomic balance check before sending on a dearer channel.
+func PrepareSelectedChannelBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
+	if info.APIChannelPrice == nil {
+		return service.PrepareTieredBillingForSelectedGroup(c, info)
+	}
+	price, err := helper.ModelPriceHelper(c, info, info.GetEstimatePromptTokens(), nil)
+	if err != nil {
+		return types.NewError(err, types.ErrorCodeModelPriceError, types.ErrOptionWithSkipRetry(), types.ErrOptionWithStatusCode(http.StatusBadRequest))
+	}
+	if apiErr := service.PreConsumeBilling(c, price.QuotaToPreConsume, info); apiErr != nil {
+		return apiErr
+	}
+	row := info.APIChannelPrice
+	info.APIChannelPriceAttempts = append(info.APIChannelPriceAttempts, *row)
+	return nil
+}

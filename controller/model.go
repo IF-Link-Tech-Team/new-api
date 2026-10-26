@@ -237,6 +237,19 @@ func ListModels(c *gin.Context, modelType int) {
 		return
 	}
 	ownerGroups := groups.ownerGroups
+	channelPricing, err := model.APIChannelPricingMode()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var sales map[string]bool
+	if channelPricing {
+		sales, err = model.APIChannelModelsForGroups(model.DB, ownerGroups)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
 	modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
 	var tokenModelLimit map[string]bool
 	if modelLimitEnable {
@@ -250,13 +263,16 @@ func ListModels(c *gin.Context, modelType int) {
 	}
 	models := service.GetGroupsEnabledModels(ownerGroups)
 	for _, modelName := range models {
+		if channelPricing && !sales[modelName] {
+			continue
+		}
 		if modelLimitEnable {
 			matchingName := ratio_setting.RoutingMatchModelName(modelName)
 			if !tokenModelLimit[modelName] && !tokenModelLimit[matchingName] {
 				continue
 			}
 		}
-		if !acceptUnsetRatioModel && !helper.HasModelBillingConfig(modelName) {
+		if !channelPricing && !acceptUnsetRatioModel && !helper.HasModelBillingConfig(modelName) {
 			continue
 		}
 		userModelNames = append(userModelNames, modelName)
@@ -347,6 +363,38 @@ func EnabledListModels(c *gin.Context) {
 
 func RetrieveModel(c *gin.Context, modelType int) {
 	modelId := c.Param("model")
+	if active, err := model.APIChannelPricingMode(); active || err != nil {
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		groups, err := getModelListGroups(c)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		sales, err := model.APIChannelModelsForGroups(model.DB, groups.ownerGroups)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		allowed := sales[modelId]
+		if common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
+			limits, ok := common.GetContextKeyType[map[string]bool](c, constant.ContextKeyTokenModelLimit)
+			allowed = allowed && ok && limits[modelId]
+		}
+		if !allowed {
+			c.JSON(http.StatusNotFound, gin.H{"error": types.OpenAIError{Message: "Model is not available", Type: "invalid_request_error", Code: "model_not_found"}})
+			return
+		}
+		aiModel := buildOpenAIModel(modelId, nil)
+		if modelType == constant.ChannelTypeAnthropic {
+			c.JSON(http.StatusOK, dto.AnthropicModel{ID: aiModel.Id, DisplayName: aiModel.Id, Type: "model", CreatedAt: time.Unix(int64(aiModel.Created), 0).UTC().Format(time.RFC3339)})
+		} else {
+			c.JSON(http.StatusOK, aiModel)
+		}
+		return
+	}
 	if aiModel, ok := openAIModelsMap[modelId]; ok {
 		switch modelType {
 		case constant.ChannelTypeAnthropic:

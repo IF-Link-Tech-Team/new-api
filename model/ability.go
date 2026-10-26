@@ -148,6 +148,9 @@ func GetChannelWithPolicy(group string, model string, retry int, filters []dto.C
 			return nil, nil
 		}
 		query = query.Where("channel_id IN ?", channelIds)
+		if policy.PreserveGroup {
+			query = query.Where(commonGroupCol+" = ?", group)
+		}
 	} else {
 		query = query.Where(commonGroupCol+" = ?", group)
 	}
