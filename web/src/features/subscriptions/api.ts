@@ -96,6 +96,97 @@ export async function updatePlan(
   return res.data
 }
 
+export type ProductSyncField = 'pricing' | 'quota' | 'expiry' | 'reset'
+
+export type ProductPublicationRequest = PlanPayload & {
+  fields: ProductSyncField[]
+  reason: string
+  request_key: string
+  preview_hash?: string
+}
+
+export type EntitlementPublicationState = {
+  id: number
+  user_id: number
+  amount_total: number
+  amount_used: number
+  end_time: number
+  model_scope: string
+  price_version: string
+  reset_period: string
+  reset_seconds: number
+}
+
+export type ProductPublicationPreview = {
+  hash: string
+  affected: number
+  blocked: number
+  before_plan: SubscriptionPlan
+  after_plan: SubscriptionPlan
+  changes: {
+    before: EntitlementPublicationState
+    after: EntitlementPublicationState
+    blocker?: string
+  }[]
+}
+
+export type ProductPublicationHistory = {
+  publications: {
+    id: number
+    revision: number
+    reason: string
+    fields: string
+  }[]
+  counts: { publication_id: number; status: string; count: number }[]
+  items: {
+    id: number
+    subscription_id: number
+    user_id: number
+    status: string
+    last_error: string
+    before_state: string
+    after_state: string
+  }[]
+}
+
+export async function previewProductPublication(
+  id: number,
+  request: ProductPublicationRequest
+): Promise<ProductPublicationPreview> {
+  const res = await api.post(
+    `/api/subscription/admin/plans/${id}/publication-preview`,
+    request
+  )
+  return requireServerSuccess<{ data: ProductPublicationPreview }>(res.data)
+    .data
+}
+
+export async function publishProductAndSync(
+  id: number,
+  request: ProductPublicationRequest
+): Promise<{ id: number; revision: number }> {
+  const res = await api.post(
+    `/api/subscription/admin/plans/${id}/publications`,
+    request
+  )
+  return requireServerSuccess<{ data: { id: number; revision: number } }>(
+    res.data
+  ).data
+}
+
+export async function getProductPublications(
+  id: number,
+  publicationID?: number,
+  afterID = 0
+): Promise<ProductPublicationHistory> {
+  const res = await api.get(
+    `/api/subscription/admin/plans/${id}/publications`,
+    { params: { publication_id: publicationID, after_id: afterID } }
+  )
+  return requireServerSuccess<{ data: ProductPublicationHistory }>(res.data)
+    .data
+}
+
 export async function patchPlanStatus(
   id: number,
   enabled: boolean,

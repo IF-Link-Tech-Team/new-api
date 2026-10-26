@@ -705,6 +705,15 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			return
 		}
 		req.Plan.PriceBook = existingPlan.PriceBook
+		channelPricing, modeErr := model.APIChannelPricingMode()
+		if modeErr != nil {
+			common.ApiError(c, modeErr)
+			return
+		}
+		if channelPricing && model.ProductEntitlementTermsChanged(existingPlan, req.Plan) {
+			common.ApiErrorMsg(c, "Use product publication preview to change entitlement terms")
+			return
+		}
 		if err := model.UpdateProductPlan(model.DB, &req.Plan, *req.ExpectedRevision); err != nil {
 			if errors.Is(err, model.ErrProductPlanConflict) {
 				c.JSON(http.StatusConflict, gin.H{"success": false, "message": err.Error()})

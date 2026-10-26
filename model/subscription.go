@@ -221,12 +221,13 @@ type SubscriptionPlan struct {
 	PriceVersion      string  `json:"price_version" gorm:"type:varchar(64);default:''"`
 	// PriceBook opts a plan into product-owned pricing without a template or
 	// commercial product type. Empty preserves the pre-migration contract.
-	PriceBook       string `json:"price_book" gorm:"type:varchar(64);default:''"`
-	ConfigRevision  int64  `json:"config_revision" gorm:"bigint;not null;default:0"`
-	AllowedChannels string `json:"allowed_channels" gorm:"type:text"`
-	MaxUpstreamCost string `json:"max_upstream_cost" gorm:"type:text"`
-	FallbackAllowed bool   `json:"fallback_allowed"`
-	CourseEligible  bool   `json:"course_eligible"`
+	PriceBook                 string `json:"price_book" gorm:"type:varchar(64);default:''"`
+	ConfigRevision            int64  `json:"config_revision" gorm:"bigint;not null;default:0"`
+	LatestPublicationRevision int64  `json:"-" gorm:"bigint;not null;default:0"`
+	AllowedChannels           string `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost           string `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed           bool   `json:"fallback_allowed"`
+	CourseEligible            bool   `json:"course_eligible"`
 
 	// TemplateId links the plan to its product_templates row. It is pinned
 	// during ValidateV1Contract and backfilled for existing plans by the
@@ -738,6 +739,12 @@ type UserSubscription struct {
 
 	LastResetTime int64 `json:"last_reset_time" gorm:"type:bigint;default:0"`
 	NextResetTime int64 `json:"next_reset_time" gorm:"type:bigint;default:0;index"`
+	// Explicit reset snapshots prevent a shared plan edit from changing pools
+	// before their publication outbox item is applied.
+	ResetPolicySnapshot       bool   `json:"reset_policy_snapshot"`
+	QuotaResetPeriodSnapshot  string `json:"quota_reset_period_snapshot" gorm:"type:varchar(16)"`
+	QuotaResetSecondsSnapshot int64  `json:"quota_reset_seconds_snapshot" gorm:"bigint;not null;default:0"`
+	ProductRevision           int64  `json:"product_revision" gorm:"bigint;not null;default:0"`
 
 	UpgradeGroup  string `json:"upgrade_group" gorm:"type:varchar(64);default:''"`
 	PrevUserGroup string `json:"prev_user_group" gorm:"type:varchar(64);default:''"`
@@ -999,6 +1006,15 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	// by concurrent purchases; mutate only this issuance's local snapshot.
 	planSnapshot := *plan
 	plan = &planSnapshot
+	var liveProduct SubscriptionPlan
+	if plan.PriceBook != "" {
+		// Serialize late paid issuance with product publication. Order cash
+		// terms remain frozen; any later publication is applied to the newly
+		// issued entitlement before its key can become externally visible.
+		if err := lockForUpdate(tx).Select("id", "latest_publication_revision").First(&liveProduct, plan.Id).Error; err != nil {
+			return nil, err
+		}
+	}
 	plan.NormalizeDefaults()
 	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, err
@@ -1089,40 +1105,49 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		}
 	}
 	sub := &UserSubscription{
-		UserId:              userId,
-		PlanId:              plan.Id,
-		AmountTotal:         plan.TotalAmount,
-		AmountUsed:          0,
-		StartTime:           now.Unix(),
-		EndTime:             endUnix,
-		Status:              "active",
-		Source:              source,
-		LastResetTime:       lastReset,
-		NextResetTime:       nextReset,
-		UpgradeGroup:        upgradeGroup,
-		PrevUserGroup:       prevGroup,
-		DowngradeGroup:      strings.TrimSpace(plan.DowngradeGroup),
-		AllowWalletOverflow: allowWalletOverflow,
-		ModelScope:          strings.TrimSpace(plan.ModelScope),
-		ProductType:         strings.TrimSpace(plan.ProductType),
-		ProductCode:         strings.TrimSpace(plan.ProductCode),
-		ProductFamily:       strings.TrimSpace(plan.ProductFamily),
-		ProductTier:         plan.ProductTier,
-		BillingMultiplier:   plan.BillingMultiplier,
-		PriceVersion:        strings.TrimSpace(plan.PriceVersion),
-		PriceBook:           priceBook,
-		AllowedChannels:     strings.TrimSpace(plan.AllowedChannels),
-		MaxUpstreamCost:     strings.TrimSpace(plan.MaxUpstreamCost),
-		FallbackAllowed:     plan.FallbackAllowed,
-		CourseEligible:      plan.CourseEligible,
-		PeriodId:            periodId,
-		PriceAmountSnapshot: plan.PriceAmount,
-		CurrencySnapshot:    strings.TrimSpace(plan.Currency),
-		CreatedAt:           common.GetTimestamp(),
-		UpdatedAt:           common.GetTimestamp(),
+		UserId:                    userId,
+		PlanId:                    plan.Id,
+		AmountTotal:               plan.TotalAmount,
+		AmountUsed:                0,
+		StartTime:                 now.Unix(),
+		EndTime:                   endUnix,
+		Status:                    "active",
+		Source:                    source,
+		LastResetTime:             lastReset,
+		NextResetTime:             nextReset,
+		ResetPolicySnapshot:       plan.PriceBook != "",
+		QuotaResetPeriodSnapshot:  plan.QuotaResetPeriod,
+		QuotaResetSecondsSnapshot: plan.QuotaResetCustomSeconds,
+		ProductRevision:           plan.ConfigRevision,
+		UpgradeGroup:              upgradeGroup,
+		PrevUserGroup:             prevGroup,
+		DowngradeGroup:            strings.TrimSpace(plan.DowngradeGroup),
+		AllowWalletOverflow:       allowWalletOverflow,
+		ModelScope:                strings.TrimSpace(plan.ModelScope),
+		ProductType:               strings.TrimSpace(plan.ProductType),
+		ProductCode:               strings.TrimSpace(plan.ProductCode),
+		ProductFamily:             strings.TrimSpace(plan.ProductFamily),
+		ProductTier:               plan.ProductTier,
+		BillingMultiplier:         plan.BillingMultiplier,
+		PriceVersion:              strings.TrimSpace(plan.PriceVersion),
+		PriceBook:                 priceBook,
+		AllowedChannels:           strings.TrimSpace(plan.AllowedChannels),
+		MaxUpstreamCost:           strings.TrimSpace(plan.MaxUpstreamCost),
+		FallbackAllowed:           plan.FallbackAllowed,
+		CourseEligible:            plan.CourseEligible,
+		PeriodId:                  periodId,
+		PriceAmountSnapshot:       plan.PriceAmount,
+		CurrencySnapshot:          strings.TrimSpace(plan.Currency),
+		CreatedAt:                 common.GetTimestamp(),
+		UpdatedAt:                 common.GetTimestamp(),
 	}
 	if err := tx.Create(sub).Error; err != nil {
 		return nil, err
+	}
+	if liveProduct.LatestPublicationRevision > sub.ProductRevision {
+		if err := synchronizeIssuedProductTx(tx, sub, liveProduct.LatestPublicationRevision); err != nil {
+			return nil, err
+		}
 	}
 	if monthlyCycle != nil {
 		monthlyCycle.UserId = userId
@@ -2411,6 +2436,11 @@ func (r *SubscriptionPreConsumeRecord) BeforeUpdate(tx *gorm.DB) error {
 func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, plan *SubscriptionPlan, now int64) error {
 	if tx == nil || sub == nil || plan == nil {
 		return errors.New("invalid reset args")
+	}
+	if sub.ResetPolicySnapshot {
+		copy := *plan
+		copy.QuotaResetPeriod, copy.QuotaResetCustomSeconds = sub.QuotaResetPeriodSnapshot, sub.QuotaResetSecondsSnapshot
+		plan = &copy
 	}
 	if sub.NextResetTime > 0 && sub.NextResetTime > now {
 		return nil

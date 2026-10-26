@@ -345,13 +345,29 @@ func ValidateUserToken(key string) (token *Token, err error) {
 	token, err = GetTokenByKey(key, false)
 	if err == nil {
 		if token.UserSubscriptionId > 0 {
+			// Cached policy cannot authorize a bound credential after a product
+			// publication, key rotation, revocation or binding mutation. Re-read
+			// the credential and the authoritative entitlement on every request.
+			fresh, freshErr := GetTokenByKey(key, true)
+			if freshErr != nil {
+				return token, ErrTokenInvalid
+			}
+			token = fresh
 			var binding SubscriptionKeyBinding
-			if bindingErr := DB.Where("token_id = ? AND user_subscription_id = ?", token.Id, token.UserSubscriptionId).First(&binding).Error; bindingErr != nil {
+			if bindingErr := DB.Where("token_id = ? AND user_subscription_id = ? AND user_id = ?", token.Id, token.UserSubscriptionId, token.UserId).First(&binding).Error; bindingErr != nil {
 				// A token pointing at an entitlement without the authoritative
 				// binding is not a valid credential, even if it was inserted by a
 				// direct SQL/import path that bypassed ORM hooks.
 				return token, ErrTokenInvalid
 			}
+			var sub UserSubscription
+			if subErr := DB.Where("id = ? AND user_id = ? AND status = ? AND end_time > ?", binding.UserSubscriptionId, token.UserId, "active", common.GetTimestamp()).First(&sub).Error; subErr != nil {
+				return token, ErrTokenInvalid
+			}
+			token.ExpiredTime = sub.EndTime
+			token.ModelLimitsEnabled, token.ModelLimits = sub.ModelScope != "", sub.ModelScope
+			token.PriceBook, token.PriceVersion, token.BillingMultiplier = sub.PriceBook, sub.PriceVersion, sub.BillingMultiplier
+			token.AllowedChannels, token.MaxUpstreamCost, token.FallbackAllowed = sub.AllowedChannels, sub.MaxUpstreamCost, sub.FallbackAllowed
 		}
 		if token.Status == common.TokenStatusExhausted ||
 			token.Status == common.TokenStatusExpired ||

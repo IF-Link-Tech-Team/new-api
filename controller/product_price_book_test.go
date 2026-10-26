@@ -91,6 +91,53 @@ func TestAPIChannelPricesRequireWriteScopeAndRootWithoutExposingCredentials(t *t
 	require.Contains(t, response.Body.String(), "sale-model")
 	require.NotContains(t, response.Body.String(), channel.Key)
 	require.NotContains(t, response.Body.String(), rootRead)
+	// Publication preview and commit require Root plus billing:write; a
+	// read-only PAT must not turn a preview into a persistent outbox.
+	t.Setenv("IFLINK_API_CHANNEL_PRICING", "enabled")
+	payment := operation_setting.GetPaymentSetting()
+	previousPayment := *payment
+	t.Cleanup(func() { *payment = previousPayment })
+	payment.ComplianceConfirmed = true
+	payment.ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+	require.NoError(t, db.AutoMigrate(&model.ProductPublication{}, &model.ProductPublicationItem{}, &model.UserSubscription{}, &model.PriceBookPrice{}))
+	product := model.SubscriptionPlan{Title: "Publication permissions", PriceAmount: 10, Currency: "USD", DurationUnit: model.SubscriptionDurationMonth, DurationValue: 1, TotalAmount: 1000}
+	require.NoError(t, model.CreateProductPlan(db, &product))
+	require.Positive(t, product.Id)
+	engine = gin.New()
+	engine.POST("/api/subscription/admin/plans/:id/publication-preview", middleware.AdminAuth(), middleware.RootAuth(), AdminPreviewProductPublication)
+	engine.POST("/api/subscription/admin/plans/:id/publications", middleware.AdminAuth(), middleware.RootAuth(), AdminPublishProductAndSync)
+	engine.GET("/api/subscription/admin/plans/:id/publications", middleware.AdminAuth(), AdminListProductPublications)
+	req := model.ProductPublicationRequest{Plan: product, ExpectedRevision: product.ConfigRevision, Fields: []string{}, Reason: "permission test", RequestKey: "permission-publication-key"}
+	encoded, err := common.Marshal(req)
+	require.NoError(t, err)
+	path := fmt.Sprintf("/api/subscription/admin/plans/%d/publication-preview", product.Id)
+	for _, token := range []string{adminWrite, rootRead} {
+		denied := accessTokenRequest(engine, http.MethodPost, path, token, "", string(encoded))
+		require.Equal(t, http.StatusForbidden, denied.Code, denied.Body.String())
+	}
+	allowed := accessTokenRequest(engine, http.MethodPost, path, rootWrite, "", string(encoded))
+	var preview struct {
+		Success bool                            `json:"success"`
+		Data    model.ProductPublicationPreview `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(allowed.Body.Bytes(), &preview))
+	require.True(t, preview.Success, allowed.Body.String())
+	req.PreviewHash = preview.Data.Hash
+	encoded, err = common.Marshal(req)
+	require.NoError(t, err)
+	path = fmt.Sprintf("/api/subscription/admin/plans/%d/publications", product.Id)
+	for range 2 {
+		allowed = accessTokenRequest(engine, http.MethodPost, path, rootWrite, "", string(encoded))
+		require.Equal(t, http.StatusOK, allowed.Code, allowed.Body.String())
+		require.Contains(t, allowed.Body.String(), `"success":true`)
+		require.NotContains(t, allowed.Body.String(), rootWrite)
+	}
+	var count int64
+	require.NoError(t, db.Model(&model.ProductPublication{}).Where("plan_id = ?", product.Id).Count(&count).Error)
+	require.EqualValues(t, 1, count)
+	allowed = accessTokenRequest(engine, http.MethodGet, path, rootRead, "", "")
+	require.Equal(t, http.StatusOK, allowed.Code, allowed.Body.String())
+	require.NotContains(t, allowed.Body.String(), channel.Key)
 }
 
 func TestProductCompensationRequiresRootAndKeepsReceiptPrivate(t *testing.T) {
