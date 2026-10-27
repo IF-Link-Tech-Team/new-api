@@ -93,6 +93,8 @@ type RelayInfo struct {
 	ProductAllowedChannels   string
 	ProductMaxUpstreamCost   string
 	ProductFallbackAllowed   bool
+	APIChannelPrice          *APIChannelPriceAttempt
+	APIChannelPriceAttempts  []APIChannelPriceAttempt
 	UserId                   int
 	UsingGroup               string // 使用的分组，当auto跨分组重试时，会变动
 	UserGroup                string // 用户所在分组
@@ -244,6 +246,12 @@ type RelayInfo struct {
 	*ResponsesUsageInfo
 	*ChannelMeta
 	*TaskRelayInfo
+}
+
+type APIChannelPriceAttempt struct {
+	ChannelID int   `json:"channel_id"`
+	PriceID   int64 `json:"price_id"`
+	Revision  int64 `json:"revision"`
 }
 
 // UpdateImageCount replaces the billable quantity without changing the frozen

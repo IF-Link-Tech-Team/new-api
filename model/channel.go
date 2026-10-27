@@ -71,6 +71,9 @@ const ChannelStatusReasonAllKeysDisabled = "All keys are disabled"
 
 type ChannelSelectionPolicy struct {
 	AllowedChannelIds map[int]struct{}
+	// API sales permission narrows ordinary group authorization. Historical
+	// product policies alone may explicitly authorize cross-group access.
+	PreserveGroup bool
 	// Non-empty only for an explicitly ordered product version. The allowlist
 	// and cost policy still apply to every attempt, including explicit pins.
 	OrderedChannelIds []int

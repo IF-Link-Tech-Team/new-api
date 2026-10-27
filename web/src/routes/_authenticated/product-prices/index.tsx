@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { ProductPrices } from '@/features/product-prices'
+import { APIChannelPrices } from '@/features/api-channel-prices'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -29,5 +29,5 @@ export const Route = createFileRoute('/_authenticated/product-prices/')({
       throw redirect({ to: '/403' })
     }
   },
-  component: ProductPrices,
+  component: APIChannelPrices,
 })

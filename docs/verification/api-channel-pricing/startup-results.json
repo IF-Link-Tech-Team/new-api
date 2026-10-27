@@ -1,0 +1,44 @@
+[
+  {
+    "engine": "sqlite",
+    "upgrade": false,
+    "new_starts": 2,
+    "catalog_revision": 0,
+    "sentinel_preserved": false
+  },
+  {
+    "engine": "sqlite",
+    "upgrade": true,
+    "new_starts": 2,
+    "catalog_revision": 0,
+    "sentinel_preserved": true
+  },
+  {
+    "engine": "mysql",
+    "upgrade": false,
+    "new_starts": 2,
+    "catalog_revision": 0,
+    "sentinel_preserved": false
+  },
+  {
+    "engine": "mysql",
+    "upgrade": true,
+    "new_starts": 2,
+    "catalog_revision": 0,
+    "sentinel_preserved": true
+  },
+  {
+    "engine": "postgres",
+    "upgrade": false,
+    "new_starts": 2,
+    "catalog_revision": 0,
+    "sentinel_preserved": false
+  },
+  {
+    "engine": "postgres",
+    "upgrade": true,
+    "new_starts": 2,
+    "catalog_revision": 0,
+    "sentinel_preserved": true
+  }
+]

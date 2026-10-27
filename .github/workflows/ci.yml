@@ -147,7 +147,9 @@ jobs:
           LOG_SQL_DSN: ''
           PRICE_BOOK_TEST_MYSQL_DSN: 'root:isolated-ci-only@tcp(127.0.0.1:3306)/pricebooks_test?parseTime=true'
           PRICE_BOOK_TEST_POSTGRES_DSN: 'postgres://postgres:isolated-ci-only@127.0.0.1:5432/pricebooks_test?sslmode=disable'
-        run: go test ./model -run '^TestProductPriceBookMigration$' -count=1 -timeout=120s -v
+          API_CHANNEL_TEST_MYSQL_DSN: 'root:isolated-ci-only@tcp(127.0.0.1:3306)/pricebooks_test?parseTime=true'
+          API_CHANNEL_TEST_POSTGRES_DSN: 'postgres://postgres:isolated-ci-only@127.0.0.1:5432/pricebooks_test?sslmode=disable'
+        run: go test ./model -run '^(TestProductPriceBookMigration|TestAPIChannelCatalogDatabaseMatrix)$' -count=1 -timeout=120s -v
 
   postgres-accounting:
     name: PostgreSQL 16 accounting (${{ matrix.package }})

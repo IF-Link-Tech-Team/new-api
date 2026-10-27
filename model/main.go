@@ -380,6 +380,8 @@ func migrateDB() error {
 		&BillingRefund{},
 		&ProductPrice{},
 		&PriceBookPrice{},
+		&APIChannelCatalog{},
+		&APIChannelPrice{},
 		&ProductTemplate{},
 		&SubscriptionKeyBinding{},
 		&CourseEntitlement{},
@@ -396,6 +398,9 @@ func migrateDB() error {
 		&UserAccessToken{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := InitializeAPIChannelCatalog(DB); err != nil {
 		return err
 	}
 	if err := EnsureEntitlementKeyUniqueIndex(); err != nil {

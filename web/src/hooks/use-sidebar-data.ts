@@ -170,7 +170,7 @@ export function useSidebarData(): SidebarData {
             icon: CreditCard,
           },
           {
-            title: t('Product Prices'),
+            title: t('API Models and Pricing'),
             url: '/product-prices',
             icon: Tags,
           },
