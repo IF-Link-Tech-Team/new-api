@@ -209,6 +209,59 @@ func TestProductPublicationDatabaseMatrix(t *testing.T) {
 					require.NoError(t, db.First(&lowerItem, lowerItem.ID).Error)
 					assert.Equal(t, "skipped", lowerItem.Status)
 					assert.True(t, db.Migrator().HasIndex(&ProductPublicationItem{}, "idx_publication_entitlement"))
+					if engine != "mysql" {
+						var previousPending []ProductPublicationItem
+						activePublications := db.Model(&ProductPublication{}).Select("id").Where("plan_id = ?", plan.Id)
+						require.NoError(t, db.Where("publication_id IN (?) AND status IN ?", activePublications, []string{"pending", "retry", "cache_pending"}).Find(&previousPending).Error)
+						for _, item := range previousPending {
+							require.NoError(t, ProcessProductPublicationItem(context.Background(), db, item.ID))
+						}
+						var batchPlan SubscriptionPlan
+						require.NoError(t, db.First(&batchPlan, plan.Id).Error)
+						now := getDBTimestampTx(db)
+						batchSubscriptions := make([]UserSubscription, 501)
+						for index := range batchSubscriptions {
+							batchSubscriptions[index] = UserSubscription{UserId: 10000 + index, PlanId: plan.Id, AmountTotal: 240,
+								StartTime: now, EndTime: now + 3600, Status: "active", ModelScope: "shared-model", PriceBook: plan.PriceBook,
+								PriceVersion: "v2", BillingMultiplier: 1, AllowedChannels: "[71]", MaxUpstreamCost: `{"input":1,"cached_input":0.2,"cache_creation":1,"output":4}`}
+						}
+						require.NoError(t, db.CreateInBatches(&batchSubscriptions, 100).Error)
+						batchPlan.ConfigRevision, err = StageProductChannelVersion(db, batchPlan.Id, batchPlan.ConfigRevision, 1, "v3-large", []ProductChannelModel{{Model: "shared-model", Rates: []ProductChannelRate{{ChannelID: 71, Multiplier: 0.75}}}}, true)
+						require.NoError(t, err)
+						batchPlan.PriceVersion = "v3-large"
+						require.NoError(t, UpdateProductPlan(db, &batchPlan, batchPlan.ConfigRevision))
+						batchRequest := ProductPublicationRequest{Plan: batchPlan, ExpectedRevision: batchPlan.ConfigRevision, Fields: []string{"pricing"}, Reason: "large batch regression", RequestKey: "publication-large-batch-key"}
+						batchPreview, err := PreviewProductPublication(db, batchRequest)
+						require.NoError(t, err)
+						require.GreaterOrEqual(t, batchPreview.Affected, 501)
+						batchRequest.PreviewHash = batchPreview.Hash
+						batchPublication, err := PublishProductAndSync(db, batchRequest, 1)
+						require.NoError(t, err)
+						for range 2 {
+							var batchIDs []int64
+							require.NoError(t, db.Model(&ProductPublicationItem{}).Where("publication_id = ? AND status IN ?", batchPublication.ID, []string{"pending", "retry", "cache_pending"}).Order("id").Limit(500).Pluck("id", &batchIDs).Error)
+							if len(batchIDs) == 0 {
+								break
+							}
+							for _, itemID := range batchIDs {
+								require.NoError(t, ProcessProductPublicationItem(context.Background(), db, itemID))
+							}
+						}
+						var unapplied int64
+						require.NoError(t, db.Model(&ProductPublicationItem{}).Where("publication_id = ? AND status IN ?", batchPublication.ID, []string{"pending", "retry", "cache_pending"}).Count(&unapplied).Error)
+						require.Zero(t, unapplied)
+						var applied int64
+						require.NoError(t, db.Model(&ProductPublicationItem{}).Where("publication_id = ? AND status = ?", batchPublication.ID, "applied").Count(&applied).Error)
+						require.EqualValues(t, batchPreview.Affected, applied)
+						var batchSub UserSubscription
+						require.NoError(t, db.Where("user_id = ? AND plan_id = ?", 10000, plan.Id).First(&batchSub).Error)
+						require.Equal(t, "v3-large", batchSub.PriceVersion)
+						batchItem := ProductPublicationItem{}
+						require.NoError(t, db.Where("publication_id = ? AND subscription_id = ?", batchPublication.ID, batchSub.Id).First(&batchItem).Error)
+						require.NoError(t, ProcessProductPublicationItem(context.Background(), db, batchItem.ID))
+						require.NoError(t, db.First(&batchSub, batchSub.Id).Error)
+						require.Equal(t, "v3-large", batchSub.PriceVersion, "replaying an applied item must not reapply entitlement changes")
+					}
 					// A disabled product with no active pools can still owe an
 					// unresolved paid/pending order its frozen usable route.
 					require.NoError(t, db.Model(&SubscriptionPlan{}).Where("id = ?", plan.Id).Updates(map[string]any{"enabled": false, "redemption_enabled": false}).Error)
