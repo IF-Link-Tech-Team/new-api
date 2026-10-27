@@ -103,6 +103,7 @@ func UpdateProductPlan(db *gorm.DB, plan *SubscriptionPlan, expectedRevision int
 		candidate.CreatedAt = current.CreatedAt
 		candidate.UpdatedAt = common.GetTimestamp()
 		candidate.ConfigRevision = current.ConfigRevision + 1
+		candidate.LatestPublicationRevision = current.LatestPublicationRevision
 		if candidate.AllowWalletOverflow == nil {
 			candidate.AllowWalletOverflow = current.AllowWalletOverflow
 		}

@@ -54,3 +54,15 @@ P2 商品×模型×渠道倍率尚未接入：过渡期商品仍与原权益价�
 ## PR 需求来源（沿用 P1）
 
 本 fork 关闭了 GitHub Issues。用户于本轮明确允许“以 30 号方案作为需求依据”，免建 Issue；此次是 IF.Link 自有 fork 的商业配置扩展，不向上游提交运营配置需求。
+
+## P3 增量：商品发布与老用户自动同步（2026-10-27，本地验证）
+
+- 商品保存进入差异预览，默认勾选实际改变的计费、额度、期限或重置字段；Root + `billing:write` 才能预览和发布，`billing:read` 仅能查看历史。原 PUT 不再绕过发布修改权益字段。
+- 发布事务同时保存商品、不可变前后快照及逐权益 Outbox；请求键、预览指纹和商品/API 修订号防止重复和过期提交。后台原生 SystemTask 每15秒续跑，单轮最多500项；记录每项结果和可分页历史。未完成任务期间不能叠加发布；已阻断项由下一次明确发布取代。
+- 保留原订单金额、已用额度和在途请求快照。额度不得低于当时已用/预留量；资产字段等待结算和退款凭据终态，不能清掉占用；发布后发生新消费导致无法降低的项记录为阻断。新发放的旧订单在创建 Key 前追上后续发布，原付款证据不改。未解决订单也阻止移除最后可用路线。
+- 商品权益拥有独立重置规则快照；批次执行前冻结旧规则，防止共享商品改动抢先作用于尚未处理的权益。原生非商品订阅保留原重置行为。
+- SQL提交后失效 Key 缓存；失效失败只重试缓存步骤。商品 Key 每次鉴权重读凭据、绑定和有效权益，避免旧缓存继续授权旧费率或已撤销凭据。审计只存经营字段与ID，不含可用凭据。参考 OWASP Authentication、Session Management、Authorization Cheat Sheets；未声称完整ASVS认证。
+- Go五包最新回归通过：`go test ./model ./controller ./service ./middleware ./relay/helper -count=1`；对应包 `go vet` 通过。`go test -race ./model -run '^TestProductPublicationDatabaseMatrix$' -count=1` 的SQLite并发场景通过。
+- 真实SQLite 3.50.4、MySQL 8.4.13、PostgreSQL 16.14运行 `TestProductPublicationDatabaseMatrix`：空库/升级及两次迁移通过，覆盖幂等、指纹冲突、并发消费、等待结算、已用量超限、取消权益跳过和旧订单延后发放。完整基线256b5758f建库升级/空库六种场景，每种候选连续启动两次成功；本机记录 `/tmp/iflink-product-publication-final-startup/`。
+- 前端发布、商品编辑和渠道版本三组交互16项通过；typecheck、修改范围oxlint、oxfmt和构建通过。真实Chrome合成接口完成桌面1440×1000、窄屏390×844的预览及历史检查，截图 `verification/product-publication/`。复用ConfirmDialog、Dialog、StaticDataTable，无新通用交互封装。
+- 本批尚未部署、未写生产经营数据。New API仓库Actions触发返回“Actions has been disabled for this repository”，尽管仓库权限接口显示enabled；须以平台固定子模块CI或恢复后的源仓CI验证准确提交，不能沿用旧绿色结果。

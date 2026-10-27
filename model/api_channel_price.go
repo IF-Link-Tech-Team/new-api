@@ -461,5 +461,20 @@ func validateAPIChannelProductReferences(tx *gorm.DB, current []APIChannelPrice,
 			return err
 		}
 	}
+	// An unpaid or compensation-pending order can still issue its frozen
+	// configuration later. Keep its last usable route until it is resolved;
+	// disabling the current product does not extinguish that obligation.
+	if tx.Migrator().HasTable(&SubscriptionOrder{}) {
+		var orders []SubscriptionOrder
+		if err := tx.Select("id", "model_scope", "price_book", "price_version").
+			Where("(status = ? OR status = ?) AND (price_book <> ?)", common.TopUpStatusPending, SubscriptionOrderStatusPaidReview, "").Find(&orders).Error; err != nil {
+			return err
+		}
+		for _, order := range orders {
+			if err := check("unresolved order", order.Id, order.ModelScope, order.PriceBook, order.PriceVersion); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
