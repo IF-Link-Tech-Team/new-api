@@ -332,6 +332,7 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 	// Native group prices must not multiply the absolute channel sales price.
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":7}`))
 	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Log{}, &model.BillingRefund{}, &model.APIChannelCatalog{}, &model.APIChannelPrice{}))
+	require.NoError(t, db.AutoMigrate(&model.SubscriptionPlan{}, &model.PriceBookPrice{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.SubscriptionKeyBinding{}))
 	require.NoError(t, model.InitializeAPIChannelCatalog(db))
 	oldEstimate, oldSensitive := constant.CountToken, setting.CheckSensitiveEnabled
 	constant.CountToken, setting.CheckSensitiveEnabled = true, false
@@ -354,7 +355,7 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 			publicationRevision, err = model.PublishAPIChannelPrices(db, publicationRevision, []model.APIChannelPrice{changed}, 1, "concurrent price change")
 			require.NoError(t, err)
 		}
-		if mode == "primary-success" {
+		if mode == "primary-success" || mode == "product-primary" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","model":"vendor-a","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100,"prompt_tokens_details":{"cached_tokens":200}}}`))
 			return
@@ -369,7 +370,7 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		require.Contains(t, string(body), `"model":"vendor-b"`)
 		w.Header().Set("Content-Type", "application/json")
-		if mode == "all-fail" {
+		if mode == "all-fail" || mode == "product-all-fail" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":{"message":"backup unavailable","type":"server_error"}}`))
 			return
@@ -401,14 +402,22 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 		wantStatus  int
 		wantBackup  bool
 		wantReceipt int64
+		product     bool
+		backupFirst bool
+		fallback    bool
 	}{
-		{"primary-success", 100000, 610, 200, false, 1},
-		{"backup-success", 100000, 1220, 200, true, 1},
-		{"publish-during-request", 100000, 1220, 200, true, 1},
-		{"all-fail", 100000, 0, 503, true, 1},
-		{"insufficient-backup", 1200, 0, 403, false, 1},
-		{"disabled-sales", 100000, 0, 503, false, 0},
-		{"forbidden-group", 100000, 0, 503, false, 0},
+		{"primary-success", 100000, 610, 200, false, 1, false, false, false},
+		{"backup-success", 100000, 1220, 200, true, 1, false, false, false},
+		{"publish-during-request", 100000, 1220, 200, true, 1, false, false, false},
+		{"all-fail", 100000, 0, 503, true, 1, false, false, false},
+		{"insufficient-backup", 1200, 0, 403, false, 1, false, false, false},
+		{"disabled-sales", 100000, 0, 503, false, 0, false, false, false},
+		{"product-primary", 100000, 305, 200, false, 1, true, false, true},
+		{"product-backup", 100000, 1830, 200, true, 1, true, false, true},
+		{"product-order", 100000, 1830, 200, true, 1, true, true, false},
+		{"product-all-fail", 100000, 0, 503, true, 1, true, false, true},
+		{"product-no-fallback", 100000, 0, 503, false, 1, true, false, false},
+		{"forbidden-group", 100000, 0, 503, false, 0, false, false, false},
 	} {
 		t.Run(scenario.mode, func(t *testing.T) {
 			mode = scenario.mode
@@ -430,7 +439,31 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 			user := model.User{Username: fmt.Sprintf("api-price-%d", index), AffCode: fmt.Sprintf("api-price-aff-%d", index), Status: common.UserStatusEnabled, Group: "default", Quota: scenario.quota}
 			require.NoError(t, db.Create(&user).Error)
 			token := model.Token{UserId: user.Id, Key: fmt.Sprintf("apipricetoken%d", index), Name: "test", Status: common.TokenStatusEnabled, ExpiredTime: -1, UnlimitedQuota: true, ProductType: model.ProductTypeWallet, EntitlementType: model.ProductTypeWallet}
+			var entitlement model.UserSubscription
+			if scenario.product {
+				plan := model.SubscriptionPlan{Title: "Independent channel promotion", PriceAmount: 10, Currency: "USD", TotalAmount: int64(scenario.quota), ModelScope: "channel-priced-model", DurationUnit: model.SubscriptionDurationMonth, DurationValue: 1, FallbackAllowed: scenario.fallback}
+				require.NoError(t, model.CreateProductPlan(db, &plan))
+				require.Equal(t, scenario.fallback, plan.FallbackAllowed)
+				positions := []int{0, 1}
+				if scenario.backupFirst {
+					positions = []int{1, 0}
+				}
+				revision, err := model.StageProductChannelVersion(db, plan.Id, plan.ConfigRevision, publicationRevision, "promotion-v1", []model.ProductChannelModel{{Model: "channel-priced-model", Rates: []model.ProductChannelRate{{ChannelID: 101, Multiplier: 0.5, Position: &positions[0]}, {ChannelID: 102, Multiplier: 1.5, Position: &positions[1]}}}}, scenario.fallback)
+				require.NoError(t, err)
+				plan.ConfigRevision, plan.PriceVersion = revision, "promotion-v1"
+				require.NoError(t, model.UpdateProductPlan(db, &plan, revision))
+				price, err := model.ResolvePriceBookPrice(db, plan.PriceBook, "channel-priced-model", "promotion-v1")
+				require.NoError(t, err)
+				require.Equal(t, scenario.fallback, price.FallbackAllowed)
+				entitlement = model.UserSubscription{UserId: user.Id, PlanId: plan.Id, Status: "active", StartTime: common.GetTimestamp(), EndTime: common.GetTimestamp() + 3600, AmountTotal: int64(scenario.quota), ModelScope: plan.ModelScope, PriceBook: plan.PriceBook, PriceVersion: plan.PriceVersion, BillingMultiplier: 1}
+				require.NoError(t, db.Create(&entitlement).Error)
+				token.UserSubscriptionId, token.PriceBook, token.PriceVersion = entitlement.Id, plan.PriceBook, plan.PriceVersion
+				token.ProductType, token.EntitlementType = "", model.ProductTypeLegacySubscription
+			}
 			require.NoError(t, token.Insert())
+			if scenario.product {
+				require.NoError(t, db.Create(&model.SubscriptionKeyBinding{UserId: user.Id, UserSubscriptionId: entitlement.Id, TokenId: token.Id}).Error)
+			}
 			beforeBackup := backupCalls.Load()
 			// Large enough input to create a genuine reservation and make the
 			// dearer retry exceed the final case's remaining wallet balance.
@@ -442,6 +475,9 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 			router.ServeHTTP(recorder, request)
 			require.Equal(t, scenario.wantStatus, recorder.Code, recorder.Body.String())
 			require.Equal(t, scenario.wantBackup, backupCalls.Load() > beforeBackup)
+			if scenario.backupFirst {
+				require.Equal(t, beforePrimary, primaryCalls.Load(), "product model order overrides both API model and global channel priority")
+			}
 			require.Eventually(t, func() bool {
 				var after model.User
 				var pending int64
@@ -450,6 +486,13 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 				}
 				if db.Model(&model.BillingRefund{}).Where("user_id = ? AND status NOT IN ?", user.Id, []string{model.BillingRefundSucceeded, model.BillingRefundSettled}).Count(&pending).Error != nil {
 					return false
+				}
+				if scenario.product {
+					var sub model.UserSubscription
+					if db.First(&sub, entitlement.Id).Error != nil {
+						return false
+					}
+					return sub.AmountUsed == int64(scenario.wantCharge) && after.Quota == scenario.quota && pending == 0
 				}
 				return after.Quota == scenario.quota-scenario.wantCharge && pending == 0
 			}, 3*time.Second, 10*time.Millisecond)

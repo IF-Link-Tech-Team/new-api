@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -53,7 +55,7 @@ func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
 				initCol()
 				require.NoError(t, sqlDB.Close())
 			})
-			tables := []any{&APIChannelPrice{}, &APIChannelCatalog{}, &Channel{}, &Ability{}, &PriceBookPrice{}}
+			tables := []any{&APIChannelPrice{}, &APIChannelCatalog{}, &Channel{}, &Ability{}, &PriceBookPrice{}, &SubscriptionPlan{}, &UserSubscription{}}
 			require.NoError(t, db.Migrator().DropTable(tables...))
 			t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(tables...)) })
 			for _, upgrade := range []bool{false, true} {
@@ -75,11 +77,14 @@ func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
 					old.AllowedChannels = "[71,72]"
 					if upgrade {
 						require.NoError(t, db.Create(&old).Error)
+						require.NoError(t, db.Migrator().DropColumn(&PriceBookPrice{}, "ChannelRates"))
+						require.NoError(t, db.AutoMigrate(&APIChannelCatalog{}, &APIChannelPrice{}))
+						require.NoError(t, db.Migrator().DropColumn(&APIChannelPrice{}, "PriceExpression"))
 					}
 					// Exactly the new startup expansion, twice; no reconcile or
 					// implicit activation. Existing source rows stay unchanged.
 					for range 2 {
-						require.NoError(t, db.AutoMigrate(&APIChannelCatalog{}, &APIChannelPrice{}))
+						require.NoError(t, db.AutoMigrate(&APIChannelCatalog{}, &APIChannelPrice{}, &PriceBookPrice{}))
 						require.NoError(t, InitializeAPIChannelCatalog(db))
 					}
 					var actual Channel
@@ -98,6 +103,28 @@ func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
 					revision, err := PublishAPIChannelPrices(db, 0, []APIChannelPrice{a, b}, 1, "initial catalog")
 					require.NoError(t, err)
 					require.EqualValues(t, 1, revision)
+					product := SubscriptionPlan{Title: "Channel rate product", PriceAmount: 10, Currency: "USD", DurationUnit: SubscriptionDurationMonth, DurationValue: 1, TotalAmount: 1000000, ModelScope: "shared-model"}
+					require.NoError(t, CreateProductPlan(db, &product))
+					require.EqualError(t, CreateProductPriceBookVersion(db, product.Id, &old), "Use model and channel rates for new product versions")
+					revisionAfterStage, err := StageProductChannelVersion(db, product.Id, product.ConfigRevision, revision, "channel-v1", []ProductChannelModel{{
+						Model: "shared-model",
+						Rates: []ProductChannelRate{{ChannelID: 71, Multiplier: 0.5, Position: common.GetPointer(0)}, {ChannelID: 72, Multiplier: 1.5, Position: common.GetPointer(1)}},
+					}}, true)
+					require.NoError(t, err)
+					product.ConfigRevision = revisionAfterStage
+					product.PriceVersion, product.Enabled = "channel-v1", true
+					require.NoError(t, UpdateProductPlan(db, &product, product.ConfigRevision))
+					productPrice, err := ResolvePriceBookPrice(db, product.PriceBook, "shared-model", "channel-v1")
+					require.NoError(t, err)
+					rates, err := productPrice.ProductChannelRates()
+					require.NoError(t, err)
+					require.Equal(t, []ProductChannelRate{{ChannelID: 71, Multiplier: 0.5, Position: common.GetPointer(0)}, {ChannelID: 72, Multiplier: 1.5, Position: common.GetPointer(1)}}, rates)
+					assert.EqualError(t, func() error {
+						_, err := StageProductChannelVersion(db, product.Id, product.ConfigRevision, revision-1, "channel-v2", []ProductChannelModel{{
+							Model: "shared-model", Rates: []ProductChannelRate{{ChannelID: 71, Multiplier: 1}},
+						}}, true)
+						return err
+					}(), ErrAPIChannelPriceConflict.Error())
 					public, err := APIChannelModelsForGroups(db, []string{"default"})
 					require.NoError(t, err)
 					require.True(t, public["shared-model"])
@@ -118,6 +145,19 @@ func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
 					a.Enabled = false
 					revision, err = PublishAPIChannelPrices(db, revision, []APIChannelPrice{a}, 1, "stop selling primary")
 					require.NoError(t, err)
+					require.NoError(t, validateProductPlanPrices(db, &product, true), "a remaining API channel keeps the product saleable")
+					b.Enabled = false
+					_, err = PublishAPIChannelPrices(db, revision, []APIChannelPrice{b}, 1, "remove final active product route")
+					require.ErrorContains(t, err, "no usable API channel")
+					require.NoError(t, db.Model(&SubscriptionPlan{}).Where("id = ?", product.Id).Updates(map[string]any{"enabled": false, "redemption_enabled": true}).Error)
+					_, err = PublishAPIChannelPrices(db, revision, []APIChannelPrice{b}, 1, "remove final redemption route")
+					require.ErrorContains(t, err, "no usable API channel")
+					require.NoError(t, db.Model(&SubscriptionPlan{}).Where("id = ?", product.Id).Update("redemption_enabled", false).Error)
+					sold := UserSubscription{UserId: 9, PlanId: product.Id, PriceBook: product.PriceBook, PriceVersion: "channel-v1", ModelScope: "shared-model", Status: "active", EndTime: GetDBTimestamp() + 3600}
+					require.NoError(t, db.Create(&sold).Error)
+					_, err = PublishAPIChannelPrices(db, revision, []APIChannelPrice{b}, 1, "remove sold product route")
+					require.ErrorContains(t, err, "active entitlement")
+					b.Enabled = true
 					stillFrozen, err := RequestAPIChannelPrices(ctx, "shared-model")
 					require.NoError(t, err)
 					require.Len(t, stillFrozen.Rows, 2, "in-flight request keeps candidate prices")
@@ -164,10 +204,73 @@ func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
 					public, err = APIChannelModelsForGroups(db, []string{"default"})
 					require.NoError(t, err)
 					require.Empty(t, public)
+					// Product enable and final-route retirement share the catalog
+					// fence. Neither may validate against the other's old state.
+					require.NoError(t, db.Model(&Channel{}).Where("id = ?", backup.Id).Update("model_mapping", `{"shared-model":"provider-model-b"}`).Error)
+					require.NoError(t, db.Model(&UserSubscription{}).Where("id = ?", sold.Id).Update("status", "expired").Error)
+					product.Enabled, product.RedemptionEnabled = true, false
+					b.Enabled = false
+					start = make(chan struct{})
+					raceResults := make(chan error, 2)
+					wg.Go(func() {
+						<-start
+						raceResults <- UpdateProductPlan(db, &product, product.ConfigRevision)
+					})
+					wg.Go(func() {
+						<-start
+						_, err := PublishAPIChannelPrices(db, revision+1, []APIChannelPrice{b}, 1, "retire final route concurrently with enable")
+						raceResults <- err
+					})
+					close(start)
+					wg.Wait()
+					close(raceResults)
+					successes = 0
+					for err := range raceResults {
+						if err == nil {
+							successes++
+						} else {
+							require.Contains(t, err.Error(), "API channel")
+						}
+					}
+					require.Equal(t, 1, successes)
+					var stored SubscriptionPlan
+					require.NoError(t, db.First(&stored, product.Id).Error)
+					if stored.Enabled {
+						require.NoError(t, validateProductPlanPrices(db, &stored, true))
+					}
 				})
 			}
 		})
 	}
+}
+
+func TestAPIChannelPriceExpressionRetainsTimePricing(t *testing.T) {
+	price := APIChannelPrice{PriceExpression: `weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && (hour("Asia/Shanghai") < 12 || hour("Asia/Shanghai") >= 14) ? tier("peak", p * 2 + cr * 0.1 + cc * 1.25 + cc1h * 1.25 + c * 8) : tier("off_peak", p + cr * 0.02 + cc * 0.2 + cc1h * 0.2 + c * 4)`}
+	expression, err := price.BillingExpression()
+	require.NoError(t, err)
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	require.NoError(t, err)
+	for _, test := range []struct {
+		name string
+		at   time.Time
+		want float64
+	}{
+		{name: "weekday peak", at: time.Date(2026, time.October, 26, 10, 0, 0, 0, loc), want: 100*2 + 10*0.1 + 5*1.25 + 5*1.25 + 20*8},
+		{name: "weekday off peak", at: time.Date(2026, time.October, 26, 13, 0, 0, 0, loc), want: 100 + 10*0.02 + 5*0.2 + 5*0.2 + 20*4},
+		{name: "weekend off peak", at: time.Date(2026, time.October, 25, 10, 0, 0, 0, loc), want: 100 + 10*0.02 + 5*0.2 + 5*0.2 + 20*4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value, _, err := billingexpr.RunExprByHashWithRequest(expression, billingexpr.ExprHashString(expression), billingexpr.TokenParams{P: 100, CR: 10, CC: 5, CC1h: 5, C: 20}, billingexpr.RequestInput{EvaluationUnix: test.at.Unix()})
+			require.NoError(t, err)
+			require.InDelta(t, test.want, value, 1e-8)
+		})
+	}
+	price.PriceExpression = `hour("Not/A_Time_Zone") > 1 ? tier("bad", p) : tier("base", p)`
+	_, err = price.BillingExpression()
+	require.NoError(t, err, "the native evaluator owns runtime timezone fallback semantics")
+	price.PriceExpression = `tier("base", fixed(0.01))`
+	_, err = price.BillingExpression()
+	require.Error(t, err, "API token prices must not accept request-priced expressions")
 }
 
 const aPriceFixture = `{"input":1,"cached_input":0.1,"cache_creation":1.25,"output":4}`

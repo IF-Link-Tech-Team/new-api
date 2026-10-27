@@ -58,6 +58,7 @@ export type ProductPrice = z.infer<typeof productPriceSchema>
 export type ProductPriceBookVersion = Omit<ProductPrice, 'product_type'> & {
   price_book: string
   route_mode?: '' | 'global' | 'ordered'
+  channel_rates?: string
 }
 
 export interface ProductPriceBookPage {

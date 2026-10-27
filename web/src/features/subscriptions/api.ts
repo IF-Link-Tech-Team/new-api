@@ -118,6 +118,31 @@ export async function patchPlanFlags(
   return res.data
 }
 
+export async function stageProductChannelVersion(
+  planId: number,
+  request: {
+    expected_revision: number
+    expected_api_revision: number
+    version: string
+    fallback_allowed: boolean
+    models: {
+      model: string
+      rates: {
+        channel_id: number
+        multiplier: number
+        position: number | null
+      }[]
+    }[]
+    reason: string
+  }
+): Promise<ApiResponse<{ config_revision: number }>> {
+  const res = await api.post(
+    `/api/subscription/admin/plans/${planId}/channel-versions`,
+    request
+  )
+  return res.data
+}
+
 // ============================================================================
 // Admin Product Templates
 // ============================================================================

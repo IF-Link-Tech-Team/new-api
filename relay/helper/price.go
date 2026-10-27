@@ -87,15 +87,30 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			}
 			info.APIChannelPrice = &relaycommon.APIChannelPriceAttempt{ChannelID: row.ChannelID, PriceID: row.ID, Revision: row.Revision}
 			// Wallet channel prices completely replace native/global pricing and
-			// legacy wallet multipliers. Product multipliers stay on their frozen
-			// entitlement version until the P2 channel-multiplier migration.
+			// legacy wallet multipliers. Product rates are frozen per entitlement.
 			info.ProductBillingMultiplier = 1
 			if info.TokenUserSubscriptionId > 0 {
-				bookPrice, err := model.ResolvePriceBookPrice(model.DB, info.ProductPriceBook, info.OriginModelName, info.ProductPriceVersion)
+				bookPrice, err := model.RequestProductPrice(c, info.OriginModelName)
 				if err != nil || bookPrice == nil {
 					return hosttypes.PriceData{}, errors.New("product price version unavailable")
 				}
-				info.ProductBillingMultiplier = bookPrice.BillingMultiplier
+				rates, err := bookPrice.ProductChannelRates()
+				if err != nil {
+					return hosttypes.PriceData{}, err
+				}
+				found := false
+				for _, rate := range rates {
+					if rate.ChannelID == channelID {
+						info.ProductBillingMultiplier, found = rate.Multiplier, true
+						break
+					}
+				}
+				if len(rates) > 0 && !found {
+					return hosttypes.PriceData{}, errors.New("selected channel is outside the product model policy")
+				}
+				if len(rates) == 0 {
+					info.ProductBillingMultiplier = bookPrice.BillingMultiplier
+				}
 			}
 			// API channel prices are absolute USD prices. Native group pricing
 			// must not silently add another sales multiplier.

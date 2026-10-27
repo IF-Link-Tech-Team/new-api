@@ -39,7 +39,10 @@ type PriceBookPrice struct {
 	UpstreamSettlementPrice string  `json:"upstream_settlement_price" gorm:"type:text;not null"`
 	BillingExpression       string  `json:"billing_expression" gorm:"type:text"`
 	BillingMultiplier       float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null"`
-	AllowedChannels         string  `json:"allowed_channels" gorm:"type:text;not null"`
+	// Non-empty selects the model/channel contract. Legacy price fields remain
+	// readable for historical versions, but are never a fallback for this mode.
+	ChannelRates    string `json:"channel_rates" gorm:"type:text"`
+	AllowedChannels string `json:"allowed_channels" gorm:"type:text;not null"`
 	// Empty is the historical global-priority behavior. In ordered mode the
 	// existing channel list is the immutable preference order, not a second list.
 	RouteMode       string `json:"route_mode" gorm:"type:varchar(16)"`
@@ -87,6 +90,13 @@ func (p *PriceBookPrice) Validate() error {
 			return errors.New("price_book must be wallet or product:<plan_id>")
 		}
 	}
+	if p.ChannelRates != "" {
+		if p.PriceBook == WalletPriceBook || p.Model == "" || p.PriceVersion == "" || strings.ContainsAny(p.Model, "*?,\r\n") {
+			return errors.New("channel rates require an exact product model and version")
+		}
+		_, err := p.ProductChannelRates()
+		return err
+	}
 	terms := p.productPrice()
 	return terms.validatePriceTerms()
 }
@@ -109,6 +119,12 @@ func (p *PriceBookPrice) productPrice() ProductPrice {
 func validateProductPriceBookCostFloor(p *PriceBookPrice) error {
 	if p == nil {
 		return errors.New("price book price is nil")
+	}
+	if p.ChannelRates != "" {
+		// These versions reference live API channel prices. Their sale validation
+		// is performed against that catalog, not obsolete duplicated price JSON.
+		_, err := p.ProductChannelRates()
+		return err
 	}
 	var sale, cost PriceComponents
 	if err := common.UnmarshalJsonStr(strings.TrimSpace(p.UserSellingPrice), &sale); err != nil {
@@ -221,12 +237,22 @@ func (p *PriceBookPrice) BeforeUpdate(tx *gorm.DB) error {
 // product. Selecting it for new sales is a separate plan change; existing
 // orders, entitlements and other products are never changed here.
 func CreateProductPriceBookVersion(db *gorm.DB, planId int, price *PriceBookPrice) error {
+	channelPricing, err := APIChannelPricingMode()
+	if err != nil {
+		return err
+	}
+	if channelPricing {
+		return errors.New("Use model and channel rates for new product versions")
+	}
 	book, err := ProductPriceBook(planId)
 	if err != nil {
 		return err
 	}
 	if price == nil || (price.PriceBook != "" && price.PriceBook != book) {
 		return errors.New("price book must match the requested product")
+	}
+	if price.ChannelRates != "" {
+		return errors.New("channel-rate versions must use the complete product draft endpoint")
 	}
 	candidate := *price
 	candidate.PriceBook = book

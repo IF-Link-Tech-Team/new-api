@@ -1048,9 +1048,15 @@ export function SubscriptionsMutateDrawer({
                       product={currentRow.plan}
                       revision={revision || 0}
                       disabled={isSubmitting}
+                      models={selectedModels}
                       onRevisionChange={(nextRevision) => {
                         setRevision(nextRevision)
                         triggerRefresh()
+                      }}
+                      onVersionStaged={(version) => {
+                        form.setValue('price_version', version, {
+                          shouldDirty: true,
+                        })
                       }}
                     />
                   )}

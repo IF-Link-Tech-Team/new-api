@@ -1,3 +1,21 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -12,7 +30,13 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }))
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
+
+const peakPrice =
+  'weekday("Asia/Shanghai") >= 1 && weekday("Asia/Shanghai") <= 5 && ((hour("Asia/Shanghai") >= 9 && hour("Asia/Shanghai") < 12) || (hour("Asia/Shanghai") >= 14 && hour("Asia/Shanghai") < 18)) ? tier("peak", p * 2 + cr * 0.04 + c * 8) : tier("off_peak", p + cr * 0.02 + c * 4)'
 
 const rows: ChannelPriceRow[] = [1, 2].map((id) => ({
   channel_id: id,
@@ -156,4 +180,88 @@ it('does not turn an unconfigured disabled channel into an implicit zero price w
       changes: [expect.objectContaining({ channel_id: 1 })],
     })
   )
+})
+
+it('copies the complete time-based price without overwriting the destination route order', async () => {
+  const user = userEvent.setup()
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValue({ data: { success: true, data: { revision: 4 } } })
+  editor([
+    {
+      ...rows[0],
+      price: {
+        ...rows[0].price,
+        selling_price: '',
+        billing_expression: peakPrice,
+      } as ChannelPriceRow['price'],
+    },
+    rows[1],
+  ])
+  await user.click(
+    screen.getByRole('button', { name: 'Copy prices from first channel' })
+  )
+  expect(
+    screen
+      .getAllByRole('switch', { name: 'Time-based or advanced pricing' })
+      .every((input) => input.getAttribute('aria-checked') === 'true')
+  ).toBe(true)
+  expect(screen.getAllByLabelText('Model route position')[1]).toHaveValue('2')
+  await user.type(
+    screen.getByLabelText('Reason for change'),
+    'Keep weekday peak prices'
+  )
+  await user.click(
+    screen.getByRole('button', { name: 'Publish price revision' })
+  )
+  await waitFor(() => expect(post).toHaveBeenCalled())
+  expect(post).toHaveBeenCalledWith(
+    '/api/subscription/admin/api-channel-prices',
+    expect.objectContaining({
+      changes: [
+        expect.objectContaining({
+          channel_id: 1,
+          selling_price: '',
+          billing_expression: peakPrice,
+        }),
+        expect.objectContaining({
+          channel_id: 2,
+          position: 2,
+          selling_price: '',
+          billing_expression: peakPrice,
+        }),
+      ],
+    })
+  )
+})
+
+it('requires a complete fixed price when switching an expression-only price back to fixed pricing', async () => {
+  const user = userEvent.setup()
+  const post = vi.spyOn(api, 'post')
+  editor([
+    {
+      ...rows[0],
+      price: {
+        ...rows[0].price,
+        selling_price: '',
+        billing_expression: peakPrice,
+      } as ChannelPriceRow['price'],
+    },
+  ])
+  await user.click(
+    screen.getByRole('switch', { name: 'Time-based or advanced pricing' })
+  )
+  await user.type(
+    screen.getByLabelText('Reason for change'),
+    'Switch to fixed pricing'
+  )
+  await user.click(
+    screen.getByRole('button', { name: 'Publish price revision' })
+  )
+  await waitFor(() =>
+    expect(
+      screen.getAllByText('Enter a finite, non-negative price')
+    ).toHaveLength(4)
+  )
+  expect(post).not.toHaveBeenCalled()
 })

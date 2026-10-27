@@ -220,6 +220,7 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.PATCH("/plans/:id", controller.AdminUpdateSubscriptionPlanStatus)
 			subscriptionAdminRoute.POST("/plans/:id/migrate-product", middleware.RootAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.AdminMigrateSubscriptionPlanToProduct)
 			subscriptionAdminRoute.GET("/plans/:id/prices", controller.AdminListProductPriceBookVersions)
+			subscriptionAdminRoute.POST("/plans/:id/channel-versions", middleware.RootAuth(), middleware.CriticalRateLimit(), middleware.DisableCache(), controller.AdminStageProductChannelVersion)
 			subscriptionAdminRoute.POST("/plans/:id/prices", controller.AdminCreateProductPriceBookVersion)
 			subscriptionAdminRoute.PATCH("/plans/:id/prices/:price_id", controller.AdminSetProductPriceBookVersionEnabled)
 			subscriptionAdminRoute.GET("/templates", controller.AdminListProductTemplates)
