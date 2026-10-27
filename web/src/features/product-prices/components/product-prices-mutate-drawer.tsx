@@ -63,15 +63,17 @@ import {
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { getAdminProductTemplates } from '@/features/subscriptions/api'
+import type { SubscriptionPlan } from '@/features/subscriptions/types'
 import { handleServerError } from '@/lib/handle-server-error'
 
-import { createProductPrice } from '../api'
+import { createProductPrice, createProductPriceBookVersion } from '../api'
 import {
   getPriceFormSchema,
   PRICE_FORM_DEFAULTS,
   formValuesToPricePayload,
   type PriceFormValues,
 } from '../lib'
+import { ProductChannelOrder } from './product-channel-order'
 import { useProductPrices } from './product-prices-provider'
 
 interface Props {
@@ -81,7 +83,7 @@ interface Props {
 
 type PriceComponentPrefix = 'official' | 'selling' | 'upstream' | 'cost'
 
-// One row of the three price components (input / cached input / output) for a
+// One row of all four price components for a
 // price field; every price JSON string is edited through the same shape.
 function PriceComponentInputs({
   control,
@@ -96,12 +98,13 @@ function PriceComponentInputs({
   const fields = [
     { name: `${prefix}_input`, label: t('Input') },
     { name: `${prefix}_cached_input`, label: t('Cached Input') },
+    { name: `${prefix}_cache_creation`, label: t('Cache Creation') },
     { name: `${prefix}_output`, label: t('Output') },
   ] as const
   return (
     <div className='flex flex-col gap-2'>
       <span className='text-sm font-medium'>{label}</span>
-      <div className='grid grid-cols-1 gap-3 sm:grid-cols-3'>
+      <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
         {fields.map((item) => (
           <FormField
             key={item.name}
@@ -132,12 +135,19 @@ function PriceComponentInputs({
 }
 
 // Price rows are immutable; this drawer only ever creates a new version.
-export function ProductPricesMutateDrawer({ open, onOpenChange }: Props) {
+export function ProductPricesMutateDrawer(props: Props) {
+  const { triggerRefresh } = useProductPrices()
+  return <ProductPriceVersionDrawer {...props} onCreated={triggerRefresh} />
+}
+
+export function ProductPriceVersionDrawer(
+  props: Props & { product?: SubscriptionPlan; onCreated: () => void }
+) {
+  const { open, onOpenChange } = props
   const { t } = useTranslation()
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const { triggerRefresh } = useProductPrices()
 
-  const schema = getPriceFormSchema(t)
+  const schema = getPriceFormSchema(t, !!props.product)
   const form = useForm<PriceFormValues>({
     resolver: zodResolver(schema) as unknown as Resolver<PriceFormValues>,
     defaultValues: PRICE_FORM_DEFAULTS,
@@ -146,7 +156,7 @@ export function ProductPricesMutateDrawer({ open, onOpenChange }: Props) {
   const { data: templatesData } = useQuery({
     queryKey: ['admin-product-templates'],
     queryFn: getAdminProductTemplates,
-    enabled: open,
+    enabled: open && !props.product,
   })
   const templates = templatesData?.data || []
 
@@ -155,9 +165,10 @@ export function ProductPricesMutateDrawer({ open, onOpenChange }: Props) {
       form.reset({
         ...PRICE_FORM_DEFAULTS,
         effective_at: Math.floor(Date.now() / 1000),
+        price_version: props.product?.price_version || '',
       })
     }
-  }, [open, form])
+  }, [open, form, props.product?.price_version])
 
   const onSubmit = async (values: PriceFormValues) => {
     const payload = formValuesToPricePayload(values)
@@ -171,11 +182,15 @@ export function ProductPricesMutateDrawer({ open, onOpenChange }: Props) {
     }
     setIsSubmitting(true)
     try {
-      const res = await createProductPrice(payload)
+      const res = props.product
+        ? await createProductPriceBookVersion(props.product.id, {
+            price: { ...payload.price, route_mode: values.route_mode },
+          })
+        : await createProductPrice(payload)
       if (res.success) {
         toast.success(t('Create succeeded'))
         onOpenChange(false)
-        triggerRefresh()
+        props.onCreated()
       }
     } catch (error) {
       handleServerError(error, t('Request failed'))
@@ -223,48 +238,60 @@ export function ProductPricesMutateDrawer({ open, onOpenChange }: Props) {
                 {t('Version Identity')}
               </h3>
 
-              <FormField
-                control={form.control}
-                name='product_type'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('Product Type')}</FormLabel>
-                    <Select
-                      items={templates.map((template) => ({
-                        value: template.product_type,
-                        label: template.display_name
-                          ? `${template.display_name} (${template.product_type})`
-                          : template.product_type,
-                      }))}
-                      onValueChange={field.onChange}
-                      value={field.value || ''}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue
-                            placeholder={t('Select a product type')}
-                          />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent alignItemWithTrigger={false}>
-                        <SelectGroup>
-                          {templates.map((template) => (
-                            <SelectItem
-                              key={template.product_type}
-                              value={template.product_type}
-                            >
-                              {template.display_name
-                                ? `${template.display_name} (${template.product_type})`
-                                : template.product_type}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              {!props.product && (
+                <FormField
+                  control={form.control}
+                  name='product_type'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Product Type')}</FormLabel>
+                      <Select
+                        items={templates.map((template) => ({
+                          value: template.product_type,
+                          label: template.display_name
+                            ? `${template.display_name} (${template.product_type})`
+                            : template.product_type,
+                        }))}
+                        onValueChange={field.onChange}
+                        value={field.value || ''}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue
+                              placeholder={t('Select a product type')}
+                            />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            {templates.map((template) => (
+                              <SelectItem
+                                key={template.product_type}
+                                value={template.product_type}
+                              >
+                                {template.display_name
+                                  ? `${template.display_name} (${template.product_type})`
+                                  : template.product_type}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {props.product && (
+                <FormDescription>
+                  {props.product.title}
+                  <br />
+                  {t(
+                    'Model rates and cost limits use USD per million tokens, independently of the product cash currency.'
+                  )}
+                </FormDescription>
+              )}
 
               <div className='grid grid-cols-1 gap-3 sm:grid-cols-2'>
                 <FormField
@@ -379,6 +406,48 @@ export function ProductPricesMutateDrawer({ open, onOpenChange }: Props) {
                 )}
               />
 
+              {props.product && (
+                <FormField
+                  control={form.control}
+                  name='route_mode'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Product route selection')}</FormLabel>
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                      >
+                        <FormControl>
+                          <SelectTrigger className='w-full'>
+                            <SelectValue>
+                              {field.value === 'ordered'
+                                ? t('Product channel order')
+                                : t('Global channel priority and weight')}
+                            </SelectValue>
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value='global'>
+                              {t('Global channel priority and weight')}
+                            </SelectItem>
+                            <SelectItem value='ordered'>
+                              {t('Product channel order')}
+                            </SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>
+                        {t(
+                          'Global routing follows future channel priority changes. Product order stays with this price version; existing entitlements keep their version.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
               <FormField
                 control={form.control}
                 name='allowed_channels'
@@ -388,10 +457,22 @@ export function ProductPricesMutateDrawer({ open, onOpenChange }: Props) {
                     <FormControl>
                       <Input {...field} placeholder='14, 15' />
                     </FormControl>
+                    {props.product && (
+                      <ProductChannelOrder
+                        model={form.watch('model')}
+                        value={field.value}
+                        onChange={field.onChange}
+                        disabled={isSubmitting}
+                      />
+                    )}
                     <FormDescription>
-                      {t(
-                        'Comma-separated channel IDs that may serve this price version'
-                      )}
+                      {props.product && form.watch('route_mode') === 'ordered'
+                        ? t(
+                            'Enter channel IDs in order: primary, first backup, second backup. Disable fallback to use only the first channel. All candidates must pass availability and cost checks.'
+                          )
+                        : t(
+                            'Comma-separated channel IDs that may serve this price version'
+                          )}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>

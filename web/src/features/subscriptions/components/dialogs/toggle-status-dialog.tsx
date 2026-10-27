@@ -44,7 +44,11 @@ export function ToggleStatusDialog() {
   const handleConfirm = async () => {
     setLoading(true)
     try {
-      const res = await patchPlanStatus(currentRow.plan.id, !isEnabled)
+      const res = await patchPlanStatus(
+        currentRow.plan.id,
+        !isEnabled,
+        currentRow.plan.config_revision
+      )
       if (res.success) {
         toast.success(
           isEnabled ? t('Has been disabled') : t('Has been enabled')

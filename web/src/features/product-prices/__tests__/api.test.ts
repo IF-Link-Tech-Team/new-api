@@ -24,12 +24,61 @@ import {
   createProductPrice,
   getAdminProductPrices,
   setProductPriceEnabled,
+  createProductPriceBookVersion,
+  getProductPriceBookVersions,
+  setProductPriceBookVersionEnabled,
 } from '../api'
 import type { ProductPricePayload } from '../types'
 
 afterEach(() => vi.restoreAllMocks())
 
 describe('product price API failures', () => {
+  it('publishes a product-scoped version without sending a legacy type', async () => {
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true, data: { id: 1 } } })
+    await createProductPriceBookVersion(7, {
+      price: {
+        product_type: 'pack_k3',
+        model: 'operator-model',
+        route_mode: 'ordered',
+        allowed_channels: '[15,14]',
+      },
+    })
+    expect(post).toHaveBeenCalledWith(
+      '/api/subscription/admin/plans/7/prices',
+      {
+        price: {
+          model: 'operator-model',
+          route_mode: 'ordered',
+          allowed_channels: '[15,14]',
+        },
+      }
+    )
+  })
+
+  it('paginates product prices using the server cursor', async () => {
+    const get = vi.spyOn(api, 'get').mockResolvedValue({
+      data: { success: true, data: { items: [], next_id: 0 } },
+    })
+    await getProductPriceBookVersions(7, 88)
+    expect(get).toHaveBeenCalledWith(
+      '/api/subscription/admin/plans/7/prices?limit=20&before_id=88'
+    )
+  })
+
+  it('sends the product revision and preserves stale-editor rejection', async () => {
+    const patch = vi.spyOn(api, 'patch').mockResolvedValue({
+      data: { success: false, message: 'Reload product configuration' },
+    })
+    await expect(
+      setProductPriceBookVersionEnabled(7, 81, false, 3)
+    ).rejects.toThrow('Reload product configuration')
+    expect(patch).toHaveBeenCalledWith(
+      '/api/subscription/admin/plans/7/prices/81',
+      { enabled: false, expected_revision: 3 }
+    )
+  })
   it('rejects a failed query rather than presenting an empty price list', async () => {
     vi.spyOn(api, 'get').mockResolvedValue({
       data: { success: false, message: 'Price catalog unavailable' },

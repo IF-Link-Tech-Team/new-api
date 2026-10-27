@@ -36,13 +36,16 @@ func TestSQLiteSubscriptionPlanMigrationPreservesAllFields(t *testing.T) {
 					require.True(t, db.Migrator().HasColumn(&SubscriptionPlan{}, field.DBName), "missing plan field %s", field.DBName)
 				}
 			}
-			plan := SubscriptionPlan{Title: "new", PriceAmount: 19.9, TemplateId: 7, DisplayMetadata: `{"recommended":true}`}
+			plan := SubscriptionPlan{Title: "new", PriceAmount: 19.9, TemplateId: 7, DisplayMetadata: `{"recommended":true}`,
+				PriceBook: "product:555", ConfigRevision: 7}
 			require.NoError(t, db.Create(&plan).Error)
 			require.NoError(t, ensureSubscriptionPlanTableSQLite())
 			var saved SubscriptionPlan
 			require.NoError(t, db.First(&saved, plan.Id).Error)
 			require.Equal(t, plan.TemplateId, saved.TemplateId)
 			require.Equal(t, plan.DisplayMetadata, saved.DisplayMetadata)
+			require.Equal(t, plan.PriceBook, saved.PriceBook)
+			require.Equal(t, plan.ConfigRevision, saved.ConfigRevision)
 			if upgrade {
 				saved = SubscriptionPlan{}
 				require.NoError(t, db.First(&saved, 1).Error)

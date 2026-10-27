@@ -21,14 +21,14 @@ func setupClassroomRedemptionTest(t *testing.T) (*SubscriptionPlan, []Redemption
 
 	for _, table := range []string{
 		"product_redemption_claims", "redemptions", "subscription_key_bindings", "tokens",
-		"subscription_orders", "user_subscriptions", "subscription_plans", "product_prices", "abilities", "channels", "logs", "users",
+		"subscription_orders", "user_subscriptions", "subscription_plans", "price_book_prices", "product_prices", "abilities", "channels", "logs", "users",
 	} {
 		require.NoError(t, DB.Exec("DELETE FROM "+table).Error)
 	}
 	t.Cleanup(func() {
 		for _, table := range []string{
 			"product_redemption_claims", "redemptions", "subscription_key_bindings", "tokens",
-			"subscription_orders", "user_subscriptions", "subscription_plans", "product_prices", "abilities", "channels", "logs", "users",
+			"subscription_orders", "user_subscriptions", "subscription_plans", "price_book_prices", "product_prices", "abilities", "channels", "logs", "users",
 		} {
 			_ = DB.Exec("DELETE FROM " + table).Error
 		}

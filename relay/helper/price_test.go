@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
@@ -79,6 +80,177 @@ func TestModelPriceHelperUsesWalletVersionedSnapshot(t *testing.T) {
 	require.Equal(t, model.ProductTypeWallet, info.TieredBillingSnapshot.ProductType)
 	require.Equal(t, price.PriceVersion, info.TieredBillingSnapshot.PriceVersion)
 	require.Equal(t, 1.0, info.TieredBillingSnapshot.ProductMultiplier)
+}
+
+func TestModelPriceHelperUsesProductPriceBookSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldDB := model.DB
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.PriceBookPrice{}))
+	model.DB = db
+	t.Cleanup(func() { model.DB = oldDB })
+
+	oldQuotaPerUnit := common.QuotaPerUnit
+	common.QuotaPerUnit = 500_000
+	oldGroupRatios := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	t.Cleanup(func() {
+		common.QuotaPerUnit = oldQuotaPerUnit
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldGroupRatios))
+	})
+
+	price := &model.PriceBookPrice{
+		PriceBook: "product:91", Model: "booked-model", PriceVersion: "book-v1",
+		OfficialReferencePrice:  `{"input":2,"cached_input":0.4,"output":8}`,
+		UserSellingPrice:        `{"input":2,"cached_input":0.4,"output":8}`,
+		UpstreamSettlementPrice: `{"input":1,"cached_input":0.2,"output":4}`,
+		BillingExpression:       `tier("book", p * 2)`, BillingMultiplier: 0.73,
+		AllowedChannels: `[31]`, MaxUpstreamCost: `{"input":1.5,"cached_input":0.3,"output":6}`,
+		FallbackAllowed: true, Enabled: true,
+	}
+	require.NoError(t, db.Create(price).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Set("group", "default")
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "booked-model", UserGroup: "default", UsingGroup: "default",
+		ProductType: model.ProductTypePackK3, ProductPriceBook: "product:91", ProductPriceVersion: "book-v1",
+		BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)},
+	}
+
+	priceData, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	require.Equal(t, 730, priceData.QuotaToPreConsume)
+	require.NotNil(t, info.TieredBillingSnapshot)
+	require.Equal(t, 0.73, info.TieredBillingSnapshot.ProductMultiplier)
+}
+
+func TestModelPriceHelperWalletBookBoundary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		saved[key] = value
+		return nil
+	}))
+	oldDB, oldQuota := model.DB, common.QuotaPerUnit
+	oldRatios := ratio_setting.ModelRatio2JSONString()
+	t.Cleanup(func() {
+		model.DB, common.QuotaPerUnit = oldDB, oldQuota
+		require.NoError(t, config.GlobalConfig.LoadFromDB(saved))
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(oldRatios))
+	})
+	common.QuotaPerUnit = 500_000
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"wallet-boundary":7}`))
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{"wallet-boundary-expr":"tiered_expr"}`,
+		"billing_setting.billing_expr":    `{"wallet-boundary-expr":"tier(\"global\", p * 6)"}`,
+		"group_ratio_setting.group_ratio": `{"default":1}`,
+	}))
+
+	for _, tc := range []struct {
+		name, book, version  string
+		legacy, configured   bool
+		enabled, future      bool
+		brokenDB, globalExpr bool
+		wantError            bool
+		wantQuota            int
+	}{
+		{name: "empty wallet uses global ratio", book: model.WalletPriceBook, wantQuota: 7000},
+		{name: "empty wallet uses global expression", book: model.WalletPriceBook, globalExpr: true, wantQuota: 3000},
+		{name: "legacy frozen override is preserved", book: model.WalletPriceBook, version: "v1", legacy: true, wantQuota: 1000},
+		{name: "missing frozen override rejects", book: model.WalletPriceBook, version: "v1", wantError: true},
+		{name: "migrated missing version cannot use legacy", book: model.WalletPriceBook, version: "missing", legacy: true, configured: true, enabled: true, wantError: true},
+		{name: "disabled current override rejects", book: model.WalletPriceBook, configured: true, wantError: true},
+		{name: "future current override rejects", book: model.WalletPriceBook, configured: true, enabled: true, future: true, wantError: true},
+		{name: "historical disabled version settles", book: model.WalletPriceBook, version: "v1", configured: true, wantQuota: 1000},
+		{name: "current override freezes for retry", book: model.WalletPriceBook, configured: true, enabled: true, wantQuota: 1000},
+		{name: "missing product never uses global", book: "product:91", version: "v1", wantError: true},
+		{name: "database error never uses global", book: model.WalletPriceBook, brokenDB: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			defer sqlDB.Close()
+			require.NoError(t, db.AutoMigrate(&model.PriceBookPrice{}, &model.ProductPrice{}))
+			model.DB = db
+			modelName := "wallet-boundary"
+			if tc.globalExpr {
+				modelName = "wallet-boundary-expr"
+			}
+			price := model.PriceBookPrice{
+				PriceBook: tc.book, Model: modelName, PriceVersion: "v1", Enabled: tc.enabled,
+				OfficialReferencePrice:  `{"input":2,"cached_input":0.4,"output":8}`,
+				UserSellingPrice:        `{"input":2,"cached_input":0.4,"output":8}`,
+				UpstreamSettlementPrice: `{"input":1,"cached_input":0.2,"output":4}`,
+				BillingExpression:       `tier("override", p * 2)`, BillingMultiplier: 1,
+				AllowedChannels: `[31]`, MaxUpstreamCost: `{"input":1.5,"cached_input":0.3,"output":6}`,
+			}
+			if tc.future {
+				price.EffectiveAt = model.GetDBTimestamp() + 3600
+			}
+			if tc.configured {
+				require.NoError(t, db.Create(&price).Error)
+			}
+			if tc.legacy {
+				legacy := model.ProductPrice{
+					ProductType: model.ProductTypeWallet, Model: modelName, PriceVersion: tc.version,
+					OfficialReferencePrice: price.OfficialReferencePrice, UserSellingPrice: price.UserSellingPrice,
+					UpstreamSettlementPrice: price.UpstreamSettlementPrice, BillingExpression: price.BillingExpression,
+					BillingMultiplier: 1, AllowedChannels: price.AllowedChannels, MaxUpstreamCost: price.MaxUpstreamCost,
+				}
+				require.NoError(t, db.Create(&legacy).Error)
+			}
+			if tc.brokenDB {
+				require.NoError(t, sqlDB.Close())
+			}
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			common.SetContextKey(ctx, constant.ContextKeyTokenPriceBook, tc.book)
+			info := &relaycommon.RelayInfo{
+				OriginModelName: modelName, UserGroup: "default", UsingGroup: "default",
+				ProductType: model.ProductTypeWallet, ProductPriceBook: tc.book, ProductPriceVersion: tc.version,
+				BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)},
+			}
+			priceData, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+			if tc.wantError {
+				require.Error(t, err)
+				assert.Nil(t, info.TieredBillingSnapshot)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantQuota, priceData.QuotaToPreConsume)
+			if tc.configured && tc.version == "" {
+				assert.Equal(t, "v1", info.ProductPriceVersion)
+				assert.Equal(t, "v1", info.TieredBillingSnapshot.PriceVersion)
+				newPrice := price
+				newPrice.Id, newPrice.PriceVersion = 0, "v2"
+				newPrice.BillingExpression = `tier("new", p * 9)`
+				newPrice.EffectiveAt = model.GetDBTimestamp()
+				require.NoError(t, db.Create(&newPrice).Error)
+				retryPrice, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+				require.NoError(t, err)
+				assert.Equal(t, priceData.QuotaToPreConsume, retryPrice.QuotaToPreConsume)
+				assert.Equal(t, price.BillingExpression, info.TieredBillingSnapshot.ExprString)
+				newInfo := *info
+				newInfo.ProductPriceVersion = ""
+				newCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+				newCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+				newRequestPrice, err := ModelPriceHelper(newCtx, &newInfo, 1000, &types.TokenCountMeta{})
+				require.NoError(t, err)
+				assert.Equal(t, 4500, newRequestPrice.QuotaToPreConsume)
+				assert.Equal(t, "v2", newInfo.ProductPriceVersion)
+			}
+			if !tc.legacy && !tc.configured {
+				assert.Empty(t, info.ProductPriceBook)
+				assert.Empty(t, common.GetContextKeyString(ctx, constant.ContextKeyTokenPriceBook))
+			}
+		})
+	}
 }
 
 func TestModelPriceHelperUsesImmutableModelMultiplierForMixedClassroomPrice(t *testing.T) {

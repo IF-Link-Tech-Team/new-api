@@ -7,7 +7,8 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import assert from 'node:assert/strict'
-import { afterEach, test } from 'vitest'
+
+import { afterEach, expect, test } from 'vitest'
 
 const { act } = await import('react')
 const { createRoot } = await import('react-dom/client')
@@ -31,6 +32,55 @@ await i18n.use(initReactI18next).init({ lng: 'en', resources: {} })
 const originalAdapter = api.defaults.adapter
 let root: ReturnType<typeof createRoot> | null = null
 
+test('shows a released reservation with a verified payment as awaiting compensation, not delivered or unpaid', async () => {
+  api.defaults.adapter = async (config) => {
+    let data: unknown = []
+    if (config.url === '/api/subscription/self') {
+      data = { all_subscriptions: [] }
+    } else if (config.url?.startsWith('/api/token/')) {
+      data = { items: [], total: 0 }
+    } else if (config.url?.startsWith('/api/subscription/self/orders')) {
+      data = [
+        {
+          trade_no: 'LATE-PAID',
+          plan_title: 'Limited promotion',
+          status: 'paid_review',
+          provisioning_status: 'compensation_pending',
+        },
+      ]
+    }
+    return {
+      data: { success: true, data },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config,
+    }
+  }
+  const route = createRootRoute({ component: () => <TrafficPacks /> })
+  const router = createRouter({
+    routeTree: route,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
+  await router.load()
+  const host = document.createElement('div')
+  document.body.append(host)
+  root = createRoot(host)
+  await act(async () =>
+    root?.render(
+      <I18nextProvider i18n={i18n}>
+        <RouterProvider router={router} />
+      </I18nextProvider>
+    )
+  )
+  expect(host).toHaveTextContent('Limited promotion')
+  expect(host).toHaveTextContent(
+    'Payment received; awaiting compensation review'
+  )
+  expect(host).not.toHaveTextContent('权益与 Key 已到账')
+  expect(host).not.toHaveTextContent('等待支付')
+})
+
 afterEach(async () => {
   if (root) await act(async () => root?.unmount())
   root = null
@@ -42,7 +92,11 @@ afterEach(async () => {
 
 for (const returnParameter of ['iflinkpay_return', 'alipay_return']) {
   test(`${returnParameter} reloads the provisioned entitlement and shows monthly compute points`, async () => {
-    window.history.replaceState({}, '', `/plans?${returnParameter}=SUB-TEST-PAID`)
+    window.history.replaceState(
+      {},
+      '',
+      `/plans?${returnParameter}=SUB-TEST-PAID`
+    )
     const requests: string[] = []
     const subscription = {
       id: 352,
@@ -162,9 +216,10 @@ test('monthly cards show the three paid quotas and copy server-authorized model 
           currency: 'CNY',
           duration_value: 30,
           enabled: true,
-          redemption_enabled: true,
+          redemption_enabled: false,
           category: 'subscription',
-          product_type: 'monthly_subscription',
+          product_type: '',
+          price_book: `product:${item.tier + 4}`,
           product_tier: item.tier,
           model_scope: models.join(','),
           total_amount: item.quota,
@@ -227,7 +282,7 @@ test('monthly cards show the three paid quotas and copy server-authorized model 
     null
   )
   const purchaseButtons = [...host.querySelectorAll('button')].filter(
-    (button) => button.textContent === '立即购买'
+    (button) => button.textContent === 'Buy now'
   )
   assert.equal(purchaseButtons.length, 3)
   await act(async () => purchaseButtons[0]?.click())

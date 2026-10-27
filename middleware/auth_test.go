@@ -402,6 +402,8 @@ func TestIFLinkAccessTokenRulesPreserveScopeAndRoleBoundaries(t *testing.T) {
 	write, _ := createMiddlewareScopedToken(t, admin.Id, 0, "wallet:write", "billing:write", "redemption:write", "api_key:write", "api_key:reveal")
 	rootRead, _ := createMiddlewareScopedToken(t, root.Id, 0, "billing:read")
 	rootWrite, _ := createMiddlewareScopedToken(t, root.Id, 0, "billing:write")
+	ordinary := createMiddlewarePATUser(t, "iflink-price-user", "iflink-price-legacy")
+	ordinaryWrite, _ := createMiddlewareScopedToken(t, ordinary.Id, 0, "billing:write")
 	for _, tc := range []struct {
 		name, method, route, path, token string
 		auth                             gin.HandlerFunc
@@ -412,6 +414,15 @@ func TestIFLinkAccessTokenRulesPreserveScopeAndRoleBoundaries(t *testing.T) {
 		{"wallet write can pay", http.MethodPost, "/api/subscription/iflinkpay/pay", "/api/subscription/iflinkpay/pay", write, UserAuth(), http.StatusNoContent},
 		{"read cannot edit product price", http.MethodPost, "/api/subscription/admin/product-prices", "/api/subscription/admin/product-prices", read, AdminAuth(), http.StatusForbidden},
 		{"billing write can edit product price", http.MethodPost, "/api/subscription/admin/product-prices", "/api/subscription/admin/product-prices", write, AdminAuth(), http.StatusNoContent},
+		{"billing read can view product book", http.MethodGet, "/api/subscription/admin/plans/:id/prices", "/api/subscription/admin/plans/41/prices", read, AdminAuth(), http.StatusNoContent},
+		{"billing read cannot publish product book", http.MethodPost, "/api/subscription/admin/plans/:id/prices", "/api/subscription/admin/plans/41/prices", read, AdminAuth(), http.StatusForbidden},
+		{"billing write can publish product book", http.MethodPost, "/api/subscription/admin/plans/:id/prices", "/api/subscription/admin/plans/41/prices", write, AdminAuth(), http.StatusNoContent},
+		{"billing read cannot toggle product price", http.MethodPatch, "/api/subscription/admin/plans/:id/prices/:price_id", "/api/subscription/admin/plans/41/prices/1", read, AdminAuth(), http.StatusForbidden},
+		{"billing write can toggle product price", http.MethodPatch, "/api/subscription/admin/plans/:id/prices/:price_id", "/api/subscription/admin/plans/41/prices/1", write, AdminAuth(), http.StatusNoContent},
+		{"ordinary user cannot toggle product price", http.MethodPatch, "/api/subscription/admin/plans/:id/prices/:price_id", "/api/subscription/admin/plans/41/prices/1", ordinaryWrite, AdminAuth(), http.StatusForbidden},
+		{"anonymous cannot toggle product price", http.MethodPatch, "/api/subscription/admin/plans/:id/prices/:price_id", "/api/subscription/admin/plans/41/prices/1", "", AdminAuth(), http.StatusUnauthorized},
+		{"ordinary user cannot publish product book", http.MethodPost, "/api/subscription/admin/plans/:id/prices", "/api/subscription/admin/plans/41/prices", ordinaryWrite, AdminAuth(), http.StatusForbidden},
+		{"anonymous cannot view product book", http.MethodGet, "/api/subscription/admin/plans/:id/prices", "/api/subscription/admin/plans/41/prices", "", AdminAuth(), http.StatusUnauthorized},
 		{"read cannot create redemption batch", http.MethodPost, "/api/redemption/batches", "/api/redemption/batches", read, AdminAuth(), http.StatusForbidden},
 		{"write can create redemption batch", http.MethodPost, "/api/redemption/batches", "/api/redemption/batches", write, AdminAuth(), http.StatusNoContent},
 		{"admin cannot review refund", http.MethodPost, "/api/billing-refund/:id/review", "/api/billing-refund/1/review", write, RootAuth(), http.StatusForbidden},

@@ -213,6 +213,16 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		{name: "single attempt pin", err: upstream(http.StatusTooManyRequests), retries: 1, setup: func(c *gin.Context) {
 			GetChannelConstraints(c).AddPin(dto.ChannelPin{ChannelId: 1, Source: dto.PinSourceToken, Rank: dto.PinRankToken, RetryMode: dto.PinRetrySingleAttempt})
 		}, want: PolicyDecision{Action: "stop", Reason: "pinned_channel", Source: "channel_constraint"}},
+		{name: "generic product forbids fallback", err: upstream(http.StatusTooManyRequests), retries: 1, setup: func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyTokenPriceBook, "product:98")
+			common.SetContextKey(c, constant.ContextKeyTokenPriceVersion, "ordered-v2")
+			common.SetContextKey(c, constant.ContextKeyTokenFallbackAllowed, false)
+		}, want: PolicyDecision{Action: "stop", Reason: "product_fallback_disabled", Source: "product"}},
+		{name: "generic product allows retryable fallback", err: upstream(http.StatusTooManyRequests), retries: 1, setup: func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyTokenPriceBook, "product:98")
+			common.SetContextKey(c, constant.ContextKeyTokenPriceVersion, "ordered-v1")
+			common.SetContextKey(c, constant.ContextKeyTokenFallbackAllowed, true)
+		}, want: PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}},
 		{name: "strict session", err: upstream(http.StatusTooManyRequests), retries: 1, setup: func(c *gin.Context) {
 			c.Set(ginKeyChannelAffinitySkipRetry, true)
 			RequestPolicy(c).SessionModeSource = "global"

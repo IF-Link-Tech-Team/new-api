@@ -603,11 +603,10 @@ export function OverviewDashboard() {
     () => getPreferredKey(apiKeysQuery.data ?? []),
     [apiKeysQuery.data]
   )
-  const hasActiveIfLearn = useMemo(
+  const hasActiveProduct = useMemo(
     () =>
       (subscriptionsQuery.data ?? []).some(
         (item) =>
-          item.subscription.product_type === 'pack_deepseek_classroom' &&
           item.subscription.status === 'active' &&
           item.subscription.end_time > Date.now() / 1000
       ),
@@ -624,17 +623,17 @@ export function OverviewDashboard() {
         completed: true,
       },
       {
-        title: t('Redeem IF.Learn'),
+        title: t('Get a product'),
         description: t(
-          'Use your classroom code to receive 10,000 compute points'
+          'Purchase a product or redeem a code for dedicated quota'
         ),
         to: '/traffic-packs',
         icon: PackageCheck,
-        completed: hasActiveIfLearn,
+        completed: hasActiveProduct,
       },
       {
         title: t('Get your API Key'),
-        description: t('Create or copy the dedicated key for this classroom'),
+        description: t('Create or copy your API Key'),
         to: '/keys',
         icon: KeyRound,
         completed: Boolean(preferredKey),
@@ -656,7 +655,7 @@ export function OverviewDashboard() {
         completed: requestCount > 0,
       },
     ],
-    [hasActiveIfLearn, preferredKey, requestCount, t]
+    [hasActiveProduct, preferredKey, requestCount, t]
   )
 
   const quickActions = useMemo<QuickAction[]>(
@@ -812,7 +811,9 @@ export function OverviewDashboard() {
                               {t('Get started')}
                             </div>
                             <h3 className='text-xl font-semibold tracking-tight sm:text-2xl'>
-                              {t('Make your first Qwen3.8 Flash call in minutes')}
+                              {t(
+                                'Make your first Qwen3.8 Flash call in minutes'
+                              )}
                             </h3>
                             <p className='text-muted-foreground max-w-xl text-sm leading-relaxed'>
                               {t(

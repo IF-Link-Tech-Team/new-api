@@ -74,6 +74,7 @@ import {
   IF_LEARN_PRODUCT_NAME,
   isIfLearnPlan,
   parseModelScope,
+  parseProductDisplay,
 } from './lib/product-display'
 
 function formatDate(unix: number): string {
@@ -116,6 +117,12 @@ function orderState(order: SubscriptionOrderStatus): {
   label: string
   tone: string
 } {
+  if (order.status === 'paid_review') {
+    return {
+      label: 'Payment received; awaiting compensation review',
+      tone: 'text-destructive',
+    }
+  }
   if (order.status !== 'success') {
     return order.status === 'pending'
       ? { label: '等待支付', tone: 'text-amber-600' }
@@ -160,12 +167,7 @@ export function TrafficPacks({
         getSelfSubscriptionOrders(),
       ])
       setPlans(
-        (planRes.data || []).filter(
-          (item) =>
-            item.plan.category === category &&
-            Boolean(item.plan.product_type) &&
-            (category !== 'package' || isIfLearnPlan(item.plan))
-        )
+        (planRes.data || []).filter((item) => item.plan.category === category)
       )
       setSubscriptions(
         (selfRes.data?.all_subscriptions || []).filter(
@@ -209,6 +211,9 @@ export function TrafficPacks({
             order,
             ...current.filter((item) => item.trade_no !== order.trade_no),
           ])
+          if (order.status === 'paid_review' || order.status === 'expired') {
+            return
+          }
           if (
             order.status === 'success' &&
             order.provisioning_status === 'provisioned'
@@ -255,6 +260,7 @@ export function TrafficPacks({
   const unresolvedOrders = orders.filter(
     (order) =>
       order.status === 'pending' ||
+      order.status === 'paid_review' ||
       (order.status === 'success' &&
         order.provisioning_status !== 'provisioned')
   )
@@ -313,15 +319,14 @@ export function TrafficPacks({
             <CardContent className='flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5'>
               <div>
                 <p className='font-medium'>
-                  {category === 'subscription'
-                    ? '月套餐固定 30 天，同周期只保留一个实例与一个 Key'
-                    : t(
-                        'The IF.Learn starter pack has a separate quota pool and dedicated API key.'
-                      )}
+                  {t(
+                    'Each purchase has its own quota, validity period and dedicated API key.'
+                  )}
                 </p>
                 <p className='text-muted-foreground mt-1 text-sm'>
-                  当前 Key
-                  额度不足、过期或模型不匹配时，请求会直接失败，不会跨池扣费。
+                  {t(
+                    'Quota, supported models and wallet overflow follow each product configuration.'
+                  )}
                 </p>
               </div>
               <Button
@@ -356,11 +361,9 @@ export function TrafficPacks({
               <div>
                 <h2 className='text-lg font-semibold'>可购买商品</h2>
                 <p className='text-muted-foreground text-sm'>
-                  {category === 'package'
-                    ? t(
-                        'The public catalog only includes the IF.Learn starter pack. Product rules come from the server.'
-                      )
-                    : '套餐价格、周期与权益规则均来自后端配置。'}
+                  {t(
+                    'Products, prices and benefits come from the administrator configuration.'
+                  )}
                 </p>
               </div>
             </div>
@@ -387,9 +390,8 @@ export function TrafficPacks({
                 <div className='grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3'>
                   {plans.map((item) => {
                     const plan = item.plan
-                    const isRecommended =
-                      plan.product_type === 'monthly_subscription' &&
-                      plan.product_tier === 2
+                    const display = parseProductDisplay(plan.display_metadata)
+                    const isRecommended = display.recommended === true
                     const isMonthly =
                       plan.product_type === 'monthly_subscription'
                     const isClassroom = isIfLearnPlan(plan)
@@ -402,13 +404,12 @@ export function TrafficPacks({
                     const lowerTier = isMonthly && currentTier > tier
                     const higherTier =
                       isMonthly && currentTier > 0 && tier > currentTier
-                    const disabled =
-                      !plan.redemption_enabled || sameTier || lowerTier
+                    const disabled = !plan.enabled || sameTier || lowerTier
                     const models = parseModelScope(plan.model_scope)
                     const billingMultipliers = item.billing_multipliers || {}
-                    let purchaseLabel = '立即购买'
-                    if (!plan.redemption_enabled) {
-                      purchaseLabel = '兑换暂未开放'
+                    let purchaseLabel = display.button_label || t('Buy now')
+                    if (!plan.enabled) {
+                      purchaseLabel = t('Not available for purchase')
                     }
                     if (sameTier) {
                       purchaseLabel = '当前档位'
@@ -427,8 +428,7 @@ export function TrafficPacks({
                         key={plan.id}
                         className={cn(
                           'relative overflow-hidden',
-                          (isRecommended || isClassroom) &&
-                            'border-primary shadow-sm',
+                          isRecommended && 'border-primary shadow-sm',
                           !plan.enabled && 'opacity-60'
                         )}
                       >
@@ -437,10 +437,13 @@ export function TrafficPacks({
                             主推
                           </div>
                         )}
-                        {isClassroom && (
-                          <div className='bg-primary text-primary-foreground absolute top-0 right-0 rounded-bl-lg px-3 py-1 text-xs font-medium'>
-                            {t('IF.Learn starter pack')}
-                          </div>
+                        {display.image && (
+                          <img
+                            src={display.image}
+                            alt={display.image_alt || plan.title}
+                            loading='lazy'
+                            className='h-40 w-full object-contain'
+                          />
                         )}
                         <CardHeader>
                           <div className='flex items-center gap-2'>
@@ -454,22 +457,43 @@ export function TrafficPacks({
                             </CardTitle>
                           </div>
                           <CardDescription>{plan.subtitle}</CardDescription>
+                          {!!display.badges?.length && (
+                            <div className='flex flex-wrap gap-2'>
+                              {display.badges.map((label) => (
+                                <Badge key={label} variant='secondary'>
+                                  {label}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
                         </CardHeader>
                         <CardContent className='space-y-4'>
                           <div>
+                            {display.reference_price && (
+                              <p className='text-muted-foreground text-sm'>
+                                {display.reference_price}
+                              </p>
+                            )}
                             <span className='text-3xl font-semibold'>
-                              ¥{plan.price_amount.toFixed(1)}
+                              {plan.currency === 'CNY' ? '¥' : '$'}
+                              {plan.price_amount.toFixed(2)}
                             </span>
                             <span className='text-muted-foreground ml-1 text-sm'>
-                              / {plan.duration_value} 天
+                              /{' '}
+                              {plan.duration_unit === 'custom'
+                                ? plan.custom_seconds
+                                : plan.duration_value}{' '}
+                              {t(
+                                plan.duration_unit === 'custom'
+                                  ? 'Seconds'
+                                  : plan.duration_unit
+                              )}
                             </span>
                           </div>
                           {computePoints ? (
                             <div className='bg-muted/40 rounded-md border px-3 py-2.5'>
                               <p className='text-muted-foreground text-xs'>
-                                {isClassroom
-                                  ? t('¥5 classroom model shared credit')
-                                  : t('Total compute points')}
+                                {t('Total compute points')}
                               </p>
                               <p className='mt-1 font-semibold tabular-nums'>
                                 {computePoints}
@@ -491,6 +515,9 @@ export function TrafficPacks({
                               <KeyRound className='h-4 w-4 text-blue-600' />
                               {keyProvisioningLabel(isMonthly, isClassroom)}
                             </p>
+                            {display.benefits?.map((benefit) => (
+                              <p key={benefit}>{benefit}</p>
+                            ))}
                             {plan.course_eligible && (
                               <p className='flex items-center gap-2'>
                                 <BookOpenCheck className='h-4 w-4 text-amber-600' />
@@ -542,7 +569,7 @@ export function TrafficPacks({
                           </p>
                         </div>
                         <span className={cn('text-sm font-medium', state.tone)}>
-                          {state.label}
+                          {t(state.label)}
                         </span>
                       </CardContent>
                     </Card>

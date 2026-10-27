@@ -83,12 +83,14 @@ describe('formValuesToPricePayload', () => {
       official_output: 8,
       selling_input: 1,
       selling_cached_input: 0.02,
+      selling_cache_creation: 0.7,
       selling_output: 4,
       upstream_input: 0.8,
       upstream_cached_input: 0.01,
       upstream_output: 3.2,
       cost_input: 1,
       cost_cached_input: 0.02,
+      cost_cache_creation: 0,
       cost_output: 4,
       fallback_allowed: false,
       enabled: true,
@@ -101,11 +103,13 @@ describe('formValuesToPricePayload', () => {
     assert.deepEqual(JSON.parse(payload.price.user_selling_price as string), {
       input: 1,
       cached_input: 0.02,
+      cache_creation: 0.7,
       output: 4,
     })
     assert.deepEqual(JSON.parse(payload.price.max_upstream_cost as string), {
       input: 1,
       cached_input: 0.02,
+      cache_creation: 0,
       output: 4,
     })
     assert.equal(payload.price.fallback_allowed, false)

@@ -84,7 +84,8 @@ beforeEach(() => {
               all_subscriptions: [
                 {
                   subscription: {
-                    product_type: 'pack_deepseek_classroom',
+                    product_type: '',
+                    price_book: 'product:7',
                     status: 'active',
                     end_time: 4102444800,
                   },

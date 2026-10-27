@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"gorm.io/gorm"
 )
 
 var group2model2channels map[string]map[string][]int // enabled channel
@@ -253,6 +254,43 @@ func CacheGetChannel(id int) (*Channel, error) {
 		return nil, fmt.Errorf("channel #%d no longer exists", id)
 	}
 	return c, nil
+}
+
+// GetOrderedSatisfiedChannel selects the first eligible, unattempted route.
+// Attempted IDs, rather than a retry index into a shrinking healthy list, keep
+// a disabled/over-cost first route from causing the next route to be skipped.
+// Explicit product allowlists can cross wallet groups, as in the global mode.
+func GetOrderedSatisfiedChannel(modelName string, filters []dto.ChannelFilter, policy *ChannelSelectionPolicy, attempted map[int]struct{}) (*Channel, error) {
+	if policy == nil || len(policy.OrderedChannelIds) == 0 {
+		return nil, errors.New("ordered product route is not configured")
+	}
+	ids := policy.OrderedChannelIds
+	if !policy.FallbackAllowed {
+		ids = ids[:1]
+	}
+	for _, id := range ids {
+		if _, used := attempted[id]; used {
+			continue
+		}
+		channel, err := CacheGetChannel(id)
+		if err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) && !common.MemoryCacheEnabled {
+				return nil, err
+			}
+			continue
+		}
+		if channel.Status != common.ChannelStatusEnabled || !ChannelSatisfiesPolicy(channel, modelName, policy) {
+			continue
+		}
+		if ok, _ := ChannelSatisfiesFilters(channel, modelName, filters); !ok {
+			continue
+		}
+		if !IsChannelEnabledForAnyGroupModel(channel.GetGroups(), modelName, channel.Id) {
+			continue
+		}
+		return channel, nil
+	}
+	return nil, nil
 }
 
 func CacheGetChannelInfo(id int) (*ChannelInfo, error) {

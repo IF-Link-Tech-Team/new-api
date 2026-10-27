@@ -129,7 +129,7 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 	require.NoError(t, model.DB.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.Channel{}, &model.Ability{},
 		&model.SubscriptionPlan{}, &model.SubscriptionOrder{}, &model.UserSubscription{},
-		&model.SubscriptionPreConsumeRecord{}, &model.ProductPrice{}, &model.ProductTemplate{}, &model.TopUp{},
+		&model.SubscriptionPreConsumeRecord{}, &model.ProductPrice{}, &model.PriceBookPrice{}, &model.ProductTemplate{}, &model.TopUp{},
 		&model.SubscriptionKeyBinding{}, &model.CourseEntitlement{}, &model.MonthlySubscriptionCycle{},
 	))
 	require.NoError(t, model.SeedProductTemplates())

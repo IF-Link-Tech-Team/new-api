@@ -54,6 +54,7 @@ export const channelSchema = z.object({
   group: z.string().default('default'),
   used_quota: z.number().default(0),
   model_mapping: z.string().nullish(),
+  upstream_costs: z.string().nullish(),
   status_code_mapping: z.string().nullish(),
   priority: z.number().nullish(),
   auto_ban: z.number().nullish(),

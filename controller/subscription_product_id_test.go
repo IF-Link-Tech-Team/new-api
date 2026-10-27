@@ -19,6 +19,16 @@ func TestSubscriptionPlanProductIDKeepsLegacyModelPacksOutOfPlanAliases(t *testi
 			want: "pack_deepseek_classroom",
 		},
 		{
+			name: "conversion preserves the checkout code",
+			plan: model.SubscriptionPlan{Id: 17, PriceBook: "product:17", ProductCode: "PACK_CONFIGURED", Title: "Updated title"},
+			want: "pack_configured",
+		},
+		{
+			name: "new generic product without code uses id",
+			plan: model.SubscriptionPlan{Id: 18, PriceBook: "product:18", Title: "Pro"},
+			want: "18",
+		},
+		{
 			name: "deepseek pro is not subscription pro",
 			plan: model.SubscriptionPlan{Title: "DeepSeek V4 Pro 流量包"},
 			want: "deepseek-v4-pro",

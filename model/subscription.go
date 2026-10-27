@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/samber/hot"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -180,6 +182,9 @@ type SubscriptionPlan struct {
 
 	// Max purchases per user (0 = unlimited)
 	MaxPurchasePerUser int `json:"max_purchase_per_user" gorm:"type:int;default:0"`
+	// New product orders freeze this deadline. Zero preserves the default for
+	// clients created before this field existed; historical orders keep no TTL.
+	ReservationTTLSeconds int64 `json:"reservation_ttl_seconds" gorm:"bigint;not null;default:0"`
 
 	// Upgrade user group after purchase (empty = no change)
 	UpgradeGroup string `json:"upgrade_group" gorm:"type:varchar(64);default:''"`
@@ -214,10 +219,14 @@ type SubscriptionPlan struct {
 	ProductTier       int     `json:"product_tier" gorm:"type:int;default:0"`
 	BillingMultiplier float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
 	PriceVersion      string  `json:"price_version" gorm:"type:varchar(64);default:''"`
-	AllowedChannels   string  `json:"allowed_channels" gorm:"type:text"`
-	MaxUpstreamCost   string  `json:"max_upstream_cost" gorm:"type:text"`
-	FallbackAllowed   bool    `json:"fallback_allowed"`
-	CourseEligible    bool    `json:"course_eligible"`
+	// PriceBook opts a plan into product-owned pricing without a template or
+	// commercial product type. Empty preserves the pre-migration contract.
+	PriceBook       string `json:"price_book" gorm:"type:varchar(64);default:''"`
+	ConfigRevision  int64  `json:"config_revision" gorm:"bigint;not null;default:0"`
+	AllowedChannels string `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost string `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed bool   `json:"fallback_allowed"`
+	CourseEligible  bool   `json:"course_eligible"`
 
 	// TemplateId links the plan to its product_templates row. It is pinned
 	// during ValidateV1Contract and backfilled for existing plans by the
@@ -298,12 +307,17 @@ type SubscriptionOrder struct {
 	PlanId int     `json:"plan_id" gorm:"index"`
 	Money  float64 `json:"money"`
 
-	TradeNo         string `json:"trade_no" gorm:"unique;type:varchar(255);index"`
-	PaymentMethod   string `json:"payment_method" gorm:"type:varchar(50)"`
-	PaymentProvider string `json:"payment_provider" gorm:"type:varchar(50);default:''"`
-	Status          string `json:"status"`
-	CreateTime      int64  `json:"create_time"`
-	CompleteTime    int64  `json:"complete_time"`
+	TradeNo              string `json:"trade_no" gorm:"unique;type:varchar(255);index"`
+	PaymentMethod        string `json:"payment_method" gorm:"type:varchar(50)"`
+	PaymentProvider      string `json:"payment_provider" gorm:"type:varchar(50);default:''"`
+	Status               string `json:"status"`
+	CreateTime           int64  `json:"create_time"`
+	CompleteTime         int64  `json:"complete_time"`
+	ReservationExpiresAt int64  `json:"reservation_expires_at" gorm:"bigint;not null;default:0"`
+	// Compensation decisions persist with issuance, independently of log DB.
+	CompensationActorId int    `json:"compensation_actor_id" gorm:"not null;default:0"`
+	CompensationTime    int64  `json:"compensation_time" gorm:"bigint;not null;default:0"`
+	CompensationNote    string `json:"compensation_note" gorm:"type:varchar(512);not null;default:''"`
 
 	ProviderPayload string  `json:"provider_payload" gorm:"type:text"`
 	PaidMoney       float64 `json:"paid_money" gorm:"type:decimal(10,6);not null;default:0"`
@@ -319,13 +333,17 @@ type SubscriptionOrder struct {
 	TargetTier         int     `json:"target_tier" gorm:"type:int;default:0"`
 	BillingMultiplier  float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
 	PriceVersion       string  `json:"price_version" gorm:"type:varchar(64);default:''"`
-	ModelScope         string  `json:"model_scope" gorm:"type:text"`
-	AllowedChannels    string  `json:"allowed_channels" gorm:"type:text"`
-	MaxUpstreamCost    string  `json:"max_upstream_cost" gorm:"type:text"`
-	FallbackAllowed    bool    `json:"fallback_allowed"`
-	CourseEligible     bool    `json:"course_eligible"`
-	ProvisioningStatus string  `json:"provisioning_status" gorm:"type:varchar(32);default:'pending';index"`
-	ProvisioningError  string  `json:"provisioning_error" gorm:"type:text"`
+	PriceBook          string  `json:"-" gorm:"type:varchar(64);default:'';index"`
+	// The complete generic plan freezes non-price terms too, including limits,
+	// group changes and wallet overflow. It never contains credentials.
+	ProductPlanSnapshot string `json:"-" gorm:"type:text"`
+	ModelScope          string `json:"model_scope" gorm:"type:text"`
+	AllowedChannels     string `json:"allowed_channels" gorm:"type:text"`
+	MaxUpstreamCost     string `json:"max_upstream_cost" gorm:"type:text"`
+	FallbackAllowed     bool   `json:"fallback_allowed"`
+	CourseEligible      bool   `json:"course_eligible"`
+	ProvisioningStatus  string `json:"provisioning_status" gorm:"type:varchar(32);default:'pending';index"`
+	ProvisioningError   string `json:"provisioning_error" gorm:"type:text"`
 
 	// Immutable commercial snapshot captured before the customer is sent to a
 	// payment provider. Completion must never read mutable price/quota/duration
@@ -356,10 +374,13 @@ func (o *SubscriptionOrder) Insert() error {
 	if o.ProvisioningStatus == "" {
 		o.ProvisioningStatus = ProvisioningStatusPending
 	}
-	if o.PlanId > 0 && o.ProductType == "" {
+	if o.PlanId > 0 && o.ProductType == "" && o.PriceBook == "" {
 		plan, err := GetSubscriptionPlanById(o.PlanId)
 		if err != nil {
 			return err
+		}
+		if plan.PriceBook != "" {
+			return errors.New("product orders require transactional checkout")
 		}
 		if err := plan.ValidateV1Contract(); err != nil {
 			return err
@@ -388,6 +409,10 @@ func (o *SubscriptionOrder) SnapshotPlan(plan *SubscriptionPlan) {
 	o.TargetTier = plan.ProductTier
 	o.BillingMultiplier = plan.BillingMultiplier
 	o.PriceVersion = strings.TrimSpace(plan.PriceVersion)
+	o.PriceBook = plan.PriceBook
+	if RequiresStrictV1RoutePolicy(plan.ProductType) && plan.Id > 0 {
+		o.PriceBook = fmt.Sprintf("product:%d", plan.Id)
+	}
 	o.ModelScope = strings.TrimSpace(plan.ModelScope)
 	o.AllowedChannels = strings.TrimSpace(plan.AllowedChannels)
 	o.MaxUpstreamCost = strings.TrimSpace(plan.MaxUpstreamCost)
@@ -498,15 +523,43 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 	if tx == nil || userId <= 0 || planId <= 0 || strings.TrimSpace(tradeNo) == "" {
 		return nil, nil, errors.New("invalid subscription order args")
 	}
+	// Acquire the user serialization lock before any consistent table read.
+	// MySQL REPEATABLE READ would otherwise retain a snapshot taken before a
+	// competing checkout commits, even after waiting for this user's row lock.
+	var lockedUser User
+	if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&lockedUser).Error; err != nil {
+		return nil, nil, err
+	}
 	plan, err := getSubscriptionPlanByIdTx(tx, planId)
 	if err != nil {
 		return nil, nil, err
+	}
+	if plan.PriceBook != "" {
+		// Serialize checkout with generic plan edits and price publication.
+		// Display cache state never decides whether a new sale is valid.
+		if err := lockForUpdate(tx).First(plan, planId).Error; err != nil {
+			return nil, nil, err
+		}
 	}
 	if !plan.Enabled {
 		return nil, nil, errors.New("套餐未启用")
 	}
 	if plan.PriceAmount < 0 {
 		return nil, nil, errors.New("套餐价格不能为负数")
+	}
+	if plan.PriceBook != "" {
+		// Check the locked plan, rather than the controller's display-cache
+		// copy. These gateways have a fixed settlement currency.
+		switch paymentProvider {
+		case PaymentProviderAlipay, PaymentProviderIFLinkPay, PaymentProviderEpay:
+			if plan.Currency != "CNY" {
+				return nil, nil, errors.New("this payment provider requires a CNY product")
+			}
+		case PaymentProviderWaffoPancake:
+			if plan.Currency != "USD" {
+				return nil, nil, errors.New("this payment provider requires a USD product")
+			}
+		}
 	}
 	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, nil, err
@@ -515,12 +568,6 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		return nil, nil, err
 	}
 
-	// The user row is the global serialization point for new monthly periods,
-	// upgrades, and concurrent callbacks across all three tiers.
-	var lockedUser User
-	if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&lockedUser).Error; err != nil {
-		return nil, nil, err
-	}
 	if plan.ProductType == ProductTypePackDeepSeekBigfish {
 		if err := checkBigfishPurchaseHistoryTx(tx, userId); err != nil {
 			return nil, nil, err
@@ -563,6 +610,25 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		ProvisioningStatus: ProvisioningStatusPending,
 	}
 	order.SnapshotPlan(plan)
+	if plan.PriceBook != "" {
+		ttl := plan.ReservationTTLSeconds
+		if ttl == 0 {
+			ttl = DefaultProductReservationTTL
+		}
+		order.CreateTime, err = productReservationTimeTx(tx)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ttl < 0 || ttl > math.MaxInt64-order.CreateTime {
+			return nil, nil, errors.New("invalid product reservation lifetime")
+		}
+		order.ReservationExpiresAt = order.CreateTime + ttl
+		data, err := common.Marshal(plan)
+		if err != nil {
+			return nil, nil, err
+		}
+		order.ProductPlanSnapshot = string(data)
+	}
 
 	if plan.ProductType == ProductTypeMonthlySubscription {
 		now := getDBTimestampTx(tx)
@@ -628,6 +694,12 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		var pendingCount int64
 		pendingQuery := tx.Model(&SubscriptionOrder{}).
 			Where("user_id = ? AND order_type = ? AND status = ?", userId, SubscriptionOrderTypePurchase, common.TopUpStatusPending)
+		if plan.PriceBook != "" {
+			// Expiry is effective at the deadline, even if no cleanup worker has
+			// run. Do not update order rows while holding the user lock: callbacks
+			// take the order lock first, so that would invert their lock order.
+			pendingQuery = pendingQuery.Where("reservation_expires_at = 0 OR reservation_expires_at > ?", order.CreateTime)
+		}
 		if plan.ProductType == ProductTypeMonthlySubscription {
 			pendingQuery = pendingQuery.Where("product_family = ?", plan.ProductFamily)
 		} else {
@@ -636,7 +708,10 @@ func createSubscriptionOrderTx(tx *gorm.DB, userId int, planId int, tradeNo stri
 		if err := pendingQuery.Count(&pendingCount).Error; err != nil {
 			return nil, nil, err
 		}
-		if pendingCount > 0 {
+		if plan.PriceBook != "" && pendingCount >= int64(plan.MaxPurchasePerUser)-count {
+			return nil, nil, errors.New("已达到该套餐购买上限（含待支付订单）")
+		}
+		if plan.PriceBook == "" && pendingCount > 0 {
 			return nil, nil, errors.New("该套餐已有待支付订单")
 		}
 	}
@@ -691,6 +766,7 @@ type UserSubscription struct {
 	ProductTier         int     `json:"product_tier" gorm:"type:int;default:0"`
 	BillingMultiplier   float64 `json:"billing_multiplier" gorm:"type:decimal(8,6);not null;default:1"`
 	PriceVersion        string  `json:"price_version" gorm:"type:varchar(64);default:''"`
+	PriceBook           string  `json:"-" gorm:"type:varchar(64);default:'';index"`
 	AllowedChannels     string  `json:"allowed_channels" gorm:"type:text"`
 	MaxUpstreamCost     string  `json:"max_upstream_cost" gorm:"type:text"`
 	FallbackAllowed     bool    `json:"fallback_allowed"`
@@ -814,7 +890,10 @@ func getSubscriptionPlanByIdTx(tx *gorm.DB, id int) (*SubscriptionPlan, error) {
 		return nil, errors.New("invalid plan id")
 	}
 	key := subscriptionPlanCacheKey(id)
-	if key != "" {
+	// Transactions must read their own database snapshot. A display cache may
+	// still contain a plan that was just disabled or repriced, and caching an
+	// uncommitted plan would leak a change even if its transaction rolls back.
+	if tx == nil && key != "" {
 		if cached, found, err := getSubscriptionPlanCache().Get(key); err == nil && found {
 			cached.NormalizeDefaults()
 			return &cached, nil
@@ -829,7 +908,9 @@ func getSubscriptionPlanByIdTx(tx *gorm.DB, id int) (*SubscriptionPlan, error) {
 		return nil, err
 	}
 	plan.NormalizeDefaults()
-	_ = getSubscriptionPlanCache().SetWithTTL(key, plan, subscriptionPlanCacheTTL())
+	if tx == nil {
+		_ = getSubscriptionPlanCache().SetWithTTL(key, plan, subscriptionPlanCacheTTL())
+	}
 	return &plan, nil
 }
 
@@ -922,7 +1003,11 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if err := plan.validateV1ContractTx(tx); err != nil {
 		return nil, err
 	}
-	if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
+	if plan.PriceBook != "" {
+		if err := validateProductPlanPrices(tx, plan, false); err != nil {
+			return nil, err
+		}
+	} else if err := validateV1ProductPriceCatalogTx(tx, plan); err != nil {
 		return nil, err
 	}
 	nowUnix := getDBTimestampTx(tx)
@@ -996,6 +1081,13 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	if plan.AllowWalletOverflow != nil {
 		allowWalletOverflow = *plan.AllowWalletOverflow
 	}
+	priceBook := plan.PriceBook
+	if RequiresStrictV1RoutePolicy(plan.ProductType) {
+		priceBook, err = ProductPriceBook(plan.Id)
+		if err != nil {
+			return nil, err
+		}
+	}
 	sub := &UserSubscription{
 		UserId:              userId,
 		PlanId:              plan.Id,
@@ -1018,6 +1110,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		ProductTier:         plan.ProductTier,
 		BillingMultiplier:   plan.BillingMultiplier,
 		PriceVersion:        strings.TrimSpace(plan.PriceVersion),
+		PriceBook:           priceBook,
 		AllowedChannels:     strings.TrimSpace(plan.AllowedChannels),
 		MaxUpstreamCost:     strings.TrimSpace(plan.MaxUpstreamCost),
 		FallbackAllowed:     plan.FallbackAllowed,
@@ -1144,6 +1237,7 @@ func createBoundTokenForSubscriptionTx(tx *gorm.DB, userId int, subscriptionId i
 			return 1
 		}(),
 		PriceVersion:    sub.PriceVersion,
+		PriceBook:       sub.PriceBook,
 		AllowedChannels: sub.AllowedChannels,
 		MaxUpstreamCost: sub.MaxUpstreamCost,
 		FallbackAllowed: sub.FallbackAllowed,
@@ -1196,9 +1290,33 @@ func provisionPlanFromOrder(tx *gorm.DB, order *SubscriptionOrder, livePlan *Sub
 		return nil, errors.New("invalid order plan snapshot")
 	}
 	plan := *livePlan
-	if order.ProductType == "" {
+	if order.ProductPlanSnapshot != "" {
+		var frozen SubscriptionPlan
+		if err := common.UnmarshalJsonStr(order.ProductPlanSnapshot, &frozen); err != nil {
+			return nil, fmt.Errorf("invalid product plan snapshot: %w", err)
+		}
+		plan = frozen
+		if plan.Id != order.PlanId || plan.PriceBook == "" || plan.PriceBook != order.PriceBook || plan.PriceVersion != order.PriceVersion {
+			return nil, errors.New("product plan snapshot identity mismatch")
+		}
+		if err := plan.ValidateProductPlan(); err != nil {
+			return nil, err
+		}
 		return &plan, nil
 	}
+	if order.PriceBook != "" && order.ProductType == "" {
+		return nil, errors.New("product order is missing its immutable plan snapshot")
+	}
+	if order.ProductType == "" {
+		if livePlan.PriceBook != "" {
+			return nil, errors.New("legacy order is missing its immutable plan snapshot after product conversion")
+		}
+		return &plan, nil
+	}
+	// A live product may have been converted after checkout. Legacy orders
+	// retain their original contract, even when backfill added a price book to
+	// the order. Never inherit the new product's generic validation mode.
+	plan.PriceBook, plan.ConfigRevision, plan.TemplateId = "", 0, 0
 	plan.Title = order.PlanTitleSnapshot
 	plan.PriceAmount = order.TargetPriceAmount
 	plan.Currency = order.CurrencySnapshot
@@ -1243,6 +1361,10 @@ func upgradeMonthlySubscriptionTx(tx *gorm.DB, order *SubscriptionOrder, targetP
 	if order.OrderType != SubscriptionOrderTypeUpgrade || targetPlan.ProductType != ProductTypeMonthlySubscription {
 		return nil, errors.New("order is not a monthly upgrade")
 	}
+	priceBook, err := ProductPriceBook(targetPlan.Id)
+	if err != nil {
+		return nil, err
+	}
 	now := getDBTimestampTx(tx)
 	var sub UserSubscription
 	if err := lockForUpdate(tx).Where("id = ? AND user_id = ?", *order.UserSubscriptionId, order.UserId).First(&sub).Error; err != nil {
@@ -1279,6 +1401,7 @@ func upgradeMonthlySubscriptionTx(tx *gorm.DB, order *SubscriptionOrder, targetP
 	sub.ProductTier = targetPlan.ProductTier
 	sub.BillingMultiplier = targetPlan.BillingMultiplier
 	sub.PriceVersion = strings.TrimSpace(targetPlan.PriceVersion)
+	sub.PriceBook = priceBook
 	sub.AllowedChannels = strings.TrimSpace(targetPlan.AllowedChannels)
 	sub.MaxUpstreamCost = strings.TrimSpace(targetPlan.MaxUpstreamCost)
 	sub.FallbackAllowed = targetPlan.FallbackAllowed
@@ -1306,6 +1429,7 @@ func upgradeMonthlySubscriptionTx(tx *gorm.DB, order *SubscriptionOrder, targetP
 	token.ProductType = ProductTypeMonthlySubscription
 	token.BillingMultiplier = targetPlan.BillingMultiplier
 	token.PriceVersion = strings.TrimSpace(targetPlan.PriceVersion)
+	token.PriceBook = sub.PriceBook
 	token.AllowedChannels = strings.TrimSpace(targetPlan.AllowedChannels)
 	token.MaxUpstreamCost = strings.TrimSpace(targetPlan.MaxUpstreamCost)
 	token.FallbackAllowed = targetPlan.FallbackAllowed
@@ -1363,6 +1487,7 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	var logMoney float64
 	var logPaymentMethod string
 	var upgradeGroup string
+	var compensationReason string
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order SubscriptionOrder
 		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
@@ -1375,6 +1500,11 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			if err := validatePaymentReceipt(order.Money, order.CurrencySnapshot, receipt); err != nil {
 				return err
 			}
+		}
+		if order.Status == SubscriptionOrderStatusPaidReview {
+			// The verified receipt is durable; repeated callbacks must neither
+			// issue an entitlement nor erase the compensation evidence.
+			return nil
 		}
 		if order.Status == common.TopUpStatusSuccess {
 			// Idempotent recovery is safe because new orders persist the exact
@@ -1398,59 +1528,86 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			}
 			return nil
 		}
+		failedProduct := order.ProductPlanSnapshot != "" && order.Status == common.TopUpStatusFailed
+		if order.Status != common.TopUpStatusPending && order.Status != common.TopUpStatusExpired && !failedProduct {
+			return ErrSubscriptionOrderStatusInvalid
+		}
+		if failedProduct {
+			// A checkout request can time out after the provider created its
+			// session. A later verified payment is real even if creation failed
+			// locally; retain it without taking an already released slot.
+			if receipt == nil {
+				return ErrSubscriptionOrderStatusInvalid
+			}
+			if err := parkPaidProductOrderTx(tx, &order, actualPaymentMethod, *receipt, "reservation_released"); err != nil {
+				return err
+			}
+			logUserId, compensationReason = order.UserId, order.ProvisioningError
+			return nil
+		}
+		// Lock before the first consistent table read, as checkout does. This
+		// keeps the issuance limit check fresh on MySQL REPEATABLE READ too.
+		var userRow User
+		if err := lockForUpdate(tx).Select("id").Where("id = ?", order.UserId).First(&userRow).Error; err != nil {
+			if order.ProductPlanSnapshot != "" && receipt != nil && errors.Is(err, gorm.ErrRecordNotFound) {
+				// Deleted customers cannot receive keys, but their verified cash
+				// receipt must remain visible to finance for resolution.
+				if err := parkPaidProductOrderTx(tx, &order, actualPaymentMethod, *receipt, "provisioning_failed"); err != nil {
+					return err
+				}
+				logUserId, compensationReason = order.UserId, order.ProvisioningError
+				return nil
+			}
+			return err
+		}
+		var reservationReleased bool
+		if order.ProductPlanSnapshot != "" {
+			now, err := productReservationTimeTx(tx)
+			if err != nil {
+				return err
+			}
+			reservationReleased = order.Status == common.TopUpStatusExpired ||
+				(order.ReservationExpiresAt > 0 && order.ReservationExpiresAt <= now)
+		}
+		if reservationReleased {
+			if receipt == nil {
+				return ErrSubscriptionOrderStatusInvalid
+			}
+			if err := parkPaidProductOrderTx(tx, &order, actualPaymentMethod, *receipt, "reservation_released"); err != nil {
+				return err
+			}
+			logUserId, compensationReason = order.UserId, order.ProvisioningError
+			return nil
+		}
 		if order.Status != common.TopUpStatusPending {
 			return ErrSubscriptionOrderStatusInvalid
 		}
-		plan, err := getSubscriptionPlanByIdTx(tx, order.PlanId)
-		if err != nil {
-			return err
+		durableReceipt := order.ProductPlanSnapshot != "" && receipt != nil
+		if durableReceipt {
+			if err := tx.SavePoint("product_fulfillment").Error; err != nil {
+				return err
+			}
 		}
-		if !plan.Enabled {
-			// still allow completion for already purchased orders
-		}
-		// 锁定用户行：并发完成同一用户的不同订单（包括多实例部署下）时，
-		// 使 CreateUserSubscriptionFromPlanTx 的 MaxPurchasePerUser 检查按用户串行。
-		var userRow User
-		if err := lockForUpdate(tx).Select("id").Where("id = ?", order.UserId).First(&userRow).Error; err != nil {
-			return err
-		}
-		provisionPlan, err := provisionPlanFromOrder(tx, &order, plan)
-		if err != nil {
-			return err
-		}
-		var subscription *UserSubscription
-		if order.OrderType == SubscriptionOrderTypeUpgrade {
-			subscription, err = upgradeMonthlySubscriptionTx(tx, &order, provisionPlan)
-		} else {
-			subscription, _, err = createProvisionedSubscriptionFromPlanTx(tx, order.UserId, provisionPlan, "order")
+		beforeIssuance := order
+		provisionPlan, subscription, err := fulfillSubscriptionOrderTx(tx, &order, providerPayload, actualPaymentMethod, receipt)
+		if err != nil && durableReceipt {
+			// Undo every partial entitlement/key/top-up write before retaining
+			// the verified receipt. Never acknowledge if rollback or parking fails.
+			if rollbackErr := tx.RollbackTo("product_fulfillment").Error; rollbackErr != nil {
+				return rollbackErr
+			}
+			order = beforeIssuance
+			if err := parkPaidProductOrderTx(tx, &order, actualPaymentMethod, *receipt, "provisioning_failed"); err != nil {
+				return err
+			}
+			logUserId, compensationReason = order.UserId, order.ProvisioningError
+			return nil
 		}
 		if err != nil {
 			return err
 		}
 		if subscription.PrevUserGroup != "" {
 			upgradeGroup = strings.TrimSpace(subscription.UpgradeGroup)
-		}
-		if err := upsertSubscriptionTopUpTx(tx, &order); err != nil {
-			return err
-		}
-		order.Status = common.TopUpStatusSuccess
-		order.UserSubscriptionId = &subscription.Id
-		order.ProvisioningStatus = ProvisioningStatusProvisioned
-		order.ProvisioningError = ""
-		order.CompleteTime = common.GetTimestamp()
-		if providerPayload != "" {
-			order.ProviderPayload = providerPayload
-		}
-		if actualPaymentMethod != "" && order.PaymentMethod != actualPaymentMethod {
-			order.PaymentMethod = actualPaymentMethod
-		}
-		if receipt != nil {
-			order.PaidMoney, _ = receipt.Amount.Float64()
-			order.PaidCurrency = strings.ToUpper(strings.TrimSpace(receipt.Currency))
-			order.ProviderTradeNo = strings.TrimSpace(receipt.ProviderTradeNo)
-		}
-		if err := tx.Save(&order).Error; err != nil {
-			return err
 		}
 		logUserId = order.UserId
 		logPlanTitle = provisionPlan.Title
@@ -1460,6 +1617,14 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	})
 	if err != nil {
 		return err
+	}
+	if compensationReason != "" {
+		message := "Product payment received after reservation release; compensation required"
+		if compensationReason == "provisioning_failed" {
+			message = "Product payment received but provisioning failed; compensation required"
+		}
+		RecordLog(logUserId, LogTypeSystem, common.NewMessage(message))
+		return nil
 	}
 	if upgradeGroup != "" && logUserId > 0 {
 		refreshSubscriptionUserGroupCache(logUserId, common.LogText("subscription payment completion"))
@@ -1472,6 +1637,52 @@ func completeSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		}))
 	}
 	return nil
+}
+
+// fulfillSubscriptionOrderTx atomically links the entitlement, its dedicated
+// key, the top-up ledger and the successful order. The caller holds order and
+// user locks; both payment callbacks and explicit compensation retry use it.
+func fulfillSubscriptionOrderTx(tx *gorm.DB, order *SubscriptionOrder, providerPayload string, method string, receipt *PaymentReceipt) (*SubscriptionPlan, *UserSubscription, error) {
+	plan, err := getSubscriptionPlanByIdTx(tx, order.PlanId)
+	if err != nil {
+		return nil, nil, err
+	}
+	provisionPlan, err := provisionPlanFromOrder(tx, order, plan)
+	if err != nil {
+		return nil, nil, err
+	}
+	var subscription *UserSubscription
+	if order.OrderType == SubscriptionOrderTypeUpgrade {
+		subscription, err = upgradeMonthlySubscriptionTx(tx, order, provisionPlan)
+	} else {
+		subscription, _, err = createProvisionedSubscriptionFromPlanTx(tx, order.UserId, provisionPlan, "order")
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if method != "" {
+		order.PaymentMethod = method
+	}
+	if err := upsertSubscriptionTopUpTx(tx, order); err != nil {
+		return nil, nil, err
+	}
+	order.Status = common.TopUpStatusSuccess
+	order.UserSubscriptionId = &subscription.Id
+	order.ProvisioningStatus = ProvisioningStatusProvisioned
+	order.ProvisioningError = ""
+	order.CompleteTime = common.GetTimestamp()
+	if providerPayload != "" {
+		order.ProviderPayload = providerPayload
+	}
+	if receipt != nil {
+		order.PaidMoney, _ = receipt.Amount.Float64()
+		order.PaidCurrency = strings.ToUpper(strings.TrimSpace(receipt.Currency))
+		order.ProviderTradeNo = strings.TrimSpace(receipt.ProviderTradeNo)
+	}
+	if err := tx.Save(order).Error; err != nil {
+		return nil, nil, err
+	}
+	return provisionPlan, subscription, nil
 }
 
 func upsertSubscriptionTopUpTx(tx *gorm.DB, order *SubscriptionOrder) error {
@@ -1607,9 +1818,46 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			return common.NewMessage("This plan does not allow balance redemption")
 		}
 
-		requiredQuota, err := calcSubscriptionBalanceQuota(order.Money)
-		if err != nil {
-			return err
+		var requiredQuota int
+		var balancePayload string
+		if plan.PriceBook != "" {
+			// Wallet quota is USD-denominated. Product cash price keeps its own
+			// currency; never debit a CNY amount as though it were USD. Persist
+			// the exact rate and debit with the successful order for accounting.
+			if common.QuotaPerUnit <= 0 || math.IsNaN(common.QuotaPerUnit) || math.IsInf(common.QuotaPerUnit, 0) {
+				return common.NewMessage("Quota unit is misconfigured")
+			}
+			quotaAmount := decimal.NewFromFloat(order.Money).Mul(decimal.NewFromFloat(common.QuotaPerUnit))
+			rate := 1.0
+			if plan.Currency == "CNY" {
+				rate = operation_setting.USDExchangeRate
+				if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
+					return errors.New("product balance payment requires a valid CNY per USD exchange rate")
+				}
+				whole, remainder := quotaAmount.QuoRem(decimal.NewFromFloat(rate), 0)
+				if remainder.IsPositive() {
+					whole = whole.Add(decimal.NewFromInt(1))
+				}
+				quotaAmount = whole
+			}
+			requiredQuota, err = common.WalletQuotaFromDecimalStrict(quotaAmount.Ceil())
+			if err != nil {
+				return err
+			}
+			payload, err := common.Marshal(map[string]any{
+				"charged_quota": requiredQuota, "cash_amount": order.Money,
+				"cash_currency": plan.Currency, "cash_per_usd": rate,
+			})
+			if err != nil {
+				return err
+			}
+			balancePayload = string(payload)
+		} else {
+			requiredQuota, err = calcSubscriptionBalanceQuota(order.Money)
+			if err != nil {
+				return err
+			}
+			balancePayload = fmt.Sprintf("charged_quota=%d", requiredQuota)
 		}
 
 		var user User
@@ -1626,7 +1874,7 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 			}
 		}
 
-		order.ProviderPayload = fmt.Sprintf("charged_quota=%d", requiredQuota)
+		order.ProviderPayload = balancePayload
 		var subscription *UserSubscription
 		if order.OrderType == SubscriptionOrderTypeUpgrade {
 			subscription, err = upgradeMonthlySubscriptionTx(tx, order, plan)

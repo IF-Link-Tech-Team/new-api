@@ -80,8 +80,8 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.Log{}, &model.Channel{}, &model.Ability{},
-		&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.BillingRefund{},
-		&model.ProductPrice{}, &model.ProductTemplate{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
+		&model.SubscriptionPlan{}, &model.SubscriptionOrder{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.BillingRefund{},
+		&model.ProductPrice{}, &model.PriceBookPrice{}, &model.ProductTemplate{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
 		&model.SubscriptionKeyBinding{},
 	))
 	require.NoError(t, model.EnsureEntitlementKeyUniqueIndex())
@@ -142,6 +142,7 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, bootstrap.Listed, "the isolated-test product must stay hidden")
 	require.Equal(t, model.WalletDeepSeekPriceVersion, bootstrap.WalletPriceVersion)
+	require.NoError(t, model.BackfillProductPriceBooks(db))
 
 	classroomUser := model.User{Username: "classroom-e2e", AffCode: "classroom-e2e-aff", Status: common.UserStatusEnabled, Group: "default", Quota: 1_000_000}
 	walletUser := model.User{Username: "wallet-e2e", AffCode: "wallet-e2e-aff", Status: common.UserStatusEnabled, Group: "default"}

@@ -17,17 +17,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Plus } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 
+import { ProductCompensationDialog } from './product-compensation-dialog'
 import { useSubscriptions } from './subscriptions-provider'
 
 export function SubscriptionsPrimaryButtons() {
   const { t } = useTranslation()
   const { setOpen, complianceConfirmed } = useSubscriptions()
+  const [compensationOpen, setCompensationOpen] = useState(false)
   return (
-    <div className='flex gap-2'>
+    <div className='flex flex-wrap gap-2'>
+      <Button
+        size='sm'
+        variant='outline'
+        onClick={() => setCompensationOpen(true)}
+      >
+        {t('Payments awaiting compensation')}
+      </Button>
+      <ProductCompensationDialog
+        open={compensationOpen}
+        onOpenChange={setCompensationOpen}
+      />
       <Button
         size='sm'
         onClick={() => setOpen('create')}
