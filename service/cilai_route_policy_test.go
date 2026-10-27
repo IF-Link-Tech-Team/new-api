@@ -160,6 +160,50 @@ func TestResolveChannelSelectionPolicyUsesProductPriceBookSnapshot(t *testing.T)
 	require.ErrorContains(t, err, "unavailable")
 }
 
+func TestProductChannelRatesNoFallbackRejectsPinnedBackup(t *testing.T) {
+	truncate(t)
+	t.Setenv("IFLINK_API_CHANNEL_PRICING", "enabled")
+	require.NoError(t, model.DB.AutoMigrate(&model.PriceBookPrice{}, &model.APIChannelPrice{}, &model.APIChannelCatalog{}, &model.Channel{}, &model.Ability{}))
+	oldMemory := common.MemoryCacheEnabled
+	common.MemoryCacheEnabled = false
+	t.Cleanup(func() { common.MemoryCacheEnabled = oldMemory })
+	require.NoError(t, model.InitializeAPIChannelCatalog(model.DB))
+	for _, id := range []int{981, 982} {
+		channel := model.Channel{Id: id, Name: "no-fallback upstream", Key: "synthetic-key", Models: "no-fallback-model", Group: "default", Status: common.ChannelStatusEnabled}
+		require.NoError(t, model.DB.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(model.DB))
+	}
+	position0, position1 := 0, 1
+	prices := []model.APIChannelPrice{
+		{Model: "no-fallback-model", ChannelID: 981, UpstreamModel: "no-fallback-model", SellingPrice: `{"input":1,"cached_input":0,"cache_creation":0,"output":1}`, Enabled: true, Position: &position0},
+		{Model: "no-fallback-model", ChannelID: 982, UpstreamModel: "no-fallback-model", SellingPrice: `{"input":1,"cached_input":0,"cache_creation":0,"output":1}`, Enabled: true, Position: &position1},
+	}
+	_, err := model.PublishAPIChannelPrices(model.DB, 0, prices, 1, "route fixture")
+	require.NoError(t, err)
+	price := model.PriceBookPrice{
+		PriceBook: "product:991", Model: "no-fallback-model", PriceVersion: "no-fallback-v1", RouteMode: model.ProductRouteOrdered,
+		OfficialReferencePrice: `{"input":1,"cached_input":0,"cache_creation":0,"output":1}`, UserSellingPrice: `{"input":1,"cached_input":0,"cache_creation":0,"output":1}`,
+		UpstreamSettlementPrice: `{"input":0.5,"cached_input":0,"cache_creation":0,"output":0.5}`, BillingExpression: `tier("base", p + c)`, BillingMultiplier: 1,
+		ChannelRates:    `[{"channel_id":981,"multiplier":1,"position":0},{"channel_id":982,"multiplier":1,"position":1}]`,
+		AllowedChannels: `[981,982]`, MaxUpstreamCost: `{"input":1,"cached_input":0,"cache_creation":0,"output":1}`, FallbackAllowed: false, Enabled: true,
+	}
+	require.NoError(t, model.DB.Create(&price).Error)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	common.SetContextKey(ctx, constant.ContextKeyTokenProductType, model.ProductTypePackK3)
+	common.SetContextKey(ctx, constant.ContextKeyTokenUserSubscriptionId, 77)
+	common.SetContextKey(ctx, constant.ContextKeyTokenPriceBook, price.PriceBook)
+	common.SetContextKey(ctx, constant.ContextKeyTokenPriceVersion, price.PriceVersion)
+	policy, err := ResolveChannelSelectionPolicy(ctx, price.Model)
+	require.NoError(t, err)
+	assert.Equal(t, map[int]struct{}{981: {}}, policy.AllowedChannelIds)
+	GetChannelConstraints(ctx).AddPin(dto.ChannelPin{ChannelId: 982, Source: dto.PinSourceToken})
+	selected, _, failure := SelectChannelForRequest(ctx, price.Model, &RetryParam{Ctx: ctx, ModelName: price.Model, TokenGroup: "default"})
+	require.Nil(t, selected)
+	require.NotNil(t, failure)
+	assert.Equal(t, "product_route_policy_rejected", failure.Message)
+}
+
 func TestOrderedProductRoutingUsesFrozenVersionAndAttemptTrail(t *testing.T) {
 	truncate(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.PriceBookPrice{}, &model.Channel{}, &model.Ability{}))

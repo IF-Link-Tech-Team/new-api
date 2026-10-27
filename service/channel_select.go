@@ -135,6 +135,11 @@ func ResolveChannelSelectionPolicy(ctx *gin.Context, modelName string) (*model.C
 				}
 			}
 			ordered = filtered
+			if !productPrice.FallbackAllowed && len(ordered) > 0 {
+				primary := ordered[0]
+				allowed = map[int]struct{}{primary: {}}
+				ordered = ordered[:1]
+			}
 			return &model.ChannelSelectionPolicy{AllowedChannelIds: allowed, OrderedChannelIds: ordered, FallbackAllowed: productPrice.FallbackAllowed, PreserveGroup: false, ProductType: common.GetContextKeyString(ctx, constant.ContextKeyTokenProductType)}, nil
 		}
 		legacy, err = resolveLegacyChannelSelectionPolicy(ctx, modelName)
