@@ -28,6 +28,10 @@ import { afterEach, expect, test } from 'vitest'
 import { HtmlContent } from '@/components/html-content'
 import { consumePaymentSelection } from '@/features/payment-display/lib/payment-trigger'
 import { api } from '@/lib/api'
+import {
+  useSystemConfigStore,
+  DEFAULT_CURRENCY_CONFIG,
+} from '@/stores/system-config-store'
 
 import { LandingStorefront } from '../landing-storefront'
 
@@ -136,6 +140,9 @@ async function mount() {
 }
 
 function setUp() {
+  useSystemConfigStore
+    .getState()
+    .setConfig({ currency: { ...DEFAULT_CURRENCY_CONFIG, usdExchangeRate: 1 } })
   requests = []
   clicks = []
   api.defaults.adapter = async (config) => {
@@ -184,22 +191,22 @@ test('anonymous visitors get live plan cards and disabled preview drafts', async
   const image = zoneCard.querySelector('img')
   assert.equal(image?.getAttribute('src'), '/branding/bigfish-lite.webp')
   assert.equal(image?.getAttribute('alt'), '大肥鱼 Lite')
-  assert.match(zoneCard.textContent || '', /¥9\.90/)
+  assert.match(zoneCard.textContent || '', /¥9\.9/)
   assert.match(zoneCard.textContent || '', /19,800/)
   const disabled = zoneCard.querySelector('button[disabled]')
   assert.ok(disabled)
-  assert.equal(disabled.textContent, '暂未开售')
+  assert.equal(disabled.textContent, 'Not on sale yet')
   assert.equal(
     zoneCard.querySelector('a[data-payment-product-id]'),
     null,
     'preview drafts must not expose a checkout link'
   )
 
-  // No traffic-pack mounts matched: the packs container stays empty because
-  // the only package entry is zone-scoped.
+  // No traffic-pack mounts matched; show the catalog empty state.
   const packsMount = shadow.querySelector('[data-storefront="packs"]')
   assert.ok(packsMount)
-  assert.equal(packsMount.children.length, 0)
+  assert.equal(packsMount.querySelector('.pack-card'), null)
+  assert.match(packsMount.textContent || '', /No products available/)
 })
 
 test('a shadow portal buy click starts checkout once and a later click still works', async () => {
@@ -245,4 +252,53 @@ test('catalog failure leaves mounts empty instead of rendering stale cards', asy
   assert.deepEqual(requests, ['/api/subscription/public/catalog'])
   assert.equal(shadow.querySelector('.plan-card'), null)
   assert.equal(shadow.querySelector('.bigfish-pack-card'), null)
+})
+
+test('listed bigfish uses the same checkout trigger and its quota comes from the grant, not the price', async () => {
+  setUp()
+  api.defaults.adapter = async (config) => ({
+    config,
+    status: 200,
+    statusText: 'OK',
+    headers: {},
+    data: {
+      ...catalogResponse,
+      data: [
+        {
+          ...catalogResponse.data[1],
+          enabled: true,
+          preview: false,
+          total_amount: 1000000,
+          model_scope: 'new-live-model',
+          max_purchase_per_user: 1,
+          display_metadata: {
+            ...catalogResponse.data[1].display_metadata,
+            button_label: 'Buy Now',
+            models_display: 'obsolete-model',
+          },
+        },
+      ],
+    },
+  })
+  const shadow = await mount()
+  const card = shadow.querySelector('.bigfish-pack-card')
+  assert.ok(card)
+  assert.match(card.textContent || '', /4,000/)
+  assert.doesNotMatch(
+    card.querySelector('dl')?.textContent || '',
+    /19,800|obsolete-model/
+  )
+  assert.match(card.textContent || '', /new-live-model/)
+  const buy = card.querySelector('a[data-payment-product-id]')
+  assert.ok(buy)
+  await act(async () =>
+    buy.dispatchEvent(
+      new MouseEvent('click', {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+    )
+  )
+  assert.deepEqual(clicks, ['deepseek-bigfish-lite-20261017'])
 })

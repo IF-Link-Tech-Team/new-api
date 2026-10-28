@@ -14,6 +14,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
@@ -22,12 +23,34 @@ func setupStorefrontCatalogTest(t *testing.T) *gin.Engine {
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousRedis := common.RedisEnabled
 	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+	// Initialize the shared identifier quoting through the native connection
+	// path, then use the existing disposable test connection below.
+	originalMaster, originalSQLitePath := common.IsMasterNode, common.SQLitePath
+	common.IsMasterNode = false
+	common.SQLitePath = "file:storefront_column_init?mode=memory&cache=shared"
+	dsn := os.Getenv("CILAI_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		dsn = os.Getenv("CILAI_TEST_MYSQL_DSN")
+	}
+	if dsn == "" {
+		dsn = "local"
+	}
+	t.Setenv("SQL_DSN", dsn)
+	require.NoError(t, model.InitDB())
+	initDB, err := model.DB.DB()
+	require.NoError(t, err)
+	require.NoError(t, initDB.Close())
+	common.IsMasterNode, common.SQLitePath = originalMaster, originalSQLitePath
+	model.DB, model.LOG_DB = previousDB, previousLogDB
 	var db *gorm.DB
-	var err error
 	if dsn := os.Getenv("CILAI_TEST_POSTGRES_DSN"); dsn != "" {
 		db, err = testutil.OpenPostgres(dsn)
 		require.NoError(t, err)
 		common.SetDatabaseTypes(common.DatabaseTypePostgreSQL, common.DatabaseTypePostgreSQL)
+	} else if dsn := os.Getenv("CILAI_TEST_MYSQL_DSN"); dsn != "" {
+		db, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
+		require.NoError(t, err)
+		common.SetDatabaseTypes(common.DatabaseTypeMySQL, common.DatabaseTypeMySQL)
 	} else {
 		db, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 		require.NoError(t, err)
@@ -60,7 +83,7 @@ func setupStorefrontCatalogTest(t *testing.T) *gin.Engine {
 		model.InvalidateSubscriptionPlanCache(1)
 	})
 	require.NoError(t, db.AutoMigrate(&model.SubscriptionPlan{}))
-	if os.Getenv("CILAI_TEST_POSTGRES_DSN") != "" {
+	if os.Getenv("CILAI_TEST_POSTGRES_DSN") != "" || os.Getenv("CILAI_TEST_MYSQL_DSN") != "" {
 		t.Cleanup(func() {
 			require.NoError(t, db.Exec("DELETE FROM subscription_plans").Error)
 		})
@@ -330,4 +353,55 @@ func TestStorefrontCatalogRejectsMalformedDisplayMetadataOnAdminWrite(t *testing
 	require.Error(t, normalizeAdminSubscriptionPlan(&plan))
 	plan.DisplayMetadata = `{"preview":true}`
 	require.NoError(t, normalizeAdminSubscriptionPlan(&plan))
+}
+
+func TestStorefrontListedSaleOverridesHistoricalPreview(t *testing.T) {
+	router := setupStorefrontCatalogTest(t)
+	createStorefrontCatalogPlan(t, model.SubscriptionPlan{
+		Title: "Live fish", ProductCode: "fish", Enabled: true, Listed: true,
+		MaxPurchasePerUser: 1, QuotaResetPeriod: "daily",
+		DisplayMetadata: `{"preview":true}`,
+	})
+	_, body := requestStorefrontCatalog(t, router)
+	items := decodeStorefrontCatalog(t, body)
+	require.Len(t, items, 1)
+	assert.Equal(t, true, items[0]["enabled"])
+	assert.Equal(t, false, items[0]["preview"], "a listed product is not a display-only draft")
+	assert.Equal(t, float64(1), items[0]["max_purchase_per_user"])
+	assert.Equal(t, "daily", items[0]["quota_reset_period"])
+}
+
+func TestStorefrontModelsOnlyExposePublicLiveSalesAndNativeMetadata(t *testing.T) {
+	initModelListColumnNames(t)
+	router := setupStorefrontCatalogTest(t)
+	t.Setenv("IFLINK_API_CHANNEL_PRICING", "enabled")
+	require.NoError(t, model.DB.AutoMigrate(&model.APIChannelCatalog{}, &model.APIChannelPrice{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
+	require.NoError(t, model.InitializeAPIChannelCatalog(model.DB))
+	require.NoError(t, model.DB.Model(&model.APIChannelCatalog{}).Where("id = ?", 1).Update("revision", 1).Error)
+	channel := model.Channel{Id: 71, Type: 1, Name: "private channel name", Models: "live-model,unpriced-model,disabled-model,hidden-model", Group: "default", Status: common.ChannelStatusEnabled, Key: "private-upstream-key"}
+	require.NoError(t, model.DB.Create(&channel).Error)
+	require.NoError(t, channel.AddAbilities(nil))
+	for _, name := range []string{"live-model", "disabled-model", "hidden-model"} {
+		require.NoError(t, model.DB.Create(&model.APIChannelPrice{Revision: 1, Model: name, ChannelID: 71, UpstreamModel: name, Enabled: name != "disabled-model", SellingPrice: `{"input":12345}`}).Error)
+	}
+	require.NoError(t, model.DB.Create(&model.Model{ModelName: "live-model", Status: 1, Description: "Backend description"}).Error)
+	require.NoError(t, model.DB.Create(&model.Model{ModelName: "hidden-model", Status: 1}).Error)
+	require.NoError(t, model.DB.Model(&model.Model{}).Where("model_name = ?", "hidden-model").Update("status", 0).Error)
+	model.InvalidatePricingCache()
+	t.Cleanup(model.InvalidatePricingCache)
+	router.GET("/api/subscription/public/models", middleware.HeaderNavModulePublic("pricing"), GetSubscriptionPublicModels)
+	request := func() []map[string]any {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/subscription/public/models", nil))
+		require.Equal(t, http.StatusOK, recorder.Code)
+		return decodeStorefrontCatalog(t, recorder.Body.Bytes())
+	}
+	items := request()
+	require.Equal(t, []map[string]any{{"model_name": "live-model", "description": "Backend description"}}, items)
+	require.NoError(t, model.DB.Model(&model.APIChannelPrice{}).Where("model = ?", "live-model").Update("enabled", false).Error)
+	require.Empty(t, request(), "disabling a sale disappears from the public model projection")
+	t.Setenv("IFLINK_API_CHANNEL_PRICING", "invalid")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/subscription/public/models", nil))
+	assert.Contains(t, recorder.Body.String(), `"success":false`)
 }

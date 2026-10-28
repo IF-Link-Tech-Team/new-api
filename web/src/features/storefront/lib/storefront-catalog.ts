@@ -109,6 +109,18 @@ export function normalizeStorefrontCatalog(
         duration_value:
           typeof entry.duration_value === 'number' ? entry.duration_value : 1,
         total_amount: entry.total_amount,
+        custom_seconds:
+          typeof entry.custom_seconds === 'number' ? entry.custom_seconds : 0,
+        max_purchase_per_user:
+          typeof entry.max_purchase_per_user === 'number'
+            ? entry.max_purchase_per_user
+            : 0,
+        quota_reset_period:
+          asNonEmptyString(entry.quota_reset_period) ?? 'never',
+        quota_reset_custom_seconds:
+          typeof entry.quota_reset_custom_seconds === 'number'
+            ? entry.quota_reset_custom_seconds
+            : 0,
         category: asNonEmptyString(entry.category) ?? 'package',
         sort_order: typeof entry.sort_order === 'number' ? entry.sort_order : 0,
         model_scope:

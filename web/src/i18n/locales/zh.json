@@ -2946,7 +2946,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "相关项目",
     "footer.defaultCopyright": "版权所有。",
-    "footer.new\u0061pi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
+    "footer.newapi.projectAttributionSuffix": "版权所有，由项目贡献者设计与开发。",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "高级自定义渠道仅对 /v1/responses 且不做协议转换的路由生效。",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "对于 2025 年 5 月 10 日之后添加的渠道，在部署时无需从模型名称中移除 \".\"",
     "For private deployments, format: https://fastgpt.run/api/openapi": "对于私有部署，格式为：https://fastgpt.run/api/openapi",
@@ -7697,6 +7697,20 @@
     "Zhipu": "智谱",
     "Zhipu GLM": "智谱GLM",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Products are temporarily unavailable": "商品暂时无法加载，请稍后重试",
+    "Models are temporarily unavailable": "模型暂时无法加载，请稍后重试",
+    "No products available": "暂无上架商品",
+    "Quota reset": "额度重置",
+    "Purchase limit": "限购",
+    "No quota reset": "不重置",
+    "Daily quota reset": "每天重置",
+    "Weekly quota reset": "每周重置",
+    "Monthly quota reset": "每月重置",
+    "Custom quota reset": "自定义周期重置",
+    "Quota resets every {{count}} seconds": "每 {{count}} 秒重置",
+    "Up to {{count}} purchases per account": "每账号限购 {{count}} 次",
+    "{{count}} seconds": "{{count}} 秒",
+    "One-time": "一次性"
   }
 }

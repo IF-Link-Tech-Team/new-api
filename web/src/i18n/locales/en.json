@@ -2946,7 +2946,7 @@
     "footer.columns.related.links.oneApi": "One API",
     "footer.columns.related.title": "Related Projects",
     "footer.defaultCopyright": "All rights reserved.",
-    "footer.new\u0061pi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
+    "footer.newapi.projectAttributionSuffix": "All rights reserved. Designed and developed by the project contributors.",
     "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.": "For advanced custom channels this applies only to /v1/responses routes without protocol conversion.",
     "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment": "For channels added after May 10, 2025, no need to remove \".\" from model names during deployment",
     "For private deployments, format: https://fastgpt.run/api/openapi": "For private deployments, format: https://fastgpt.run/api/openapi",
@@ -7697,6 +7697,20 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Products are temporarily unavailable": "Products are temporarily unavailable",
+    "Models are temporarily unavailable": "Models are temporarily unavailable",
+    "No products available": "No products available",
+    "Quota reset": "Quota reset",
+    "Purchase limit": "Purchase limit",
+    "No quota reset": "No quota reset",
+    "Daily quota reset": "Daily quota reset",
+    "Weekly quota reset": "Weekly quota reset",
+    "Monthly quota reset": "Monthly quota reset",
+    "Custom quota reset": "Custom quota reset",
+    "Quota resets every {{count}} seconds": "Quota resets every {{count}} seconds",
+    "Up to {{count}} purchases per account": "Up to {{count}} purchases per account",
+    "{{count}} seconds": "{{count}} seconds",
+    "One-time": "One-time"
   }
 }

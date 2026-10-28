@@ -190,6 +190,7 @@ func SetApiRouter(router *gin.Engine) {
 		// Anonymous landing-page storefront catalog: trimmed DTO, follows the
 		// pricing module's header-nav visibility toggle.
 		apiRouter.GET("/subscription/public/catalog", middleware.HeaderNavModulePublic("pricing"), controller.GetSubscriptionPublicCatalog)
+		apiRouter.GET("/subscription/public/models", middleware.HeaderNavModulePublic("pricing"), controller.GetSubscriptionPublicModels)
 		subscriptionRoute := apiRouter.Group("/subscription")
 		subscriptionRoute.Use(middleware.UserAuth())
 		{

@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 interface StorefrontCatalogResponse {
   success: boolean
@@ -28,4 +29,18 @@ interface StorefrontCatalogResponse {
 export async function getStorefrontCatalog(): Promise<StorefrontCatalogResponse> {
   const res = await api.get('/api/subscription/public/catalog')
   return res.data
+}
+
+export interface StorefrontModel {
+  model_name: string
+  description: string
+}
+
+export async function getStorefrontModels(): Promise<StorefrontModel[]> {
+  const res = await api.get<{
+    success: boolean
+    message?: string
+    data: StorefrontModel[]
+  }>('/api/subscription/public/models')
+  return requireServerSuccess(res.data).data
 }

@@ -21,8 +21,10 @@ import { useEffect, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
 import { buildCheckoutPath } from '@/features/checkout/lib/checkout-path'
-import { cnyToComputePoints, formatComputePoints } from '@/lib/compute-points'
+import { formatQuotaAsComputePoints } from '@/lib/compute-points'
+import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import { getStorefrontCatalog } from '../api'
 import {
@@ -71,16 +73,82 @@ function StorefrontAction(props: {
     )
   }
   return (
-    <button className={props.idleClassName} type='button' disabled>
-      {label ?? t('Not on sale yet')}
-    </button>
+    <Button className={props.idleClassName} type='button' disabled>
+      {t('Not on sale yet')}
+    </Button>
+  )
+}
+
+function StorefrontProductFacts(props: { item: StorefrontCatalogItem }) {
+  const { t } = useTranslation()
+  useSystemConfigStore((state) => state.config.currency)
+  const item = props.item
+  const models = item.model_scope
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean)
+  let validity = formatStorefrontValidity(
+    item.duration_unit,
+    item.duration_value
+  )
+  if (item.duration_unit === 'custom' && item.custom_seconds) {
+    validity = t('{{count}} seconds', { count: item.custom_seconds })
+  }
+  const resets: Record<string, string> = {
+    never: 'No quota reset',
+    daily: 'Daily quota reset',
+    weekly: 'Weekly quota reset',
+    monthly: 'Monthly quota reset',
+  }
+  let reset = t(
+    resets[item.quota_reset_period || 'never'] || 'Custom quota reset'
+  )
+  if (item.quota_reset_period === 'custom' && item.quota_reset_custom_seconds) {
+    reset = t('Quota resets every {{count}} seconds', {
+      count: item.quota_reset_custom_seconds,
+    })
+  }
+  return (
+    <dl className='pack-facts'>
+      <div>
+        <dt>{t('Quota')}</dt>
+        <dd>
+          {item.total_amount === 0
+            ? t('Unlimited')
+            : formatQuotaAsComputePoints(item.total_amount)}
+        </dd>
+      </div>
+      {validity && (
+        <div>
+          <dt>{t('Validity')}</dt>
+          <dd>{validity}</dd>
+        </div>
+      )}
+      <div>
+        <dt>{t('Supported models')}</dt>
+        <dd>{models.length ? models.join(' / ') : t('All models')}</dd>
+      </div>
+      <div>
+        <dt>{t('Quota reset')}</dt>
+        <dd>{reset}</dd>
+      </div>
+      <div>
+        <dt>{t('Purchase limit')}</dt>
+        <dd>
+          {item.max_purchase_per_user
+            ? t('Up to {{count}} purchases per account', {
+                count: item.max_purchase_per_user,
+              })
+            : t('Unlimited')}
+        </dd>
+      </div>
+    </dl>
   )
 }
 
 function StorefrontPlanCard(props: { item: StorefrontCatalogItem }) {
   const item = props.item
   const metadata = item.display_metadata
-  const benefits = metadata.benefits ?? []
   return (
     <article
       className={
@@ -98,13 +166,7 @@ function StorefrontPlanCard(props: { item: StorefrontCatalogItem }) {
           {formatStorefrontPeriod(item.duration_unit, item.duration_value)}
         </span>
       </p>
-      {benefits.length > 0 && (
-        <ul className='benefit-list'>
-          {benefits.map((benefit) => (
-            <li key={benefit}>{benefit}</li>
-          ))}
-        </ul>
-      )}
+      <StorefrontProductFacts item={item} />
       <StorefrontAction
         item={item}
         activeClassName='purchase-button purchase-button--active'
@@ -117,16 +179,6 @@ function StorefrontPlanCard(props: { item: StorefrontCatalogItem }) {
 function StorefrontPackCard(props: { item: StorefrontCatalogItem }) {
   const item = props.item
   const metadata = item.display_metadata
-  const points =
-    item.currency.toUpperCase() === 'CNY'
-      ? formatComputePoints(cnyToComputePoints(item.price_amount))
-      : ''
-  const validity = formatStorefrontValidity(
-    item.duration_unit,
-    item.duration_value
-  )
-  const models =
-    metadata.models_display ?? item.model_scope.split(',').join(' / ')
   return (
     <article
       className={
@@ -136,26 +188,7 @@ function StorefrontPackCard(props: { item: StorefrontCatalogItem }) {
       <StorefrontBadges item={item} />
       <h3>{item.title}</h3>
       <p className='card-description'>{item.subtitle}</p>
-      <dl className='pack-facts'>
-        {points && (
-          <div>
-            <dt>额度</dt>
-            <dd>{points}</dd>
-          </div>
-        )}
-        {validity && (
-          <div>
-            <dt>有效期</dt>
-            <dd>{validity}</dd>
-          </div>
-        )}
-        {models && (
-          <div>
-            <dt>适用模型</dt>
-            <dd>{models}</dd>
-          </div>
-        )}
-      </dl>
+      <StorefrontProductFacts item={item} />
       <div className='pack-price'>
         <strong>
           {formatStorefrontPrice(item.price_amount, item.currency)}
@@ -172,18 +205,10 @@ function StorefrontPackCard(props: { item: StorefrontCatalogItem }) {
 }
 
 function StorefrontZonePackCard(props: { item: StorefrontCatalogItem }) {
+  const { t } = useTranslation()
   const item = props.item
   const metadata = item.display_metadata
-  const points =
-    item.currency.toUpperCase() === 'CNY'
-      ? formatComputePoints(cnyToComputePoints(item.price_amount))
-      : ''
-  const validity = formatStorefrontValidity(
-    item.duration_unit,
-    item.duration_value
-  )
-  const tier = item.title.trim().split(/\s+/).pop() ?? item.title
-  const price = `¥${item.price_amount.toFixed(2)}`
+  const price = formatStorefrontPrice(item.price_amount, item.currency)
   return (
     <article className='bigfish-pack-card' data-bigfish-pack={item.product_id}>
       {metadata.image && (
@@ -201,25 +226,17 @@ function StorefrontZonePackCard(props: { item: StorefrontCatalogItem }) {
       <h4>{item.title}</h4>
       <p className='bigfish-pack-price'>
         {price}
-        <span> / 一次性</span>
+        <span> / {t('One-time')}</span>
       </p>
-      {points && (
-        <p className='bigfish-pack-quota'>
-          {points.split(' ')[0]} <span>算力点</span>
-        </p>
-      )}
-      <p className='bigfish-pack-meta'>
-        {validity ? `${validity}有效 · 独立专属 Key` : '独立专属 Key'}
-      </p>
+      <p className='card-description'>{item.subtitle}</p>
+      <StorefrontProductFacts item={item} />
       <StorefrontAction
         item={item}
         activeClassName='iflink-button starter-purchase bigfish-purchase'
         idleClassName='iflink-button starter-purchase bigfish-purchase'
         label={
           metadata.button_label ??
-          (isStorefrontItemPurchasable(item)
-            ? `购买 ${tier} · ${price}`
-            : undefined)
+          (isStorefrontItemPurchasable(item) ? t('Buy Now') : undefined)
         }
       />
     </article>
@@ -255,6 +272,7 @@ export function LandingStorefront(props: {
   containerRef: RefObject<HTMLDivElement | null>
   content: string
 }) {
+  const { t } = useTranslation()
   const [mounts, setMounts] = useState<StorefrontMount[]>([])
 
   useEffect(() => {
@@ -277,15 +295,21 @@ export function LandingStorefront(props: {
     },
     enabled: mounts.length > 0,
     retry: false,
-    staleTime: 60_000,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   })
 
   const items = catalog.data ?? []
-  return mounts.map((mount, index) =>
-    createPortal(
-      storefrontCards(mount, items),
+  return mounts.map((mount, index) => {
+    const cards = storefrontCards(mount, items)
+    let status = ''
+    if (catalog.isError) status = t('Products are temporarily unavailable')
+    else if (catalog.isPending) status = t('Loading...')
+    else if (cards.length === 0) status = t('No products available')
+    return createPortal(
+      status ? <p role='status'>{status}</p> : cards,
       mount.element,
       `${mount.kind}-${mount.zone ?? ''}-${index}`
     )
-  )
+  })
 }
