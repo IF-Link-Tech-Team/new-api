@@ -46,6 +46,10 @@ export interface StorefrontCatalogItem {
   currency: string
   duration_unit: string
   duration_value: number
+  custom_seconds?: number
+  max_purchase_per_user?: number
+  quota_reset_period?: string
+  quota_reset_custom_seconds?: number
   total_amount: number
   category: string
   sort_order: number
