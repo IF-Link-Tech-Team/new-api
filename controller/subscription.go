@@ -45,7 +45,25 @@ func subscriptionBillingMultipliers(productType string, priceBook string, modelS
 		if priceBook != "" {
 			price, err := model.ResolvePriceBookPrice(model.DB, priceBook, modelName, priceVersion)
 			if err == nil && price != nil {
-				result[modelName] = price.BillingMultiplier
+				if price.ChannelRates == "" {
+					result[modelName] = price.BillingMultiplier
+					continue
+				}
+				rates, err := price.ProductChannelRates()
+				if err != nil || len(rates) == 0 {
+					continue
+				}
+				multiplier := rates[0].Multiplier
+				sameRate := true
+				for _, rate := range rates[1:] {
+					if rate.Multiplier != multiplier {
+						sameRate = false
+						break
+					}
+				}
+				if sameRate {
+					result[modelName] = multiplier
+				}
 			}
 		} else {
 			price, err := model.GetProductPriceSnapshot(productType, modelName, priceVersion)
