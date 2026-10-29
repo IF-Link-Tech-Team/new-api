@@ -14,6 +14,7 @@ import (
 )
 
 func TestChannelDefaultBaseURLsRequireReadPermission(t *testing.T) {
+	assertChannelRoutePermission(t, http.MethodGet, "/:id/cost-history", authz.ChannelRead, controller.GetChannelCostHistory)
 	assertChannelRoutePermission(t, http.MethodGet, "/default_base_urls", authz.ChannelRead, controller.GetChannelDefaultBaseURLs)
 
 	gin.SetMode(gin.TestMode)

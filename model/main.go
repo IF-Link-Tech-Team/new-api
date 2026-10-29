@@ -350,6 +350,7 @@ func migrateDB() error {
 
 	err := DB.AutoMigrate(
 		&Channel{},
+		&ChannelCostVersion{},
 		&Token{},
 		&User{},
 		&UserSession{},
@@ -400,6 +401,9 @@ func migrateDB() error {
 		&UserAccessToken{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := InitializeChannelCostHistory(DB); err != nil {
 		return err
 	}
 	if err := InitializeAPIChannelCatalog(DB); err != nil {

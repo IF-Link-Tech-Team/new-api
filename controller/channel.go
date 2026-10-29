@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -526,11 +527,135 @@ func GetChannelKey(c *gin.Context) {
 const maxTaskExtendPluginKeys = 32
 
 // validateChannel 通用的渠道校验函数
+// Validate the reference rates and the explicit Shanghai weekly peak schedule.
+func validateUpstreamCosts(raw string) error {
+	invalid := func() error { return common.NewMessage("Invalid upstream cost configuration") }
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	if len(raw) > 1024*1024 {
+		return invalid()
+	}
+	var costs map[string]map[string]any
+	if err := common.UnmarshalJsonStr(raw, &costs); err != nil || costs == nil {
+		return invalid()
+	}
+	for name, prices := range costs {
+		if strings.TrimSpace(name) == "" || prices == nil {
+			return invalid()
+		}
+		if !validProcurementRates(prices, true) {
+			return invalid()
+		}
+		if currency, exists := prices["currency"]; exists && currency != "CNY" && currency != "USD" {
+			return invalid()
+		}
+		if value, exists := prices["peak"]; exists {
+			peak, ok := value.(map[string]any)
+			if !ok {
+				return invalid()
+			}
+			rates, ok := peak["prices"].(map[string]any)
+			if !ok || !validProcurementRates(rates, false) {
+				return invalid()
+			}
+			days, ok := peak["weekdays"].([]any)
+			if !ok || len(days) == 0 || len(days) > 7 {
+				return invalid()
+			}
+			for _, d := range days {
+				n, ok := d.(float64)
+				if !ok || n < 1 || n > 7 || n != math.Trunc(n) {
+					return invalid()
+				}
+			}
+			windows, ok := peak["windows"].([]any)
+			if !ok || len(windows) == 0 || len(windows) > 24 {
+				return invalid()
+			}
+			for _, w := range windows {
+				value, ok := w.(string)
+				if !ok {
+					return invalid()
+				}
+				low, high, ok := strings.Cut(value, "-")
+				if !ok {
+					return invalid()
+				}
+				start, e1 := time.Parse("15:04", low)
+				end, e2 := time.Parse("15:04", high)
+				if e1 != nil || e2 != nil || !start.Before(end) {
+					return invalid()
+				}
+			}
+			if value, exists := peak["offpeak_dates"]; exists {
+				dates, ok := value.([]any)
+				if !ok || len(dates) > 400 {
+					return invalid()
+				}
+				for _, date := range dates {
+					text, ok := date.(string)
+					if !ok {
+						return invalid()
+					}
+					if _, err := time.Parse("2006-01-02", text); err != nil {
+						return invalid()
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validProcurementRates(prices map[string]any, legacy bool) bool {
+	for _, field := range []string{"input", "cached_input", "cache_creation", "output"} {
+		value, exists := prices[field]
+		if legacy && !exists && (field == "cached_input" || field == "cache_creation") {
+			continue
+		}
+		number, ok := value.(float64)
+		if !ok || number < 0 || math.IsNaN(number) || math.IsInf(number, 0) {
+			return false
+		}
+	}
+	return true
+}
+
+// No keys or user identities are included in price history. Access uses the
+// same channel permission as the current procurement configuration.
+func GetChannelCostHistory(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	before, _ := strconv.ParseInt(c.Query("before"), 10, 64)
+	rows := make([]model.ChannelCostVersion, 0)
+	query := model.DB.Where("channel_id = ?", id)
+	if before > 0 {
+		query = query.Where("id < ?", before)
+	}
+	if err := query.Order("id DESC").Limit(51).Find(&rows).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var next int64
+	if len(rows) > 50 {
+		rows = rows[:50]
+		next = rows[len(rows)-1].ID
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"items": rows, "next_id": next}})
+}
+
 func validateChannel(channel *model.Channel, isAdd bool) error {
 	if channel == nil {
 		return fmt.Errorf("channel cannot be empty")
 	}
 
+	if err := validateUpstreamCosts(channel.UpstreamCosts); err != nil {
+		return err
+	}
 	// 校验 channel settings
 	if err := channel.ValidateSettings(); err != nil {
 		return common.NewMessage("Invalid channel settings format: {{error}}", map[string]any{"error": err.Error()})
@@ -759,6 +884,10 @@ func AddChannel(c *gin.Context) {
 	}
 
 	addChannelRequest.Channel.CreatedTime = common.GetTimestamp()
+	if addChannelRequest.Channel.UpstreamCosts != "" && addChannelRequest.Channel.UpstreamCosts != "{}" {
+		addChannelRequest.Channel.CostVerifiedAt = common.GetTimestamp()
+		addChannelRequest.Channel.CostVerifiedBy = c.GetInt("id")
+	}
 	keys := make([]string, 0)
 	switch addChannelRequest.Mode {
 	case "multi_to_single":
@@ -1051,6 +1180,7 @@ func DeleteChannelBatch(c *gin.Context) {
 }
 
 type PatchChannel struct {
+	ExpectedUpstreamCosts *string `json:"expected_upstream_costs"`
 	model.Channel
 	MultiKeyMode *string `json:"multi_key_mode"`
 	KeyMode      *string `json:"key_mode"` // 多key模式下密钥覆盖或者追加
@@ -1227,7 +1357,16 @@ func UpdateChannel(c *gin.Context) {
 		channel.CostVerifiedAt = common.GetTimestamp()
 		channel.CostVerifiedBy = c.GetInt("id")
 	}
-	err = channel.Update()
+	var expectedCosts []string
+	if _, provided := requestData["upstream_costs"]; provided {
+		// The permission comparison above used this version too. Guard it even
+		// for old API clients so a concurrent change cannot bypass authorization.
+		expectedCosts = []string{originChannel.UpstreamCosts}
+	}
+	if channel.ExpectedUpstreamCosts != nil {
+		expectedCosts = []string{*channel.ExpectedUpstreamCosts}
+	}
+	err = channel.Update(expectedCosts...)
 	if err != nil {
 		common.ApiError(c, err)
 		return

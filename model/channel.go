@@ -94,6 +94,20 @@ func (channel *Channel) GetUpstreamCost(modelName string) (PriceComponents, bool
 		return PriceComponents{}, false
 	}
 	cost, ok := costs[modelName]
+	// Legacy route guards must compare against the more expensive component,
+	// never assume every request happens during off-peak time.
+	var schedules map[string]struct {
+		Peak *struct {
+			Prices PriceComponents `json:"prices"`
+		} `json:"peak"`
+	}
+	if common.UnmarshalJsonStr(channel.UpstreamCosts, &schedules) == nil && schedules[modelName].Peak != nil {
+		peak := schedules[modelName].Peak.Prices
+		cost.Input = max(cost.Input, peak.Input)
+		cost.CachedInput = max(cost.CachedInput, peak.CachedInput)
+		cost.CacheCreation = max(cost.CacheCreation, peak.CacheCreation)
+		cost.Output = max(cost.Output, peak.Output)
+	}
 	return cost, ok && validPositivePriceComponents(cost)
 }
 
@@ -566,6 +580,12 @@ func BatchInsertChannels(channels []Channel) error {
 			return err
 		}
 		for _, channel_ := range chunk {
+			if channel_.UpstreamCosts != "" && channel_.UpstreamCosts != "{}" {
+				if err := RecordChannelCostVersion(tx, &channel_); err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
 			if err := channel_.AddAbilities(tx); err != nil {
 				tx.Rollback()
 				return err
@@ -643,16 +663,20 @@ func (channel *Channel) GetStatusCodeMapping() string {
 }
 
 func (channel *Channel) Insert() error {
-	var err error
-	err = DB.Create(channel).Error
-	if err != nil {
-		return err
-	}
-	err = channel.AddAbilities(nil)
-	return err
+	return DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(channel).Error; err != nil {
+			return err
+		}
+		if channel.UpstreamCosts != "" && channel.UpstreamCosts != "{}" {
+			if err := RecordChannelCostVersion(tx, channel); err != nil {
+				return err
+			}
+		}
+		return channel.AddAbilities(tx)
+	})
 }
 
-func (channel *Channel) Update() error {
+func (channel *Channel) Update(expectedCosts ...string) error {
 	// If this is a multi-key channel, recalculate MultiKeySize based on the current key list to avoid inconsistency after editing keys
 	if channel.ChannelInfo.IsMultiKey {
 		var keyStr string
@@ -691,14 +715,28 @@ func (channel *Channel) Update() error {
 			}
 		}
 	}
-	var err error
-	err = DB.Model(channel).Updates(channel).Error
-	if err != nil {
-		return err
-	}
-	DB.Model(channel).First(channel, "id = ?", channel.Id)
-	err = channel.UpdateAbilities(nil)
-	return err
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var previous Channel
+		if err := lockForUpdate(tx).Select("id", "upstream_costs").First(&previous, channel.Id).Error; err != nil {
+			return err
+		}
+		if len(expectedCosts) > 0 && previous.UpstreamCosts != expectedCosts[0] {
+			return common.NewMessage("Channel costs changed. Reload the channel before saving.")
+		}
+		costChanged := channel.UpstreamCosts != "" && channel.UpstreamCosts != previous.UpstreamCosts
+		if err := tx.Model(channel).Updates(channel).Error; err != nil {
+			return err
+		}
+		if costChanged {
+			if err := RecordChannelCostVersion(tx, channel); err != nil {
+				return err
+			}
+		}
+		if err := tx.First(channel, "id = ?", channel.Id).Error; err != nil {
+			return err
+		}
+		return channel.UpdateAbilities(tx)
+	})
 }
 
 func (channel *Channel) UpdateResponseTime(responseTime int64) {
