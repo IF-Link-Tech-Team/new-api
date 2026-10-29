@@ -123,6 +123,17 @@ describe('channel procurement cost editing', () => {
       )
     ).toBe(false)
     expect(isValidUpstreamCosts('[]')).toBe(false)
+    for (const peak of [
+      {},
+      null,
+      { prices: {}, weekdays: [], windows: [null], offpeak_dates: [] },
+    ]) {
+      expect(
+        parseUpstreamCosts(
+          JSON.stringify({ deepseek: { input: 1, output: 4, peak } })
+        )
+      ).toBeNull()
+    }
     expect(parseUpstreamCosts('{"deepseek":{"input":1,"output":4}}')).toEqual({
       deepseek: { input: 1, output: 4, cached_input: 0, cache_creation: 0 },
     })

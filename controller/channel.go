@@ -1363,8 +1363,9 @@ func UpdateChannel(c *gin.Context) {
 		// for old API clients so a concurrent change cannot bypass authorization.
 		expectedCosts = []string{originChannel.UpstreamCosts}
 	}
-	if channel.ExpectedUpstreamCosts != nil {
-		expectedCosts = []string{*channel.ExpectedUpstreamCosts}
+	if channel.ExpectedUpstreamCosts != nil && *channel.ExpectedUpstreamCosts != originChannel.UpstreamCosts {
+		common.ApiErrorT(c, "Channel costs changed. Reload the channel before saving.")
+		return
 	}
 	err = channel.Update(expectedCosts...)
 	if err != nil {

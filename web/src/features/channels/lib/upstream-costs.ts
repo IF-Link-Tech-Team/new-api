@@ -49,6 +49,26 @@ export function parseUpstreamCosts(raw: string | undefined): CostDraft | null {
     }
     const costs = value as CostDraft
     for (const price of Object.values(costs)) {
+      // Keep incomplete numeric drafts editable, but never expose malformed
+      // legacy schedule objects to the editor's array controls.
+      if (price.peak !== undefined) {
+        const peak = price.peak
+        if (
+          !peak ||
+          typeof peak !== 'object' ||
+          Array.isArray(peak) ||
+          !peak.prices ||
+          typeof peak.prices !== 'object' ||
+          Array.isArray(peak.prices) ||
+          !Array.isArray(peak.weekdays) ||
+          !peak.weekdays.every((day) => typeof day === 'number') ||
+          !Array.isArray(peak.windows) ||
+          !peak.windows.every((window) => typeof window === 'string') ||
+          !Array.isArray(peak.offpeak_dates) ||
+          !peak.offpeak_dates.every((date) => typeof date === 'string')
+        )
+          return null
+      }
       if (!('cached_input' in price)) price.cached_input = 0
       if (!('cache_creation' in price)) price.cache_creation = 0
     }
