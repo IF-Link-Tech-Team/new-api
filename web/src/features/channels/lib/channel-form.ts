@@ -42,6 +42,7 @@ import {
 } from './advanced-custom'
 import { readTaskExtendPluginKeys } from './channel-plugin-extensions'
 import { supportsResponsesWebSocket } from './responses-websocket'
+import { isValidUpstreamCosts } from './upstream-costs'
 
 // ============================================================================
 // Form Validation Schema
@@ -211,6 +212,13 @@ export const channelFormSchema = z
     task_extend_plugin_keys: z.array(z.string()).optional(),
     key: z.string(),
     openai_organization: z.string().optional(),
+    upstream_costs: z
+      .string()
+      .optional()
+      .refine(
+        isValidUpstreamCosts,
+        'Upstream costs must contain non-negative input, cache read, cache write and output prices'
+      ),
     models: z.string().min(1, ERROR_MESSAGES.REQUIRED_MODELS),
     group: z.array(z.string()).min(1, ERROR_MESSAGES.REQUIRED_GROUP),
     model_mapping: z
@@ -431,6 +439,7 @@ export type ChannelFormValues = z.infer<typeof channelFormSchema>
 
 export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   name: '',
+  upstream_costs: '{}',
   type: 1,
   base_url: '',
   task_plugin_key: '',
@@ -604,6 +613,7 @@ export function transformChannelToFormDefaults(
 
   return {
     name: channel.name || '',
+    upstream_costs: channel.upstream_costs || '{}',
     type: channel.type,
     base_url: channel.base_url || '',
     key: '', // Never populate key from backend for security
@@ -871,6 +881,7 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
 
   const channel: Partial<Channel> = {
     name: formData.name,
+    upstream_costs: formData.upstream_costs || '{}',
     type: formData.type,
     base_url: normalizeBaseUrl(formData.base_url) || null,
     key: formData.key,
@@ -920,6 +931,7 @@ export function transformFormDataToUpdatePayload(
   const payload: Partial<Channel> = {
     id: channelId,
     name: formData.name,
+    upstream_costs: formData.upstream_costs || '{}',
     type: formData.type,
     base_url: normalizeBaseUrl(formData.base_url) || null,
     openai_organization: formData.openai_organization || null,

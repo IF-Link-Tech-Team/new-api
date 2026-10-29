@@ -209,6 +209,7 @@ import type { Channel } from '../../types'
 import { ChannelPluginExtensions } from '../channel-plugin-extensions'
 import { ChannelQuickOptions } from '../channel-quick-options'
 import { ChannelTypeLogo } from '../channel-type-badge'
+import { ChannelUpstreamCosts } from '../channel-upstream-costs'
 import { useChannels } from '../channels-provider'
 import { AdvancedCustomEditorDialog } from '../dialogs/advanced-custom-editor-dialog'
 import { ConfigureModelsDialog } from '../dialogs/configure-models-dialog'
@@ -279,6 +280,7 @@ const MODEL_MAPPING_PREVIEW_FALLBACK: Array<{
 const ADVANCED_CUSTOM_ROUTE_TYPE_PREVIEW_LIMIT = 3
 const UPSTREAM_DETECTED_MODEL_PREVIEW_LIMIT = 8
 const SENSITIVE_FORM_FIELDS = [
+  'upstream_costs',
   'type',
   'base_url',
   'key',
@@ -4714,7 +4716,12 @@ export function ChannelMutateDrawer({
             {connectionSection}
           </>
         }
-        models={modelsSection}
+        models={
+          <>
+            {modelsSection}
+            <ChannelUpstreamCosts channelId={channelId || undefined} disabled={sensitiveLocked || isSubmitting} />
+          </>
+        }
         quickOptions={
           viewportWide ? null : (
             <ChannelQuickOptions

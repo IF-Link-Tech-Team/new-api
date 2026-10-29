@@ -46,6 +46,7 @@ type UseChannelMutateFormParams = {
 }
 
 const SENSITIVE_UPDATE_FIELDS = [
+  'upstream_costs',
   'type',
   'key',
   'base_url',
@@ -69,10 +70,18 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
   return useMutation({
     mutationFn: async (data: ChannelFormValues): Promise<string> => {
       if (props.isEditing && props.currentRow) {
-        const payload = transformFormDataToUpdatePayload(
-          data,
-          props.currentRow.id
-        )
+        const payload: Partial<Channel> & { expected_upstream_costs?: string } =
+          transformFormDataToUpdatePayload(data, props.currentRow.id)
+        if (
+          (data.upstream_costs || '{}') ===
+          (props.currentRow.upstream_costs || '{}')
+        ) {
+          delete payload.upstream_costs
+        }
+        if (payload.upstream_costs !== undefined) {
+          payload.expected_upstream_costs =
+            props.currentRow.upstream_costs || ''
+        }
         if (!data.key?.trim()) {
           delete payload.key
         }
@@ -81,6 +90,7 @@ export function useChannelMutateForm(props: UseChannelMutateFormParams) {
             delete payload[field]
           }
         }
+        if (!canEditSensitive) delete payload.expected_upstream_costs
         const payloadWithKeyMode =
           canEditSensitive &&
           props.isMultiKeyChannel &&

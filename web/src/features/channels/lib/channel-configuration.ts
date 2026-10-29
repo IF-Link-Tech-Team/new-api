@@ -96,6 +96,7 @@ const CONFIGURATION_BLOCKS = {
       'upstream_model_update_ignored_models',
     ],
   },
+  procurementCosts: { section: 'connection', fields: ['upstream_costs'] },
   internalNotes: { section: 'other', fields: ['tag', 'remark'] },
 } as const satisfies Record<
   string,
@@ -186,6 +187,7 @@ export function getChannelConfigurationState(
         values.upstream_model_update_auto_sync_enabled ||
         values.upstream_model_update_ignored_models?.trim()
       ),
+    procurementCosts: hasConfiguredJson(values.upstream_costs),
     internalNotes: Boolean(values.tag?.trim() || values.remark?.trim()),
   }
   const blocks = {} as Record<
