@@ -3265,6 +3265,7 @@
     "IF.Learn · DeepSeek": "IF.Learn · DeepSeek",
     "IF.Learn starter pack": "IF.Learn starter pack",
     "IFLink Pay Gateway": "IFLink Pay ゲートウェイ",
+    "IFLink Pay is paused for security. Restoring payments requires independent server-side payment verification; configuring the signing secret does not enable the channel.": "IFLink Pay はセキュリティ上の理由で停止中です。再開には独立したサーバー側の支払い確認が必要です。署名キーを設定しても有効にはなりません。",
     "Ignore": "無視",
     "Ignore this version": "このバージョンの通知を停止",
     "Ignored upstream models": "無視する上流モデル",

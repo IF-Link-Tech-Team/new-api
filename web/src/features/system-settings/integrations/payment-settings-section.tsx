@@ -1669,7 +1669,7 @@ export function PaymentSettingsSection({
                     </li>
                     <li>
                       {t(
-                        'The channel is enabled once the signing secret is configured; users are redirected to the payment page after placing an order.'
+                        'IFLink Pay is paused for security. Restoring payments requires independent server-side payment verification; configuring the signing secret does not enable the channel.'
                       )}
                     </li>
                   </ul>

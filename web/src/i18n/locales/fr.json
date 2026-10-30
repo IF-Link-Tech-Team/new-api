@@ -3265,6 +3265,7 @@
     "IF.Learn · DeepSeek": "IF.Learn · DeepSeek",
     "IF.Learn starter pack": "IF.Learn starter pack",
     "IFLink Pay Gateway": "Passerelle IFLink Pay",
+    "IFLink Pay is paused for security. Restoring payments requires independent server-side payment verification; configuring the signing secret does not enable the channel.": "IFLink Pay est suspendu pour des raisons de sécurité. La reprise exige une vérification indépendante des paiements côté serveur ; configurer la clé de signature ne réactive pas le canal.",
     "Ignore": "Ignorer",
     "Ignore this version": "Ignorer cette version",
     "Ignored upstream models": "Modèles amont ignorés",

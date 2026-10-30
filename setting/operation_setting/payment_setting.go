@@ -16,7 +16,7 @@ type PaymentSetting struct {
 	ComplianceConfirmedBy  int    `json:"compliance_confirmed_by"`
 	ComplianceConfirmedIP  string `json:"compliance_confirmed_ip"`
 
-	// IFLinkPay 临时跳转第三方支付页:secret 由对方线下提供,为空则通道不启用
+	// IFLinkPay 因安全问题暂停；保留旧配置不启用通道，须接入独立服务端核款后才可恢复。
 	IFLinkPaySecret  string `json:"iflink_pay_secret"`
 	IFLinkPayBaseURL string `json:"iflink_pay_base_url"`
 }
@@ -48,7 +48,7 @@ func IsPaymentComplianceConfirmed() bool {
 		paymentSetting.ComplianceTermsVersion == CurrentComplianceTermsVersion
 }
 
-// GetIFLinkPaySecret 返回 IFLinkPay 签名密钥(空表示通道未启用)。
+// GetIFLinkPaySecret 返回保留的旧签名密钥；配置密钥不会恢复已暂停的通道。
 func GetIFLinkPaySecret() string {
 	return paymentSetting.IFLinkPaySecret
 }

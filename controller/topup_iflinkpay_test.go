@@ -1,13 +1,12 @@
 package controller
 
 import (
-	"fmt"
-	"math"
+	"crypto/md5"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,82 +16,86 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// IFLinkPay 签名是与第三方定稿的跨方协议: md5(uid + amount(分) + order + ts + secret),
-// 直接拼接无分隔符、UTF-8、32 位小写 hex。这里的期望值由独立工具(md5 命令行)算出,
-// 任何拼接顺序/编码改动都会破坏对接。
-func TestIFLinkPaySignMatchesProtocolVectors(t *testing.T) {
-	cases := []struct {
-		name      string
-		uid       string
-		amountFen int64
-		order     string
-		ts        int64
-		secret    string
-		expect    string
-	}{
-		{
-			name:      "basic order",
-			uid:       "1",
-			amountFen: 500,
-			order:     "TU-IFP-ABCDEFGH",
-			ts:        1700000000,
-			secret:    "topsecret",
-			expect:    "5e00acf42c5bd40c7242c246dc0e9793",
-		},
-		{
-			name:      "larger amount different secret",
-			uid:       "42",
-			amountFen: 9900,
-			order:     "ORDER-XYZ-99",
-			ts:        1234567890,
-			secret:    "another-secret",
-			expect:    "fcda4ac208b72b628cdbaa54b3e09a62",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.expect, ifLinkPaySign(tc.uid, tc.amountFen, tc.order, tc.ts, tc.secret))
-		})
-	}
-}
-
-func TestIFLinkPaySignChangesWithEveryField(t *testing.T) {
-	base := ifLinkPaySign("1", 500, "TU-IFP-ABCDEFGH", 1700000000, "topsecret")
-	assert.NotEqual(t, base, ifLinkPaySign("2", 500, "TU-IFP-ABCDEFGH", 1700000000, "topsecret"))
-	assert.NotEqual(t, base, ifLinkPaySign("1", 501, "TU-IFP-ABCDEFGH", 1700000000, "topsecret"))
-	assert.NotEqual(t, base, ifLinkPaySign("1", 500, "TU-IFP-ABCDEFGI", 1700000000, "topsecret"))
-	assert.NotEqual(t, base, ifLinkPaySign("1", 500, "TU-IFP-ABCDEFGH", 1700000001, "topsecret"))
-	assert.NotEqual(t, base, ifLinkPaySign("1", 500, "TU-IFP-ABCDEFGH", 1700000000, "wrong"))
-}
-
-func TestNewIFLinkPayTopUpTradeNoIsOpaque(t *testing.T) {
-	first, err := newIFLinkPayTopUpTradeNo()
+// This fixture reproduces the old browser-visible redirect, not a verified
+// provider receipt. All its signed fields were available to the purchaser.
+func legacyIFLinkPayCallbackFromPayURL(t *testing.T, uid string, amountFen int64, tradeNo string) []byte {
+	t.Helper()
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	amount := strconv.FormatInt(amountFen, 10)
+	digest := md5.Sum([]byte(uid + amount + tradeNo + timestamp + operation_setting.GetIFLinkPaySecret()))
+	redirect := "https://payments.example.invalid?" + url.Values{
+		"uid": {uid}, "amount": {amount}, "order": {tradeNo}, "ts": {timestamp},
+		"sign": {hex.EncodeToString(digest[:])},
+	}.Encode()
+	parsed, err := url.Parse(redirect)
 	require.NoError(t, err)
-	second, err := newIFLinkPayTopUpTradeNo()
+	query := parsed.Query()
+	replayAmount, err := strconv.ParseInt(query.Get("amount"), 10, 64)
 	require.NoError(t, err)
-
-	pattern := regexp.MustCompile(`^TU-IFP-[0-9a-f]{32}$`)
-	assert.True(t, pattern.MatchString(first))
-	assert.True(t, pattern.MatchString(second))
-	assert.NotEqual(t, first, second)
+	replayTimestamp, err := strconv.ParseInt(query.Get("ts"), 10, 64)
+	require.NoError(t, err)
+	body, err := common.Marshal(struct {
+		UID    string `json:"uid"`
+		Amount int64  `json:"amount"`
+		Order  string `json:"order"`
+		TS     int64  `json:"ts"`
+		Sign   string `json:"sign"`
+	}{query.Get("uid"), replayAmount, query.Get("order"), replayTimestamp, query.Get("sign")})
+	require.NoError(t, err)
+	return body
 }
 
-func TestIFLinkPayWalletUIDCompatibility(t *testing.T) {
-	topUp := &model.TopUp{UserId: 42, TradeNo: "TU-IFP-0123456789abcdef0123456789abcdef"}
+func TestIFLinkPayLegacyConfigurationCannotEnableOrAdvertisePayment(t *testing.T) {
+	settings := operation_setting.GetPaymentSetting()
+	previousSettings, previousMethods := *settings, operation_setting.PayMethods
+	t.Cleanup(func() {
+		*settings = previousSettings
+		operation_setting.PayMethods = previousMethods
+	})
+	settings.ComplianceConfirmed = true
+	settings.ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+	settings.IFLinkPaySecret = "legacy-configured-secret"
+	settings.IFLinkPayBaseURL = "https://payments.example.invalid"
+	operation_setting.PayMethods = []map[string]string{
+		{"name": "legacy IFLinkPay", "type": "iflinkpay"},
+		{"name": "legacy alias", "type": " IFLinkPay "},
+		{"name": "unrelated method", "type": "unrelated-method"},
+	}
 
-	assert.True(t, ifLinkPayWalletUIDMatches(topUp, topUp.TradeNo), "new opaque uid must be accepted")
-	assert.True(t, ifLinkPayWalletUIDMatches(topUp, "42"), "legacy pending order uid must remain accepted")
-	assert.False(t, ifLinkPayWalletUIDMatches(topUp, "43"))
-	assert.False(t, ifLinkPayWalletUIDMatches(nil, topUp.TradeNo))
+	assert.False(t, isIFLinkPayTopUpEnabled(), "legacy credentials cannot establish verified payment")
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/user/topup/info", nil)
+	GetTopUpInfo(context)
+	var result struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Enabled    bool                `json:"enable_iflinkpay_topup"`
+			PayMethods []map[string]string `json:"pay_methods"`
+		} `json:"data"`
+	}
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
+	require.True(t, result.Success)
+	assert.False(t, result.Data.Enabled)
+	foundUnrelated := false
+	for _, method := range result.Data.PayMethods {
+		assert.False(t, strings.EqualFold(strings.TrimSpace(method["type"]), model.PaymentMethodIFLinkPay))
+		foundUnrelated = foundUnrelated || method["type"] == "unrelated-method"
+	}
+	assert.True(t, foundUnrelated, "pausing this provider must preserve unrelated configured methods")
+	assert.Len(t, operation_setting.PayMethods, 3, "discovery must not rewrite stored configuration")
 }
 
-func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
+func TestIFLinkPayVerifiedSubscriptionCompletionRemainsIdempotent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	oldDB, oldLogDB := model.DB, model.LOG_DB
+	oldMainType, oldLogType := common.MainDatabaseType(), common.LogDatabaseType()
 	oldSQLitePath := common.SQLitePath
 	oldMasterNode := common.IsMasterNode
 	oldQuotaPerUnit := common.QuotaPerUnit
@@ -103,6 +106,7 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 	oldPaymentSetting := *operation_setting.GetPaymentSetting()
 	t.Cleanup(func() {
 		model.DB, model.LOG_DB = oldDB, oldLogDB
+		common.SetDatabaseTypes(oldMainType, oldLogType)
 		common.SQLitePath = oldSQLitePath
 		common.IsMasterNode = oldMasterNode
 		common.QuotaPerUnit = oldQuotaPerUnit
@@ -159,103 +163,34 @@ func TestIFLinkPaySubscriptionNotifyIsValidatedAndIdempotent(t *testing.T) {
 	tradeNo := "SUB-IFP-0123456789abcdef0123456789abcdef"
 	order, _, err := model.CreateSubscriptionOrder(user.Id, bootstrap.PlanId, tradeNo, model.PaymentMethodIFLinkPay, model.PaymentProviderIFLinkPay, true)
 	require.NoError(t, err)
-	amountFen := int64(math.Round(order.Money * 100))
 
-	router := gin.New()
-	router.POST("/api/user/iflinkpay", func(c *gin.Context) {
-		c.Set("id", user.Id)
-		RequestIFLinkPay(c)
-	})
-	router.POST("/api/topup/iflinkpay/notify", IFLinkPayNotify)
-	sendNotify := func(uid string, order string, amount int64) (int, string) {
-		t.Helper()
-		ts := time.Now().Unix()
-		body := fmt.Sprintf(`{"uid":%q,"amount":%d,"order":%q,"ts":%d,"sign":%q}`,
-			uid, amount, order, ts, ifLinkPaySign(uid, amount, order, ts, settings.IFLinkPaySecret))
-		request := httptest.NewRequest(http.MethodPost, "/api/topup/iflinkpay/notify", strings.NewReader(body))
-		request.Header.Set("Content-Type", "application/json")
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, request)
-		return recorder.Code, recorder.Body.String()
+	// An isolated, explicitly verified payment exercises existing atomic model
+	// fulfillment. Browser redirects and public callbacks are never proof here.
+	receipt := model.PaymentReceipt{
+		Amount: decimal.NewFromFloat(order.Money), Currency: "CNY",
+		ProviderTradeNo: "verified-classroom-payment", ProviderPayload: `{"verification":"isolated-test"}`,
 	}
-
-	status, body := sendNotify(tradeNo, tradeNo, amountFen+1)
-	require.Equal(t, http.StatusOK, status)
-	require.JSONEq(t, `{"code":1}`, body)
-	require.Equal(t, common.TopUpStatusPending, model.GetSubscriptionOrderByTradeNo(tradeNo).Status)
-
 	for range 2 {
-		status, body = sendNotify(tradeNo, tradeNo, amountFen)
-		require.Equal(t, http.StatusOK, status)
-		require.JSONEq(t, `{"code":0}`, body)
+		require.NoError(t, model.CompleteSubscriptionOrderWithReceipt(tradeNo,
+			model.PaymentProviderIFLinkPay, model.PaymentMethodIFLinkPay, receipt))
 	}
-
 	completed := model.GetSubscriptionOrderByTradeNo(tradeNo)
-	require.Equal(t, common.TopUpStatusSuccess, completed.Status)
-	require.Equal(t, model.PaymentProviderIFLinkPay, completed.PaymentProvider)
-	require.Equal(t, model.PaymentMethodIFLinkPay, completed.PaymentMethod)
+	require.NotNil(t, completed)
+	assert.Equal(t, common.TopUpStatusSuccess, completed.Status)
+	assert.Equal(t, model.ProvisioningStatusProvisioned, completed.ProvisioningStatus)
+	assert.Equal(t, order.Money, completed.PaidMoney)
 	require.NotNil(t, completed.UserSubscriptionId)
-	var subscriptionCount, keyCount int64
-	require.NoError(t, model.DB.Model(&model.UserSubscription{}).Where("user_id = ?", user.Id).Count(&subscriptionCount).Error)
-	require.NoError(t, model.DB.Model(&model.SubscriptionKeyBinding{}).Where("user_id = ?", user.Id).Count(&keyCount).Error)
-	require.Equal(t, int64(1), subscriptionCount)
-	require.Equal(t, int64(1), keyCount)
-
+	var subscriptions, bindings, tokens int64
+	require.NoError(t, model.DB.Model(&model.UserSubscription{}).Where("user_id = ?", user.Id).Count(&subscriptions).Error)
+	require.NoError(t, model.DB.Model(&model.SubscriptionKeyBinding{}).Where("user_id = ?", user.Id).Count(&bindings).Error)
+	require.NoError(t, model.DB.Model(&model.Token{}).Where("user_id = ?", user.Id).Count(&tokens).Error)
+	assert.EqualValues(t, 1, subscriptions)
+	assert.EqualValues(t, 1, bindings)
+	assert.EqualValues(t, 1, tokens)
+	var after model.User
+	require.NoError(t, model.DB.First(&after, user.Id).Error)
+	assert.Zero(t, after.Quota, "subscription fulfillment must not credit the wallet")
 	encoded, err := common.Marshal(completed)
 	require.NoError(t, err)
-	require.NotContains(t, string(encoded), settings.IFLinkPaySecret)
-
-	// A newly created wallet order must expose only its opaque order reference
-	// to IFLinkPay. Replaying the signed callback must not credit it twice.
-	request := httptest.NewRequest(http.MethodPost, "/api/user/iflinkpay", strings.NewReader(`{"amount":1.25}`))
-	request.Header.Set("Content-Type", "application/json")
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, request)
-	require.Equal(t, http.StatusOK, recorder.Code)
-	var payResponse struct {
-		Success bool `json:"success"`
-		Data    struct {
-			PayURL  string `json:"pay_url"`
-			TradeNo string `json:"trade_no"`
-		} `json:"data"`
-	}
-	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payResponse))
-	require.True(t, payResponse.Success)
-	payURL, err := url.Parse(payResponse.Data.PayURL)
-	require.NoError(t, err)
-	require.Equal(t, payResponse.Data.TradeNo, payURL.Query().Get("uid"))
-	require.Equal(t, payResponse.Data.TradeNo, payURL.Query().Get("order"))
-	require.NotEqual(t, strconv.Itoa(user.Id), payURL.Query().Get("uid"))
-
-	for range 2 {
-		status, body = sendNotify(payResponse.Data.TradeNo, payResponse.Data.TradeNo, 125)
-		require.Equal(t, http.StatusOK, status)
-		require.JSONEq(t, `{"code":0}`, body)
-	}
-	newWalletOrder := model.GetTopUpByTradeNo(payResponse.Data.TradeNo)
-	require.NotNil(t, newWalletOrder)
-	require.Equal(t, common.TopUpStatusSuccess, newWalletOrder.Status)
-	var walletUser model.User
-	require.NoError(t, model.DB.First(&walletUser, user.Id).Error)
-	require.Equal(t, 625_000, walletUser.Quota)
-
-	// Pending orders created by the previous release used the numeric local
-	// user ID as uid. They must remain payable after the privacy migration.
-	legacyTradeNo := "TU-IFP-legacy-pending-order"
-	legacyTopUp := model.TopUp{
-		UserId: user.Id, Amount: 2, Money: 2, TradeNo: legacyTradeNo,
-		PaymentMethod: model.PaymentMethodIFLinkPay, PaymentProvider: model.PaymentProviderIFLinkPay,
-		CreateTime: time.Now().Unix(), Status: common.TopUpStatusPending, Currency: "CNY",
-	}
-	require.NoError(t, legacyTopUp.Insert())
-	for range 2 {
-		status, body = sendNotify(strconv.Itoa(user.Id), legacyTradeNo, 200)
-		require.Equal(t, http.StatusOK, status)
-		require.JSONEq(t, `{"code":0}`, body)
-	}
-	legacyCompleted := model.GetTopUpByTradeNo(legacyTradeNo)
-	require.NotNil(t, legacyCompleted)
-	require.Equal(t, common.TopUpStatusSuccess, legacyCompleted.Status)
-	require.NoError(t, model.DB.First(&walletUser, user.Id).Error)
-	require.Equal(t, 1_625_000, walletUser.Quota)
+	assert.NotContains(t, string(encoded), settings.IFLinkPaySecret)
 }
