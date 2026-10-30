@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,10 +27,15 @@ import (
 func GetTopUpInfo(c *gin.Context) {
 	complianceConfirmed := operation_setting.IsPaymentComplianceConfirmed()
 
-	// 获取支付方式
-	payMethods := operation_setting.PayMethods
-	if !complianceConfirmed {
-		payMethods = []map[string]string{}
+	// Filter a response-only copy; stale stored credentials and PayMethods
+	// must not advertise IFLinkPay or mutate shared configuration.
+	payMethods := make([]map[string]string, 0, len(operation_setting.PayMethods))
+	if complianceConfirmed {
+		for _, method := range operation_setting.PayMethods {
+			if !strings.EqualFold(strings.TrimSpace(method["type"]), model.PaymentMethodIFLinkPay) {
+				payMethods = append(payMethods, method)
+			}
+		}
 	}
 
 	// 如果启用了 Stripe 支付，添加到支付方法列表
@@ -97,26 +103,7 @@ func GetTopUpInfo(c *gin.Context) {
 		}
 	}
 
-	// 如果启用了 IFLinkPay 支付，添加到支付方法列表
 	enableIFLinkPay := isIFLinkPayTopUpEnabled()
-	if enableIFLinkPay {
-		hasIFLinkPay := false
-		for _, method := range payMethods {
-			if method["type"] == model.PaymentMethodIFLinkPay {
-				hasIFLinkPay = true
-				break
-			}
-		}
-
-		if !hasIFLinkPay {
-			payMethods = append(payMethods, map[string]string{
-				"name":      "IFLink Pay",
-				"type":      model.PaymentMethodIFLinkPay,
-				"color":     "#0EA5E9",
-				"min_topup": "1",
-			})
-		}
-	}
 
 	data := gin.H{
 		"enable_online_topup":              isEpayTopUpEnabled(),

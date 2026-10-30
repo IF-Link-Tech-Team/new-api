@@ -3265,6 +3265,7 @@
     "IF.Learn · DeepSeek": "IF.Learn · DeepSeek",
     "IF.Learn starter pack": "IF.Learn starter pack",
     "IFLink Pay Gateway": "Cổng thanh toán IFLink Pay",
+    "IFLink Pay is paused for security. Restoring payments requires independent server-side payment verification; configuring the signing secret does not enable the channel.": "IFLink Pay đang tạm dừng vì lý do bảo mật. Để khôi phục, cần xác minh thanh toán độc lập phía máy chủ; cấu hình khóa chữ ký không kích hoạt kênh.",
     "Ignore": "Bỏ qua",
     "Ignore this version": "Bỏ qua phiên bản này",
     "Ignored upstream models": "Mô hình upstream bị bỏ qua",

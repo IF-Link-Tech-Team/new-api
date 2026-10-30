@@ -64,7 +64,8 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.POST("/stripe/webhook", anonymousRequestBodyLimit, controller.StripeWebhook)
 		apiRouter.POST("/creem/webhook", anonymousRequestBodyLimit, controller.CreemWebhook)
 		apiRouter.POST("/waffo/webhook", anonymousRequestBodyLimit, controller.WaffoWebhook)
-		// IFLinkPay 第三方支付页异步回调(匿名可达, JSON body, 验签+时间戳窗口)
+		// Preserve the IFLinkPay aliases as unavailable while independent payment
+		// verification is missing; the legacy redirect signature is not proof.
 		apiRouter.POST("/topup/iflinkpay/notify", anonymousRequestBodyLimit, controller.IFLinkPayNotify)
 		// 支付宝原生集成 notify (与 topup notify 共用 handler,内部按 trade_no 自动分支)
 		apiRouter.POST("/topup/alipay/notify", anonymousRequestBodyLimit, controller.AlipayNotify)

@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/internal/testutil"
@@ -25,13 +23,15 @@ func setupIFLinkPayHTTPTest(t *testing.T) *model.User {
 	t.Helper()
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousRedis, previousUnit := common.RedisEnabled, common.QuotaPerUnit
+	previousMemory, previousConsume := common.MemoryCacheEnabled, common.LogConsumeEnabled
 	previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
 	settings := operation_setting.GetPaymentSetting()
 	previousSettings := *settings
 	var db *gorm.DB
 	var err error
-	if dsn := os.Getenv("CILAI_TEST_POSTGRES_DSN"); dsn != "" {
-		db, err = testutil.OpenPostgres(dsn)
+	postgresDSN := os.Getenv("CILAI_TEST_POSTGRES_DSN")
+	if postgresDSN != "" {
+		db, err = testutil.OpenPostgres(postgresDSN)
 	} else {
 		db, err = gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	}
@@ -41,8 +41,9 @@ func setupIFLinkPayHTTPTest(t *testing.T) *model.User {
 	sqlDB.SetMaxOpenConns(1)
 	model.DB, model.LOG_DB = db, db
 	common.RedisEnabled, common.QuotaPerUnit = false, 500_000
+	common.MemoryCacheEnabled, common.LogConsumeEnabled = false, true
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
-	if os.Getenv("CILAI_TEST_POSTGRES_DSN") != "" {
+	if postgresDSN != "" {
 		common.SetDatabaseTypes(common.DatabaseTypePostgreSQL, common.DatabaseTypePostgreSQL)
 		sqlDB.SetMaxOpenConns(10)
 	}
@@ -52,13 +53,23 @@ func setupIFLinkPayHTTPTest(t *testing.T) *model.User {
 		require.NoError(t, sqlDB.Close())
 		model.DB, model.LOG_DB = previousDB, previousLogDB
 		common.RedisEnabled, common.QuotaPerUnit = previousRedis, previousUnit
+		common.MemoryCacheEnabled, common.LogConsumeEnabled = previousMemory, previousConsume
 		common.SetDatabaseTypes(previousMainType, previousLogType)
 		*settings = previousSettings
 	})
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.TopUp{}, &model.Log{}))
-	if os.Getenv("CILAI_TEST_POSTGRES_DSN") != "" {
+	require.NoError(t, db.AutoMigrate(
+		&model.User{}, &model.TopUp{}, &model.Log{}, &model.Token{},
+		&model.SubscriptionPlan{}, &model.SubscriptionOrder{}, &model.UserSubscription{},
+		&model.SubscriptionKeyBinding{}, &model.CourseEntitlement{}, &model.MonthlySubscriptionCycle{},
+		&model.ProductPrice{}, &model.PriceBookPrice{}, &model.ProductTemplate{},
+	))
+	if postgresDSN != "" {
 		t.Cleanup(func() {
-			for _, table := range []string{"top_ups", "logs", "users"} {
+			for _, table := range []string{
+				"course_entitlements", "subscription_key_bindings", "tokens", "monthly_subscription_cycles",
+				"user_subscriptions", "subscription_orders", "subscription_plans", "product_prices",
+				"price_book_prices", "product_templates", "top_ups", "logs", "users",
+			} {
 				require.NoError(t, db.Exec("DELETE FROM "+table).Error)
 			}
 		})
@@ -68,20 +79,193 @@ func setupIFLinkPayHTTPTest(t *testing.T) *model.User {
 	return user
 }
 
-func TestIFLinkPayHTTPCallbackAndManualCompletionCreditOnlyOnce(t *testing.T) {
+func TestIFLinkPayHTTPPausedCallbacksDoNotRequireBodyParsingOrDatabase(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	settings := operation_setting.GetPaymentSetting()
+	previousSettings := *settings
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		*settings = previousSettings
+	})
+	model.DB, model.LOG_DB = nil, nil
+	settings.IFLinkPaySecret = "legacy-configured-secret"
+	bodies := []struct {
+		name string
+		body []byte
+	}{
+		{name: "empty"},
+		{name: "malformed", body: []byte(`{"uid":`)},
+		{name: "legacy signed redirect", body: legacyIFLinkPayCallbackFromPayURL(t,
+			"TU-IFP-no-database", 149, "TU-IFP-no-database")},
+	}
+	router := gin.New()
+	paths := []string{"/api/topup/iflinkpay/notify", "/api/pay/callback"}
+	for _, path := range paths {
+		router.POST(path, IFLinkPayNotify)
+	}
+	for _, path := range paths {
+		for _, body := range bodies {
+			t.Run(path+"/"+body.name, func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body.body))
+				request.Header.Set("Content-Type", "application/json")
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, request)
+				assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+				assert.Equal(t, "300", recorder.Header().Get("Retry-After"))
+				assert.JSONEq(t, `{"code":1}`, recorder.Body.String())
+			})
+		}
+	}
+}
+
+func TestIFLinkPayHTTPBrowserRedirectReplayCannotFulfillEitherOrderType(t *testing.T) {
+	cases := []struct {
+		name         string
+		subscription bool
+		numericUID   bool
+		removeSecret bool
+	}{
+		{name: "wallet opaque uid"},
+		{name: "wallet legacy numeric uid", numericUID: true},
+		{name: "subscription", subscription: true},
+		{name: "wallet after secret removal", removeSecret: true},
+	}
+	for _, scenario := range cases {
+		t.Run(scenario.name, func(t *testing.T) {
+			user := setupIFLinkPayHTTPTest(t)
+			tradeNo := "TU-IFP-browser-redirect"
+			if scenario.subscription {
+				tradeNo = "SUB-IFP-browser-redirect"
+				plan := &model.SubscriptionPlan{
+					Title: "Existing pending subscription", Currency: "CNY", PriceAmount: 1.49,
+					DurationUnit: model.SubscriptionDurationDay, DurationValue: 10,
+					TotalAmount: 745_000, QuotaResetPeriod: model.SubscriptionResetNever,
+					Category: model.SubscriptionCategoryPackage, Enabled: true,
+				}
+				require.NoError(t, model.DB.Create(plan).Error)
+				_, _, err := model.CreateSubscriptionOrder(user.Id, plan.Id, tradeNo,
+					model.PaymentMethodIFLinkPay, model.PaymentProviderIFLinkPay, true)
+				require.NoError(t, err)
+				t.Cleanup(func() { model.InvalidateSubscriptionPlanCache(plan.Id) })
+			} else {
+				order := &model.TopUp{UserId: user.Id, Amount: 1, Money: 1.49, TradeNo: tradeNo, Currency: "CNY",
+					PaymentProvider: model.PaymentProviderIFLinkPay, PaymentMethod: model.PaymentMethodIFLinkPay, Status: common.TopUpStatusPending}
+				require.NoError(t, order.Insert())
+			}
+			uid := tradeNo
+			if scenario.numericUID {
+				uid = strconv.Itoa(user.Id)
+			}
+			body := legacyIFLinkPayCallbackFromPayURL(t, uid, 149, tradeNo)
+			if scenario.removeSecret {
+				operation_setting.GetPaymentSetting().IFLinkPaySecret = ""
+			}
+			router := gin.New()
+			for _, path := range []string{"/api/topup/iflinkpay/notify", "/api/pay/callback"} {
+				router.POST(path, IFLinkPayNotify)
+			}
+			for _, path := range []string{"/api/topup/iflinkpay/notify", "/api/pay/callback"} {
+				for range 2 {
+					request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+					request.Header.Set("Content-Type", "application/json")
+					recorder := httptest.NewRecorder()
+					router.ServeHTTP(recorder, request)
+					assert.Equal(t, http.StatusServiceUnavailable, recorder.Code, path)
+					assert.Equal(t, "300", recorder.Header().Get("Retry-After"), path)
+					assert.JSONEq(t, `{"code":1}`, recorder.Body.String())
+					var after model.User
+					require.NoError(t, model.DB.First(&after, user.Id).Error)
+					assert.Equal(t, 100, after.Quota, "browser-visible fields cannot authorize a wallet credit")
+					if scenario.subscription {
+						order := model.GetSubscriptionOrderByTradeNo(tradeNo)
+						require.NotNil(t, order)
+						assert.Equal(t, common.TopUpStatusPending, order.Status)
+						assert.Nil(t, order.UserSubscriptionId)
+						assert.Zero(t, order.PaidMoney)
+						assert.Zero(t, order.CompleteTime)
+						assert.Empty(t, order.ProviderPayload)
+						assert.Empty(t, order.ProviderTradeNo)
+					} else {
+						order := model.GetTopUpByTradeNo(tradeNo)
+						require.NotNil(t, order)
+						assert.Equal(t, common.TopUpStatusPending, order.Status)
+						assert.Zero(t, order.PaidMoney)
+						assert.Zero(t, order.CompleteTime)
+						assert.Empty(t, order.ProviderPayload)
+						assert.Empty(t, order.ProviderTradeNo)
+					}
+					for _, table := range []any{&model.UserSubscription{}, &model.Token{}, &model.SubscriptionKeyBinding{}, &model.Log{}} {
+						var count int64
+						require.NoError(t, model.DB.Model(table).Where("user_id = ?", user.Id).Count(&count).Error)
+						assert.Zero(t, count, "an unverified callback must not issue entitlements, keys, or financial logs")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestIFLinkPayHTTPPurchasesStayUnavailableWithLegacyCredentials(t *testing.T) {
+	for _, endpoint := range []string{"/api/user/iflinkpay", "/api/subscription/iflinkpay/pay"} {
+		t.Run(endpoint, func(t *testing.T) {
+			user := setupIFLinkPayHTTPTest(t)
+			plan := &model.SubscriptionPlan{
+				Title: "Enabled test subscription", Currency: "CNY", PriceAmount: 1.49,
+				DurationUnit: model.SubscriptionDurationDay, DurationValue: 10,
+				TotalAmount: 745_000, QuotaResetPeriod: model.SubscriptionResetNever,
+				Category: model.SubscriptionCategoryPackage, Enabled: true,
+			}
+			require.NoError(t, model.DB.Create(plan).Error)
+			t.Cleanup(func() { model.InvalidateSubscriptionPlanCache(plan.Id) })
+			body, err := common.Marshal(map[string]any{"amount": 1.49, "plan_id": plan.Id})
+			require.NoError(t, err)
+			router := gin.New()
+			setUser := func(c *gin.Context) { c.Set("id", user.Id); c.Next() }
+			router.POST("/api/user/iflinkpay", setUser, RequestIFLinkPay)
+			router.POST("/api/subscription/iflinkpay/pay", setUser, SubscriptionRequestIFLinkPay)
+			request := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+			assert.Equal(t, "300", recorder.Header().Get("Retry-After"))
+			var result struct {
+				Success    bool   `json:"success"`
+				MessageKey string `json:"message_key"`
+				Data       struct {
+					PayURL  string `json:"pay_url"`
+					TradeNo string `json:"trade_no"`
+				} `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
+			assert.False(t, result.Success)
+			assert.Equal(t, "Online payment is not enabled. Please contact the administrator.", result.MessageKey)
+			assert.Empty(t, result.Data.PayURL)
+			assert.Empty(t, result.Data.TradeNo)
+			for _, table := range []any{&model.TopUp{}, &model.SubscriptionOrder{}, &model.UserSubscription{}, &model.Token{}} {
+				var count int64
+				require.NoError(t, model.DB.Model(table).Where("user_id = ?", user.Id).Count(&count).Error)
+				assert.Zero(t, count)
+			}
+		})
+	}
+}
+
+func TestIFLinkPayHTTPRedirectReplayDoesNotDuplicateVerifiedManualCredit(t *testing.T) {
 	user := setupIFLinkPayHTTPTest(t)
-	order := &model.TopUp{UserId: user.Id, Amount: 1, Money: 1.49, TradeNo: "callback-manual-race", Currency: "CNY",
+	order := &model.TopUp{UserId: user.Id, Amount: 1, Money: 1.49, TradeNo: "verified-manual-credit", Currency: "CNY",
 		PaymentProvider: model.PaymentProviderIFLinkPay, PaymentMethod: model.PaymentMethodIFLinkPay, Status: common.TopUpStatusPending}
 	require.NoError(t, order.Insert())
-	notify := IFLinkPayNotifyRequest{UID: strconv.Itoa(user.Id), Amount: 149, Order: order.TradeNo, TS: time.Now().Unix()}
-	notify.Sign = ifLinkPaySign(notify.UID, notify.Amount, notify.Order, notify.TS, operation_setting.GetIFLinkPaySecret())
-	start, callbackDone, manualDone := make(chan struct{}), make(chan int, 1), make(chan error, 1)
-	go func() { <-start; callbackDone <- invokeIFLinkPayNotify(t, notify) }()
-	go func() { <-start; manualDone <- model.ManualCompleteTopUp(order.TradeNo, "127.0.0.1") }()
-	close(start)
-	assert.Zero(t, <-callbackDone)
-	require.NoError(t, <-manualDone)
-	assert.Zero(t, invokeIFLinkPayNotify(t, notify))
+	browserCallback := legacyIFLinkPayCallbackFromPayURL(t, order.TradeNo, 149, order.TradeNo)
+	// An administrator has independently verified payment in this fixture.
+	require.NoError(t, model.ManualCompleteTopUp(order.TradeNo, "127.0.0.1"))
+	require.NoError(t, model.ManualCompleteTopUp(order.TradeNo, "127.0.0.1"))
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/api/pay/callback", bytes.NewReader(browserCallback))
+	IFLinkPayNotify(context)
+	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	assert.JSONEq(t, `{"code":1}`, recorder.Body.String())
 	var after model.User
 	require.NoError(t, model.DB.First(&after, user.Id).Error)
 	assert.Equal(t, 745_100, after.Quota)
@@ -89,119 +273,4 @@ func TestIFLinkPayHTTPCallbackAndManualCompletionCreditOnlyOnce(t *testing.T) {
 	var logs int64
 	require.NoError(t, model.LOG_DB.Model(&model.Log{}).Where("user_id = ? AND type = ?", user.Id, model.LogTypeTopup).Count(&logs).Error)
 	assert.EqualValues(t, 1, logs)
-}
-
-func TestIFLinkPayHTTPFractionalPurchaseAndCallbackReplay(t *testing.T) {
-	for _, tc := range []struct {
-		amount float64
-		fen    int64
-		quota  int
-	}{{0.01, 1, 5_000}, {1.49, 149, 745_000}, {1.5, 150, 750_000}} {
-		t.Run(strconv.FormatFloat(tc.amount, 'f', 2, 64), func(t *testing.T) {
-			user := setupIFLinkPayHTTPTest(t)
-			body, err := common.Marshal(TopUpIFLinkPayRequest{Amount: tc.amount})
-			require.NoError(t, err)
-			recorder := httptest.NewRecorder()
-			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/iflinkpay", bytes.NewReader(body))
-			ctx.Set("id", user.Id)
-			RequestIFLinkPay(ctx)
-			var response struct {
-				Success bool `json:"success"`
-				Data    struct {
-					PayURL  string `json:"pay_url"`
-					TradeNo string `json:"trade_no"`
-				} `json:"data"`
-			}
-			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
-			require.True(t, response.Success, recorder.Body.String())
-			payURL, err := url.Parse(response.Data.PayURL)
-			require.NoError(t, err)
-			assert.Equal(t, strconv.FormatInt(tc.fen, 10), payURL.Query().Get("amount"))
-			// Taking new sales offline must still allow existing paid orders to complete.
-			operation_setting.GetPaymentSetting().ComplianceConfirmed = false
-			notify := IFLinkPayNotifyRequest{UID: strconv.Itoa(user.Id), Amount: tc.fen, Order: response.Data.TradeNo, TS: time.Now().Unix()}
-			notify.Sign = ifLinkPaySign(notify.UID, notify.Amount, notify.Order, notify.TS, operation_setting.GetIFLinkPaySecret())
-			for replay := 0; replay < 2; replay++ {
-				assert.Equal(t, 0, invokeIFLinkPayNotify(t, notify))
-			}
-			var after model.User
-			require.NoError(t, model.DB.First(&after, user.Id).Error)
-			assert.Equal(t, 100+tc.quota, after.Quota)
-			completed := model.GetTopUpByTradeNo(notify.Order)
-			require.NotNil(t, completed)
-			assert.Equal(t, common.TopUpStatusSuccess, completed.Status)
-			assert.Equal(t, tc.amount, completed.PaidMoney)
-			assert.Equal(t, notify.Order, completed.ProviderTradeNo)
-			var logs int64
-			require.NoError(t, model.LOG_DB.Model(&model.Log{}).Where("user_id = ? AND type = ?", user.Id, model.LogTypeTopup).Count(&logs).Error)
-			assert.EqualValues(t, 1, logs, "a callback replay must not create a second financial log")
-		})
-	}
-}
-
-func invokeIFLinkPayNotify(t *testing.T, notify IFLinkPayNotifyRequest) int {
-	t.Helper()
-	body, err := common.Marshal(notify)
-	require.NoError(t, err)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/topup/iflinkpay/notify", bytes.NewReader(body))
-	IFLinkPayNotify(ctx)
-	var result struct {
-		Code int `json:"code"`
-	}
-	require.Equal(t, http.StatusOK, recorder.Code)
-	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &result))
-	return result.Code
-}
-
-func TestIFLinkPayHTTPRejectsInvalidSignedReceiptsBeforeCrediting(t *testing.T) {
-	for _, scenario := range []string{"wrong signature", "wrong user", "wrong amount", "expired timestamp", "wrong provider"} {
-		t.Run(scenario, func(t *testing.T) {
-			user := setupIFLinkPayHTTPTest(t)
-			order := &model.TopUp{UserId: user.Id, Amount: 1, Money: 1.49, TradeNo: "receipt-guard", Currency: "CNY",
-				PaymentProvider: model.PaymentProviderIFLinkPay, PaymentMethod: model.PaymentMethodIFLinkPay, Status: common.TopUpStatusPending}
-			if scenario == "wrong provider" {
-				order.PaymentProvider = model.PaymentProviderAlipay
-			}
-			require.NoError(t, order.Insert())
-			notify := IFLinkPayNotifyRequest{UID: strconv.Itoa(user.Id), Amount: 149, Order: order.TradeNo, TS: time.Now().Unix()}
-			switch scenario {
-			case "wrong user":
-				notify.UID = strconv.Itoa(user.Id + 1)
-			case "wrong amount":
-				notify.Amount = 150
-			case "expired timestamp":
-				notify.TS -= ifLinkPayNotifyTimestampToleranceSeconds + 60
-			}
-			notify.Sign = ifLinkPaySign(notify.UID, notify.Amount, notify.Order, notify.TS, operation_setting.GetIFLinkPaySecret())
-			if scenario == "wrong signature" {
-				notify.Sign = "invalid-signature"
-			}
-			assert.NotZero(t, invokeIFLinkPayNotify(t, notify))
-			assert.Equal(t, common.TopUpStatusPending, model.GetTopUpByTradeNo(order.TradeNo).Status)
-			var after model.User
-			require.NoError(t, model.DB.First(&after, user.Id).Error)
-			assert.Equal(t, 100, after.Quota)
-		})
-	}
-}
-
-func TestIFLinkPayHTTPRejectsAmountThatCannotBeCreditedBeforeCreatingOrder(t *testing.T) {
-	user := setupIFLinkPayHTTPTest(t)
-	require.NoError(t, model.DB.Model(user).Update("quota", common.MaxWalletQuota).Error)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/iflinkpay", bytes.NewBufferString(`{"amount":10000}`))
-	ctx.Set("id", user.Id)
-	RequestIFLinkPay(ctx)
-	var response struct {
-		Success bool `json:"success"`
-	}
-	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
-	assert.False(t, response.Success, "do not issue a payment link when the wallet has no credit capacity")
-	var orders int64
-	require.NoError(t, model.DB.Model(&model.TopUp{}).Count(&orders).Error)
-	assert.Zero(t, orders)
 }
