@@ -12,20 +12,33 @@ import { test } from 'vitest'
 
 import {
   buildChatCompletionsEndpoint,
+  CLASSROOM_PREFERRED_MODELS,
   normalizeOpenAIBaseUrl,
   selectClassroomModel,
   shouldShowModelSquareNavigation,
 } from '../classroom-quick-start'
 
-test('prefers Qwen3.8 Flash before the classroom DeepSeek fallbacks', () => {
+test('shows only Qwen3.8 Flash and the TokenHub DeepSeek model in the overview', () => {
+  assert.deepEqual(CLASSROOM_PREFERRED_MODELS, [
+    'qwen3.8-flash',
+    'deepseek-v4.1-flash-1017',
+  ])
   assert.equal(
     selectClassroomModel([
       'gpt-4o-mini',
       'deepseek-v4-1-flash-260910',
       'deepseek-v4-flash-ga-260731',
+      'deepseek-v4.1-flash-1017',
       'qwen3.8-flash',
     ]),
     'qwen3.8-flash'
+  )
+})
+
+test('uses the TokenHub DeepSeek model when Qwen is unavailable', () => {
+  assert.equal(
+    selectClassroomModel(['deepseek-v4.1-flash-1017']),
+    'deepseek-v4.1-flash-1017'
   )
 })
 
