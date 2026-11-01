@@ -2,10 +2,12 @@ package controller
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -206,7 +208,16 @@ func TestIFLinkPayHTTPBrowserRedirectReplayCannotFulfillEitherOrderType(t *testi
 }
 
 func TestIFLinkPayHTTPPurchasesStayUnavailableWithLegacyCredentials(t *testing.T) {
-	for _, endpoint := range []string{"/api/user/iflinkpay", "/api/subscription/iflinkpay/pay"} {
+	// Every IFLinkPay entry point 閳?purchase and verified re-check alike 閳?must
+	// stay closed while the verified-payment switch is off. Without this, a
+	// deployment that merely configured legacy credentials would expose a path
+	// that could settle an order.
+	for _, endpoint := range []string{
+		"/api/user/iflinkpay",
+		"/api/subscription/iflinkpay/pay",
+		"/api/user/iflinkpay/verify",
+		"/api/subscription/iflinkpay/verify",
+	} {
 		t.Run(endpoint, func(t *testing.T) {
 			user := setupIFLinkPayHTTPTest(t)
 			plan := &model.SubscriptionPlan{
@@ -217,12 +228,14 @@ func TestIFLinkPayHTTPPurchasesStayUnavailableWithLegacyCredentials(t *testing.T
 			}
 			require.NoError(t, model.DB.Create(plan).Error)
 			t.Cleanup(func() { model.InvalidateSubscriptionPlanCache(plan.Id) })
-			body, err := common.Marshal(map[string]any{"amount": 1.49, "plan_id": plan.Id})
+			body, err := common.Marshal(map[string]any{"amount": 1.49, "plan_id": plan.Id, "trade_no": "TU-IFP-verify-probe"})
 			require.NoError(t, err)
 			router := gin.New()
 			setUser := func(c *gin.Context) { c.Set("id", user.Id); c.Next() }
 			router.POST("/api/user/iflinkpay", setUser, RequestIFLinkPay)
 			router.POST("/api/subscription/iflinkpay/pay", setUser, SubscriptionRequestIFLinkPay)
+			router.POST("/api/user/iflinkpay/verify", setUser, VerifyIFLinkPayPayment)
+			router.POST("/api/subscription/iflinkpay/verify", setUser, VerifyIFLinkPaySubscriptionPayment)
 			request := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
 			recorder := httptest.NewRecorder()
@@ -273,4 +286,124 @@ func TestIFLinkPayHTTPRedirectReplayDoesNotDuplicateVerifiedManualCredit(t *test
 	var logs int64
 	require.NoError(t, model.LOG_DB.Model(&model.Log{}).Where("user_id = ? AND type = ?", user.Id, model.LogTypeTopup).Count(&logs).Error)
 	assert.EqualValues(t, 1, logs)
+}
+
+// fakeIFLinkPayProvider emulates the provider's cashier endpoints so the
+// reconciler can be exercised without touching the real provider. Only the order
+// named in paidOrder is reported PAID; everything else stays PREPAY.
+func fakeIFLinkPayProvider(t *testing.T, paidOrder string, amountFen int64) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/pay/iflink/checkout", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Order string `json:"order"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session": "sess-" + body.Order,
+			"payment": map[string]any{
+				"status": "PREPAY", "amount": amountFen, "order": body.Order,
+			},
+		})
+	})
+	mux.HandleFunc("/api/pay/iflink/status", func(w http.ResponseWriter, r *http.Request) {
+		order := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer sess-")
+		status := "PREPAY"
+		if order == paidOrder {
+			status = "PAID"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": status, "amount": amountFen, "order": order,
+		})
+	})
+	return httptest.NewServer(mux)
+}
+
+// TestIFLinkPayReconcilerSettlesOnlyProviderConfirmedOrders proves the
+// reconciliation path that replaces the (currently unauthenticated) callback:
+// a payer who closes the browser is still credited, but only when the provider
+// itself reports PAID for that exact order and amount.
+func TestIFLinkPayReconcilerSettlesOnlyProviderConfirmedOrders(t *testing.T) {
+	user := setupIFLinkPayHTTPTest(t)
+	const amountFen int64 = 149
+
+	provider := fakeIFLinkPayProvider(t, "reconcile-paid", amountFen)
+	defer provider.Close()
+	t.Setenv("IFLINK_PAY_V2_ENABLED", "true")
+	t.Setenv("IFLINK_PAY_CLIENT_ID", "iflink")
+	t.Setenv("IFLINK_PAY_QUERY_KEY_ID", "query-test")
+	t.Setenv("IFLINK_PAY_QUERY_SECRET", "query-secret-test")
+	t.Setenv("IFLINK_PAY_SECRET", "link-secret-test")
+	t.Setenv("IFLINK_PAY_API_BASE_URL", provider.URL)
+
+	now := common.GetTimestamp()
+	makeOrder := func(tradeNo string) {
+		require.NoError(t, model.DB.Create(&model.TopUp{
+			UserId: user.Id, Amount: 1, Money: 1.49, TradeNo: tradeNo, Currency: "CNY",
+			PaymentProvider: model.PaymentProviderIFLinkPay,
+			PaymentMethod:   model.PaymentMethodIFLinkPay,
+			Status:          common.TopUpStatusPending,
+			CreateTime:      now,
+		}).Error)
+	}
+	makeOrder("reconcile-paid")
+	makeOrder("reconcile-unpaid")
+
+	var before model.User
+	require.NoError(t, model.DB.First(&before, user.Id).Error)
+
+	reconcileIFLinkPayPending()
+
+	paid := model.GetTopUpByTradeNo("reconcile-paid")
+	require.NotNil(t, paid)
+	assert.Equal(t, common.TopUpStatusSuccess, paid.Status, "provider-confirmed order must be settled")
+	assert.Equal(t, "reconcile-paid", paid.ProviderTradeNo)
+	assert.InDelta(t, 1.49, paid.PaidMoney, 0.001)
+
+	unpaid := model.GetTopUpByTradeNo("reconcile-unpaid")
+	require.NotNil(t, unpaid)
+	assert.Equal(t, common.TopUpStatusPending, unpaid.Status, "unpaid order must stay pending")
+
+	var after model.User
+	require.NoError(t, model.DB.First(&after, user.Id).Error)
+	// 1.49 CNY at QuotaPerUnit 500000 credits exactly 745000, once.
+	assert.Equal(t, before.Quota+745_000, after.Quota,
+		"quota is credited for exactly one order and only once")
+
+	// Idempotent: a second pass must not credit again.
+	reconcileIFLinkPayPending()
+	var again model.User
+	require.NoError(t, model.DB.First(&again, user.Id).Error)
+	assert.Equal(t, after.Quota, again.Quota)
+}
+
+// TestIFLinkPayReconcilerDoesNothingWhenSwitchIsOff guards the fail-closed
+// posture: with the verified-payment switch off, no provider call and no credit.
+func TestIFLinkPayReconcilerDoesNothingWhenSwitchIsOff(t *testing.T) {
+	user := setupIFLinkPayHTTPTest(t)
+	t.Setenv("IFLINK_PAY_V2_ENABLED", "false")
+	t.Setenv("IFLINK_PAY_API_BASE_URL", "https://payments.example.invalid")
+
+	require.NoError(t, model.DB.Create(&model.TopUp{
+		UserId: user.Id, Amount: 1, Money: 1.49, TradeNo: "reconcile-switch-off", Currency: "CNY",
+		PaymentProvider: model.PaymentProviderIFLinkPay,
+		PaymentMethod:   model.PaymentMethodIFLinkPay,
+		Status:          common.TopUpStatusPending,
+		CreateTime:      common.GetTimestamp(),
+	}).Error)
+
+	var before model.User
+	require.NoError(t, model.DB.First(&before, user.Id).Error)
+
+	reconcileIFLinkPayPending()
+
+	order := model.GetTopUpByTradeNo("reconcile-switch-off")
+	require.NotNil(t, order)
+	assert.Equal(t, common.TopUpStatusPending, order.Status)
+
+	var after model.User
+	require.NoError(t, model.DB.First(&after, user.Id).Error)
+	assert.Equal(t, before.Quota, after.Quota, "no credit may happen while the switch is off")
 }

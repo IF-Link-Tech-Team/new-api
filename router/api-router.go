@@ -19,8 +19,7 @@ func SetApiRouter(router *gin.Engine) {
 	apiRouter.Use(middleware.RouteTag("api"))
 	apiRouter.Use(gzip.Gzip(gzip.DefaultCompression))
 	apiRouter.Use(middleware.AccessTokenAudit())
-	apiRouter.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
-	apiRouter.Use(middleware.GlobalAPIRateLimit())
+	apiRouter.Use(middleware.BodyStorageCleanup()) // 濠电偞鎸搁幊鎰板箖婵犲嫭瀚氶梺鍨儑濠€鏉懨归敐鍡樺碍闁宦板姂瀹?	apiRouter.Use(middleware.GlobalAPIRateLimit())
 	anonymousRequestBodyLimit := middleware.AnonymousRequestBodyLimit()
 	{
 		apiRouter.GET("/setup", controller.GetSetup)
@@ -67,7 +66,7 @@ func SetApiRouter(router *gin.Engine) {
 		// Preserve the IFLinkPay aliases as unavailable while independent payment
 		// verification is missing; the legacy redirect signature is not proof.
 		apiRouter.POST("/topup/iflinkpay/notify", anonymousRequestBodyLimit, controller.IFLinkPayNotify)
-		// 支付宝原生集成 notify (与 topup notify 共用 handler,内部按 trade_no 自动分支)
+		// 闂佽　鍋撴い鏍ㄧ懅鐢盯鎮楃憴鍕畵閻㈩垼鍋婇幃浠嬫偄閸忚壈鍋侀梺?notify (婵?topup notify 闂佺绻楁禍顒勫极?handler,闂佸憡鍔曢幊姗€宕曢幘顔肩?trade_no 闂佺厧顨庢禍婊勬叏閳哄懎绀嗛柛鈩兩戦弳?
 		apiRouter.POST("/topup/alipay/notify", anonymousRequestBodyLimit, controller.AlipayNotify)
 		apiRouter.GET("/topup/alipay/return", controller.AlipayReturn)
 		// Compatibility callback uses the same signature-verified handler.
@@ -135,6 +134,10 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/pay", middleware.CriticalRateLimit(), controller.RequestEpay)
 				selfRoute.POST("/amount", controller.RequestAmount)
 				selfRoute.POST("/iflinkpay", middleware.CriticalRateLimit(), controller.RequestIFLinkPay)
+				// Re-checks one of the caller's own orders against the payment
+				// provider. The browser can only trigger a query; it can never
+				// assert that a payment succeeded.
+				selfRoute.POST("/iflinkpay/verify", middleware.CriticalRateLimit(), controller.VerifyIFLinkPayPayment)
 				selfRoute.POST("/alipay", middleware.CriticalRateLimit(), controller.RequestAlipayPay)
 				selfRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.RequestStripePay)
 				selfRoute.POST("/stripe/amount", controller.RequestStripeAmount)
@@ -208,6 +211,9 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionRoute.POST("/waffo-pancake/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestWaffoPancakePay)
 			subscriptionRoute.POST("/alipay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestAlipayPay)
 			subscriptionRoute.POST("/iflinkpay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestIFLinkPay)
+			// Re-checks one of the caller's own subscription orders against the
+			// payment provider. The client only triggers a query.
+			subscriptionRoute.POST("/iflinkpay/verify", middleware.CriticalRateLimit(), controller.VerifyIFLinkPaySubscriptionPayment)
 		}
 		subscriptionAdminRoute := apiRouter.Group("/subscription/admin")
 		subscriptionAdminRoute.Use(middleware.AdminAuth())

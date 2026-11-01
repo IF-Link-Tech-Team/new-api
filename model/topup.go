@@ -246,6 +246,23 @@ func GetTopUpByTradeNo(tradeNo string) *TopUp {
 	return topUp
 }
 
+// ListPendingIFLinkPayTopUps returns recent unsettled wallet orders so a
+// reconciler can ask the payment provider about them. Read-only: it never
+// changes an order, and settlement still requires provider confirmation.
+func ListPendingIFLinkPayTopUps(createdAfter int64, limit int) ([]TopUp, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows := make([]TopUp, 0, limit)
+	err := DB.
+		Where("payment_provider = ? AND status = ? AND create_time >= ?",
+			PaymentProviderIFLinkPay, common.TopUpStatusPending, createdAfter).
+		Order("create_time asc").
+		Limit(limit).
+		Find(&rows).Error
+	return rows, err
+}
+
 func UpdatePendingTopUpStatus(tradeNo string, expectedPaymentProvider string, targetStatus string) error {
 	if tradeNo == "" {
 		return errors.New("payment order number not provided")
