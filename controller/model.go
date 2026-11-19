@@ -205,8 +205,14 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 	}
 
 	group := userGroup
+	if effectiveGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup); effectiveGroup != "" {
+		group = effectiveGroup
+	}
 	if tokenGroup != "" {
 		group = tokenGroup
+	}
+	if !service.GroupRoleAllowed(group, c.GetInt("role")) {
+		return modelListGroups{userGroup: userGroup, tokenGroup: tokenGroup}, nil
 	}
 	return modelListGroups{
 		userGroup:   userGroup,

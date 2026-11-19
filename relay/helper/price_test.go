@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -24,8 +28,150 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+func TestAPIChannelPrivateFreeGroupPrice(t *testing.T) {
+	var driver gorm.Dialector
+	dialect := os.Getenv("INTERNAL_FREE_TEST_DIALECT")
+	switch dialect {
+	case "", "sqlite":
+		driver = sqlite.Open(filepath.Join(t.TempDir(), "internal-free.db"))
+	case "mysql":
+		driver = mysql.Open(os.Getenv("INTERNAL_FREE_TEST_DSN"))
+	case "postgres":
+		driver = postgres.Open(os.Getenv("INTERNAL_FREE_TEST_DSN"))
+	default:
+		t.Fatal("unsupported test database")
+	}
+	db, err := gorm.Open(driver, &gorm.Config{})
+	require.NoError(t, err)
+	if dialect == "mysql" || dialect == "postgres" {
+		query := "SELECT DATABASE()"
+		if dialect == "postgres" {
+			query = "SELECT current_database()"
+		}
+		var name string
+		require.NoError(t, db.Raw(query).Scan(&name).Error)
+		require.True(t, strings.HasPrefix(name, "internal_free_"), "use a dedicated disposable database")
+	}
+	require.False(t, db.Migrator().HasTable("api_channel_prices"))
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.APIChannelCatalog{}, &model.APIChannelPrice{}, &model.GroupModelPrice{}, &model.GroupWallet{}, &model.GroupChannel{}))
+	oldDB, oldUnit := model.DB, common.QuotaPerUnit
+	oldRatios := ratio_setting.GroupRatio2JSONString()
+	oldRoles := ratio_setting.GetGroupRatioSetting().GroupMinRole.MarshalJSONString()
+	oldFreePreconsume := operation_setting.GetQuotaSetting().EnableFreeModelPreConsume
+	model.DB, common.QuotaPerUnit = db, 500_000
+	operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = false
+	t.Setenv("IFLINK_API_CHANNEL_PRICING", "enabled")
+	t.Cleanup(func() {
+		model.DB, common.QuotaPerUnit = oldDB, oldUnit
+		operation_setting.GetQuotaSetting().EnableFreeModelPreConsume = oldFreePreconsume
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(oldRatios))
+		require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{"group_ratio_setting.group_min_role": oldRoles}))
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		require.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"内部":0,"public-free":0}`))
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{"group_ratio_setting.group_min_role": `{"内部":10}`}))
+	require.NoError(t, model.InitializeAPIChannelCatalog(db))
+	require.NoError(t, db.Create(&model.Channel{Id: 701, Name: "shared-channel", Models: "shared-model", Group: "default,内部,public-free", Status: 1}).Error)
+	row := model.APIChannelPrice{Model: "shared-model", ChannelID: 701, UpstreamModel: "shared-model", Enabled: true,
+		SellingPrice: `{"input":2,"cached_input":0.1,"cache_creation":2,"output":8}`}
+	_, err = model.PublishAPIChannelPrices(db, 0, []model.APIChannelPrice{row}, 1, "test public and private pricing")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, group, auto string
+		role              int
+		free              bool
+	}{
+		{"admin internal", "内部", "", common.RoleAdminUser, true},
+		{"root internal", "内部", "", common.RoleRootUser, true},
+		{"root public", "default", "", common.RoleRootUser, false},
+		{"ordinary public", "default", "", common.RoleCommonUser, false},
+		{"public zero multiplier keeps absolute pricing", "public-free", "", common.RoleRootUser, false},
+		{"missing role cannot get private free pricing", "内部", "", 0, false},
+		{"auto selects internal", "auto", "内部", common.RoleAdminUser, true},
+		{"auto selects public", "auto", "default", common.RoleAdminUser, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			ctx.Set("role", tc.role)
+			ctx.Set("channel_id", 701)
+			if tc.auto != "" {
+				ctx.Set("auto_group", tc.auto)
+			}
+			info := &relaycommon.RelayInfo{OriginModelName: "shared-model", UserGroup: "default", UsingGroup: tc.group,
+				ProductType: model.ProductTypeWallet, ProductBillingMultiplier: 1,
+				BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)}}
+			price, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+			require.NoError(t, err)
+			wantPre, wantActual := 1000, 4000
+			if tc.free {
+				wantPre, wantActual = 0, 0
+			}
+			assert.Equal(t, tc.free, price.FreeModel)
+			assert.Equal(t, wantPre, price.QuotaToPreConsume)
+			ok, quota, _ := service.TryTieredSettle(info, billingexpr.TokenParams{P: 2000, C: 500, Len: 2000})
+			require.True(t, ok)
+			assert.Equal(t, wantActual, quota)
+			if tc.auto != "" {
+				assert.Equal(t, tc.auto, info.UsingGroup)
+			}
+		})
+	}
+
+	t.Run("autonomous_group_snapshot_does_not_change_global_price", func(t *testing.T) {
+		require.NoError(t, db.Create(&model.Channel{Id: 702, Name: "Owned", Group: "Astro", Models: "shared-model", Status: 1}).Error)
+		require.NoError(t, db.Create(&model.GroupChannel{GroupName: "Astro", ChannelID: 702, Owned: true, Reviewed: true}).Error)
+		require.NoError(t, db.Create(&model.GroupWallet{GroupName: "Astro", Mode: model.GroupWalletIndependent, Enabled: true, Activated: true}).Error)
+		local := model.GroupModelPrice{GroupName: "Astro", ChannelID: 702, Model: "shared-model", Revision: 1, SellingPrice: `{"input":6,"cached_input":0.6,"cache_creation":8,"output":12}`}
+		require.NoError(t, db.Create(&local).Error)
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
+		ctx.Set("group", "Astro")
+		ctx.Set("channel_id", 702)
+		frozen, err := model.RequestAPIChannelPrices(ctx, "shared-model")
+		require.NoError(t, err)
+		require.True(t, slices.ContainsFunc(frozen.Rows, func(row model.APIChannelPrice) bool { return row.GroupName == "Astro" && row.Revision == 1 }))
+		require.NoError(t, db.Model(&local).Updates(map[string]any{"revision": 2, "selling_price": `{"input":99,"cached_input":99,"cache_creation":99,"output":99}`}).Error)
+		info := &relaycommon.RelayInfo{OriginModelName: "shared-model", UserGroup: "Astro", UsingGroup: "Astro", BillingRequestInput: &billingexpr.RequestInput{Body: []byte(`{}`)}}
+		price, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+		require.NoError(t, err)
+		assert.Equal(t, 3000, price.QuotaToPreConsume)
+		ok, quota, _ := service.TryTieredSettle(info, billingexpr.TokenParams{P: 2000, C: 500, Len: 2000})
+		require.True(t, ok)
+		assert.Equal(t, 9000, quota, "actual settlement uses the frozen group rate")
+		assert.Equal(t, "Astro", info.APIChannelPrice.GroupName)
+		public, _ := gin.CreateTestContext(httptest.NewRecorder())
+		public.Request = ctx.Request
+		public.Set("group", "default")
+		publicPrices, err := model.RequestAPIChannelPrices(public, "shared-model")
+		require.NoError(t, err)
+		assert.False(t, slices.ContainsFunc(publicPrices.Rows, func(row model.APIChannelPrice) bool { return row.ChannelID == 702 }), "group-only route never appears in the normal catalog")
+		fresh, _ := gin.CreateTestContext(httptest.NewRecorder())
+		fresh.Request = ctx.Request
+		fresh.Set("group", "Astro")
+		current, err := model.RequestAPIChannelPrices(fresh, "shared-model")
+		require.NoError(t, err)
+		assert.True(t, slices.ContainsFunc(current.Rows, func(row model.APIChannelPrice) bool { return row.GroupName == "Astro" && row.Revision == 2 }))
+	})
+	_, prices, err := model.ReadAPIChannelCatalog(db, "shared-model")
+	require.NoError(t, err)
+	require.Len(t, prices, 1)
+	assert.Equal(t, row.SellingPrice, prices[0].SellingPrice, "free group must not rewrite the normal channel price")
+	versionQuery := "SELECT sqlite_version()"
+	if dialect == "mysql" || dialect == "postgres" {
+		versionQuery = "SELECT VERSION()"
+	}
+	var version string
+	require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+	t.Logf("database: %s", version)
+}
 
 func TestModelPriceHelperUsesWalletVersionedSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)

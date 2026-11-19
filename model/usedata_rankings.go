@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"gorm.io/gorm"
 )
 
@@ -18,7 +19,7 @@ type RankingQuotaBucket struct {
 	Tokens    int64  `json:"tokens"`
 }
 
-func GetRankingQuotaTotals(startTime int64, endTime int64) ([]RankingQuotaTotal, error) {
+func GetRankingQuotaTotals(startTime int64, endTime int64, excludedGroups ...string) ([]RankingQuotaTotal, error) {
 	var rows []RankingQuotaTotal
 	query := DB.Table("quota_data").
 		Select("model_name, sum(token_used) as total_tokens").
@@ -26,12 +27,12 @@ func GetRankingQuotaTotals(startTime int64, endTime int64) ([]RankingQuotaTotal,
 		Group("model_name").
 		Having("sum(token_used) > 0").
 		Order("total_tokens DESC")
-	query = applyRankingQuotaTimeRange(query, startTime, endTime)
+	query = applyRankingQuotaFilters(query, startTime, endTime, excludedGroups)
 	err := query.Find(&rows).Error
 	return rows, err
 }
 
-func GetRankingQuotaBuckets(startTime int64, endTime int64, bucketSize int64) ([]RankingQuotaBucket, error) {
+func GetRankingQuotaBuckets(startTime int64, endTime int64, bucketSize int64, excludedGroups ...string) ([]RankingQuotaBucket, error) {
 	if bucketSize <= 0 {
 		bucketSize = 3600
 	}
@@ -43,7 +44,7 @@ func GetRankingQuotaBuckets(startTime int64, endTime int64, bucketSize int64) ([
 		Group(fmt.Sprintf("model_name, %s", bucketExpr)).
 		Having("sum(token_used) > 0").
 		Order("bucket ASC")
-	query = applyRankingQuotaTimeRange(query, startTime, endTime)
+	query = applyRankingQuotaFilters(query, startTime, endTime, excludedGroups)
 	err := query.Find(&rows).Error
 	return rows, err
 }
@@ -55,7 +56,13 @@ func rankingBucketExpr(bucketSize int64) string {
 	return fmt.Sprintf("(created_at / %d) * %d", bucketSize, bucketSize)
 }
 
-func applyRankingQuotaTimeRange(query *gorm.DB, startTime int64, endTime int64) *gorm.DB {
+func applyRankingQuotaFilters(query *gorm.DB, startTime int64, endTime int64, excludedGroups []string) *gorm.DB {
+	if excludedGroups == nil {
+		excludedGroups = ratio_setting.GetRoleRestrictedGroups()
+	}
+	if len(excludedGroups) > 0 {
+		query = query.Where("(use_group IS NULL OR use_group NOT IN ?)", excludedGroups)
+	}
 	if startTime > 0 {
 		query = query.Where("created_at >= ?", startTime)
 	}

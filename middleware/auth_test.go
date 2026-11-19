@@ -585,3 +585,51 @@ func TestApplyWebSocketSubprotocolAuthorizationReadsRepeatedHeaders(t *testing.T
 	assert.True(t, applyWebSocketSubprotocolAuthorization(header))
 	assert.Equal(t, "Bearer sk-later-field", header.Get("Authorization"))
 }
+
+func TestGroupOnlyAdminCannotUseGlobalManagement(t *testing.T) {
+	setupDashboardAuthMiddlewareTest(t)
+	wasMaster := common.IsMasterNode
+	common.IsMasterNode = true
+	t.Cleanup(func() { common.IsMasterNode = wasMaster })
+	require.NoError(t, model.DB.AutoMigrate(&model.CasbinRule{}, &model.AuthzRole{}, &model.GroupGrant{}, &model.GroupJoinRequest{}))
+	require.NoError(t, authz.Init(model.DB))
+	admin := createMiddlewarePATUser(t, "group-only-admin", "unused-admin-key")
+	require.NoError(t, model.DB.Model(admin).Updates(map[string]any{"role": common.RoleAdminUser, "group": "内部"}).Error)
+	admin.Role, admin.Group = common.RoleAdminUser, "内部"
+	global := authz.Permission{Resource: "administration", Action: "access"}
+	// Mint this token before narrowing permissions: a previously issued token
+	// must not retain the owner's former global authority.
+	pat, _ := createMiddlewareScopedToken(t, admin.Id, 0, "user:read", "user:write")
+	now := time.Now().Unix()
+	session := &model.UserSession{SID: "group-admin-session", UserID: admin.Id, Version: 1, UserAuthVersion: admin.AuthVersion, Status: model.UserSessionStatusActive, RefreshHash: "group-admin-refresh", LoginMethod: "password", LastActiveAt: now, ExpiresAt: now + 3600}
+	require.NoError(t, model.CreateUserSession(session))
+	access, _, err := service.IssueAccessToken(service.AuthIdentity{UserID: admin.Id, SessionID: session.SID, UserAuthVersion: admin.AuthVersion, SessionVersion: 1})
+	require.NoError(t, err)
+	ok := func(c *gin.Context) { c.Status(http.StatusNoContent) }
+	router := gin.New()
+	router.GET("/api/user/", AdminAuth(), ok)
+	router.POST("/api/user/", AdminAuth(), ok)
+	router.GET("/api/user/self", UserAuth(), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"role": c.GetInt("role"), "group": c.GetString("group")})
+	})
+	assert.Equal(t, http.StatusNoContent, middlewareBearerRequest(router, "/api/user/", access).Code)
+	require.NoError(t, authz.SetUserPermissions(admin.Id, authz.PermissionsMap{global.Resource: {global.Action: false}}))
+	for _, token := range []string{access, pat} {
+		assert.Equal(t, http.StatusForbidden, middlewareBearerRequest(router, "/api/user/", token).Code)
+		request := httptest.NewRequest(http.MethodPost, "/api/user/", nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		assert.Equal(t, http.StatusForbidden, response.Code)
+	}
+	assert.False(t, authz.Can(admin.Id, common.RoleAdminUser, authz.ChannelWrite))
+	assert.True(t, authz.Can(999, common.RoleRootUser, global))
+	assert.True(t, authz.Can(998, common.RoleAdminUser, global))
+	self := middlewareBearerRequest(router, "/api/user/self", access)
+	assert.Equal(t, http.StatusOK, self.Code)
+	assert.JSONEq(t, `{"role":10,"group":"内部"}`, self.Body.String())
+	_, err = service.NormalizeAccessTokenScopes(admin.Id, common.RoleAdminUser, []string{"user:write"})
+	assert.ErrorIs(t, err, service.ErrAccessTokenScopeForbidden)
+	require.NoError(t, authz.ClearUserPermissions(admin.Id))
+	assert.Equal(t, http.StatusNoContent, middlewareBearerRequest(router, "/api/user/", access).Code)
+}

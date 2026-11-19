@@ -31,7 +31,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { ROLE } from '@/lib/roles'
+import { canAccessGlobalAdmin } from '@/lib/admin-permissions'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -200,7 +200,7 @@ export function Dashboard() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const params = route.useParams()
-  const userRole = useAuthStore((state) => state.auth.user?.role)
+  const user = useAuthStore((state) => state.auth.user)
   const activeSection = (params.section ??
     DASHBOARD_DEFAULT_SECTION) as DashboardSectionId
 
@@ -249,7 +249,7 @@ export function Dashboard() {
   )
 
   const meta = SECTION_META[activeSection] ?? SECTION_META.overview
-  const isAdmin = Boolean(userRole && userRole >= ROLE.ADMIN)
+  const isAdmin = canAccessGlobalAdmin(user)
   const visibleSections = useMemo(
     () =>
       DASHBOARD_SECTION_IDS.filter(

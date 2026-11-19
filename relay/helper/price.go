@@ -81,11 +81,14 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 			if err != nil || mapped != row.UpstreamModel {
 				return hosttypes.PriceData{}, errors.New("API channel model mapping changed")
 			}
+			if row.GroupName != "" && row.GroupName != info.UsingGroup {
+				return hosttypes.PriceData{}, errors.New("group price does not match the selected funding group")
+			}
 			expression, err := row.BillingExpression()
 			if err != nil {
 				return hosttypes.PriceData{}, err
 			}
-			info.APIChannelPrice = &relaycommon.APIChannelPriceAttempt{ChannelID: row.ChannelID, PriceID: row.ID, Revision: row.Revision}
+			info.APIChannelPrice = &relaycommon.APIChannelPriceAttempt{ChannelID: row.ChannelID, PriceID: row.ID, Revision: row.Revision, GroupName: row.GroupName}
 			// Wallet channel prices completely replace native/global pricing and
 			// legacy wallet multipliers. Product rates are frozen per entitlement.
 			info.ProductBillingMultiplier = 1
@@ -112,9 +115,17 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 					info.ProductBillingMultiplier = bookPrice.BillingMultiplier
 				}
 			}
-			// API channel prices are absolute USD prices. Native group pricing
-			// must not silently add another sales multiplier.
-			return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, hosttypes.GroupRatioInfo{GroupRatio: 1}, expression)
+			// Keep absolute channel prices for public groups. A zero-rate private
+			// group explicitly makes the entire request free, including tool fees.
+			if autoGroup, ok := c.Get("auto_group"); ok {
+				info.UsingGroup = autoGroup.(string)
+			}
+			groupRatioInfo := hosttypes.GroupRatioInfo{GroupRatio: 1}
+			minimum, restricted := ratio_setting.GetGroupRatioSetting().GroupMinRole.Get(info.UsingGroup)
+			if restricted && minimum > common.RoleCommonUser && c.GetInt("role") >= minimum && ratio_setting.GetGroupRatio(info.UsingGroup) == 0 {
+				groupRatioInfo.GroupRatio = 0
+			}
+			return modelPriceHelperTiered(c, info, info.OriginModelName, promptTokens, groupRatioInfo, expression)
 		}
 		return hosttypes.PriceData{}, errors.New("selected channel has no enabled API price")
 	}

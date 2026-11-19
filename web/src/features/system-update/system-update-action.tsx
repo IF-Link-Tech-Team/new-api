@@ -28,7 +28,7 @@ import { useTranslation } from 'react-i18next'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
-import { ROLE } from '@/lib/roles'
+import { canAccessGlobalAdmin } from '@/lib/admin-permissions'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -42,9 +42,7 @@ type SystemUpdateActionProps = {
 }
 
 export function SystemUpdateAction(props: SystemUpdateActionProps) {
-  const isAdmin = useAuthStore(
-    (state) => (state.auth.user?.role ?? 0) >= ROLE.ADMIN
-  )
+  const isAdmin = useAuthStore((state) => canAccessGlobalAdmin(state.auth.user))
   if (!isAdmin) return null
   return <AdminSystemUpdateAction {...props} />
 }

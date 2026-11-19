@@ -539,6 +539,11 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	if err = ApplyHeaderOverride(info, c, req); err != nil {
 		return nil, err
 	}
+	if info.TaskRequestPreflight != nil {
+		if err = info.TaskRequestPreflight(req); err != nil {
+			return nil, err
+		}
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)

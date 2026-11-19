@@ -22,6 +22,10 @@ import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
 import { Label } from '@/components/ui/label'
+import {
+  PrivateUserAliasButton,
+  PrivateUserName,
+} from '@/features/private-user-alias'
 import { formatQuota, formatCompactNumber } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 
@@ -34,7 +38,7 @@ interface UserInfoDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-function InfoItem({ label, value }: { label: string; value: string | number }) {
+function InfoItem({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className='space-y-1.5'>
       <Label className='text-muted-foreground text-xs'>{label}</Label>
@@ -98,14 +102,37 @@ export function UserInfoDialog({
         <div className='space-y-4 py-4'>
           {/* Basic Info */}
           <div className='grid grid-cols-2 gap-4'>
-            <InfoItem label={t('Username')} value={userInfo.username} />
+            <InfoItem
+              label={t('Username')}
+              value={
+                userInfo.display_name ? (
+                  userInfo.username
+                ) : (
+                  <PrivateUserName
+                    userID={userInfo.id}
+                    name={userInfo.username}
+                  />
+                )
+              }
+            />
             {userInfo.display_name && (
               <InfoItem
                 label={t('Display Name')}
-                value={userInfo.display_name}
+                value={
+                  <PrivateUserName
+                    userID={userInfo.id}
+                    name={userInfo.display_name}
+                  />
+                }
               />
             )}
           </div>
+          {userInfo.id && (
+            <PrivateUserAliasButton
+              userID={userInfo.id}
+              name={userInfo.display_name || userInfo.username}
+            />
+          )}
 
           {/* Balance Info */}
           <div className='grid grid-cols-2 gap-4'>

@@ -47,6 +47,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import type { AdminUserManageAction } from '@/features/auth/secure-verification'
+import { PrivateUserAliasDialog } from '@/features/private-user-alias'
 import { UserSubscriptionsDialog } from '@/features/subscriptions/components/dialogs/user-subscriptions-dialog'
 import { handleServerError } from '@/lib/handle-server-error'
 import { AuthOperationError } from '@/lib/secure-verification'
@@ -88,6 +89,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const [resetTwoFAOpen, setResetTwoFAOpen] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
   const [subscriptionsDialogOpen, setSubscriptionsDialogOpen] = useState(false)
+  const [aliasOpen, setAliasOpen] = useState(false)
 
   const handleEdit = () => {
     setCurrentRow(user)
@@ -214,6 +216,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         ariaLabel={t('Open menu')}
         contentClassName='w-48'
       >
+        <DropdownMenuItem onSelect={() => setAliasOpen(true)}>
+          {t('Private alias')}
+          <DropdownMenuShortcut>
+            <Pencil size={16} />
+          </DropdownMenuShortcut>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         {isDisabled ? (
           <DropdownMenuItem onClick={() => handleManage('enable')}>
             {t('Enable')}
@@ -316,6 +325,14 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuShortcut>
         </DropdownMenuItem>
       </DataTableRowActionMenu>
+      {aliasOpen && (
+        <PrivateUserAliasDialog
+          userID={user.id}
+          name={user.display_name || user.username}
+          open={aliasOpen}
+          onOpenChange={setAliasOpen}
+        />
+      )}
 
       <ConfirmDialog
         open={resetPasskeyOpen && !verificationActive}

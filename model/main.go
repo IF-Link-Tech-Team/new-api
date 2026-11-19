@@ -367,6 +367,7 @@ func migrateDB() error {
 		&TopUp{},
 		&QuotaData{},
 		&Task{},
+		&TaskIdempotency{},
 		&TaskPlugin{},
 		&Model{},
 		&Vendor{},
@@ -398,6 +399,12 @@ func migrateDB() error {
 		&SystemTaskLock{},
 		&CasbinRule{},
 		&AuthzRole{},
+		&GroupGrant{},
+		&UserAlias{},
+		&GroupWallet{}, &GroupWalletMember{}, &GroupWalletCharge{}, &GroupWalletEntry{},
+		&GroupModelPrice{},
+		&GroupChannel{},
+		&GroupJoinRequest{},
 		&UserAccessToken{},
 	)
 	if err != nil {

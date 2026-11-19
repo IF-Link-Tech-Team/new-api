@@ -999,7 +999,8 @@ type GroupPricingSectionProps = {
 
 function GroupPricingSection(props: GroupPricingSectionProps) {
   const { t } = useTranslation()
-  const variants = props.model.billing_plugin_variants
+  const variants =
+    props.model.group_pricing ?? props.model.billing_plugin_variants
   if (!variants?.length) {
     return <ProviderGroupPricingSection {...props} />
   }
@@ -1008,7 +1009,7 @@ function GroupPricingSection(props: GroupPricingSectionProps) {
       <SectionTitle>{t('Pricing by Group')}</SectionTitle>
       <Tabs key={props.model.model_name} defaultValue={variants[0].plugin_key}>
         <TabsList
-          aria-label={t('Provider')}
+          aria-label={t(props.model.group_pricing ? 'Group' : 'Provider')}
           className='max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'
         >
           {variants.map((variant) => (
@@ -1017,14 +1018,16 @@ function GroupPricingSection(props: GroupPricingSectionProps) {
               value={variant.plugin_key}
               className='max-w-full min-w-0'
             >
-              <PluginIcon
-                plugin={{
-                  key: variant.plugin_key,
-                  name: variant.plugin_name,
-                  icon: variant.icon,
-                }}
-                size={16}
-              />
+              {!variant.group && (
+                <PluginIcon
+                  plugin={{
+                    key: variant.plugin_key,
+                    name: variant.plugin_name,
+                    icon: variant.icon,
+                  }}
+                  size={16}
+                />
+              )}
               <span className='truncate' title={variant.plugin_name}>
                 {variant.plugin_name}
               </span>
@@ -1167,7 +1170,7 @@ function ProviderGroupPricingSection(
     })
     const formattedPricesByGroup = new Map(
       availableGroups.map((group) => {
-        const ratio = props.groupRatio[group] || 1
+        const ratio = props.groupRatio[group] ?? 1
         return [
           group,
           getDynamicFormattedPricesByTier(dynamicTiers, {
@@ -1190,7 +1193,7 @@ function ProviderGroupPricingSection(
         <AutoGroupChain model={props.model} autoGroups={props.autoGroups} />
         <div className='space-y-3'>
           {availableGroups.map((group) => {
-            const ratio = props.groupRatio[group] || 1
+            const ratio = props.groupRatio[group] ?? 1
             const formattedPricesByTier =
               formattedPricesByGroup.get(group) ??
               new Map<DynamicPricingTier, Map<string, string>>()
@@ -1396,7 +1399,7 @@ function ProviderGroupPricingSection(
             header: t('Ratio'),
             className: thClass,
             cellClassName: 'text-muted-foreground py-2.5 font-mono',
-            cell: (group) => `${props.groupRatio[group] || 1}x`,
+            cell: (group) => `${props.groupRatio[group] ?? 1}x`,
           },
           ...(isTokenBased
             ? [
@@ -1521,17 +1524,19 @@ export function ModelDetailsContent(props: ModelDetailsContentProps) {
                 showRechargePrice={showRechargePrice}
               />
             )}
-            {isDynamic && !simpleTaskPricing && (
-              <DynamicPricingBreakdown
-                billingExpr={props.model.billing_expr}
-                usageSchema={props.model.billing_usage_schema}
-                taskPriceOptions={{
-                  showRechargePrice,
-                  priceRate: props.priceRate,
-                  usdExchangeRate: props.usdExchangeRate,
-                }}
-              />
-            )}
+            {isDynamic &&
+              !simpleTaskPricing &&
+              !props.model.billing_plugin_variants?.length && (
+                <DynamicPricingBreakdown
+                  billingExpr={props.model.billing_expr}
+                  usageSchema={props.model.billing_usage_schema}
+                  taskPriceOptions={{
+                    showRechargePrice,
+                    priceRate: props.priceRate,
+                    usdExchangeRate: props.usdExchangeRate,
+                  }}
+                />
+              )}
             <GroupPricingSection
               model={props.model}
               groupRatio={props.groupRatio}

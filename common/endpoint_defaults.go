@@ -17,6 +17,10 @@ type EndpointInfo struct {
 
 // defaultEndpointInfoMap 保存内置端点的默认 Path 与 Method
 var defaultEndpointInfoMap = map[constant.EndpointType]EndpointInfo{
+	"minimax-video":                            {Path: "/v2/video_generation", Method: "POST"},
+	constant.EndpointTypeOpenAIVideo:           {Path: "/v1/videos", Method: "POST"},
+	"tokenhub-3d":                              {Path: "/tokenhub-media/v1/3d/generations", Method: "POST"},
+	"tokenhub-audio":                           {Path: "/tokenhub-media/v1/audio/generations", Method: "POST"},
 	constant.EndpointTypeOpenAI:                {Path: "/v1/chat/completions", Method: "POST"},
 	constant.EndpointTypeOpenAIResponse:        {Path: "/v1/responses", Method: "POST"},
 	constant.EndpointTypeOpenAIResponseCompact: {Path: "/v1/responses/compact", Method: "POST"},

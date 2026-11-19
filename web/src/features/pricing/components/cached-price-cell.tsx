@@ -107,7 +107,7 @@ export function CachedPriceCell(props: {
               </span>
             )}
             <span className='font-mono text-sm tabular-nums'>
-              {stripTrailingZeros(entry.formatted)}
+              {stripTrailingZeros(entry.formattedRange ?? entry.formatted)}
             </span>
           </div>
         ))}

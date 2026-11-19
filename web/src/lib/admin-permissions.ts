@@ -24,12 +24,14 @@ export type AdminPermissionMatrix = Record<string, Record<string, boolean>>
 export type AdminCapabilities = AdminPermissionMatrix
 
 export const ADMIN_PERMISSION_RESOURCES = {
+  ADMINISTRATION: 'administration',
   AUDIT: 'audit',
   CHANNEL: 'channel',
   TASK_PLUGIN: 'task_plugin',
 } as const
 
 export const ADMIN_PERMISSION_ACTIONS = {
+  ACCESS: 'access',
   READ: 'read',
   OPERATE: 'operate',
   WRITE: 'write',
@@ -75,14 +77,25 @@ export const EMPTY_PERMISSION_CATALOG: PermissionCatalog = {
   roles: [],
 }
 
+// Role controls model access; global management can be withdrawn separately.
+// Missing capability data retains the pre-capability UI contract. The server
+// always enforces the current policy before a management request is handled.
+export function canAccessGlobalAdmin(
+  user: AuthUser | null | undefined
+): boolean {
+  if (!user || user.role < ROLE.ADMIN) return false
+  if (user.role === ROLE.SUPER_ADMIN) return true
+  return user.permissions?.admin_permissions?.administration?.access !== false
+}
+
 export function hasPermission(
   user: AuthUser | null | undefined,
   resource: string,
   action: string
 ): boolean {
-  if (!user) return false
-  if (user.role === ROLE.SUPER_ADMIN) return true
-  return user.permissions?.admin_permissions?.[resource]?.[action] === true
+  if (!canAccessGlobalAdmin(user)) return false
+  if (user?.role === ROLE.SUPER_ADMIN) return true
+  return user?.permissions?.admin_permissions?.[resource]?.[action] === true
 }
 
 // roleGrants returns the baseline grant matrix for the given role key.

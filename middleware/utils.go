@@ -18,11 +18,12 @@ func abortWithOpenAiMessage(c *gin.Context, statusCode int, message string, code
 	}
 	userId := c.GetInt("id")
 	_, preparedPluginRoute := c.Get(pluginruntime.ContextKeyRouteRequest)
-	if !preparedPluginRoute || !RespondTaskPluginError(c, &dto.TaskError{
+	taskErr := &dto.TaskError{
 		Code:       codeStr,
 		Message:    message,
 		StatusCode: statusCode,
-	}) {
+	}
+	if !RespondMiniMaxVideoError(c, taskErr) && (!preparedPluginRoute || !RespondTaskPluginError(c, taskErr)) {
 		c.JSON(statusCode, gin.H{
 			"error": gin.H{
 				"message": common.MessageWithRequestId(message, c.GetString(common.RequestIdKey)),

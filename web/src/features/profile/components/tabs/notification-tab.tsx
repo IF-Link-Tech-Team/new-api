@@ -32,6 +32,7 @@ import {
   SettingsControlGroup,
   SettingsSwitchField,
 } from '@/features/system-settings/components/settings-form-layout'
+import { useIsAdmin } from '@/hooks/use-admin'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import {
   formatQuota,
@@ -74,7 +75,7 @@ export function NotificationTab({
 }: NotificationTabProps) {
   const { t } = useTranslation()
   const role = profile?.role ?? 0
-  const isAdmin = role >= ROLE.ADMIN
+  const isAdmin = useIsAdmin()
   const [loading, setLoading] = useState(false)
   const [settings, setSettings] = useState(() => normalizeUserSettings())
   const [thresholdInput, setThresholdInput] = useState('')

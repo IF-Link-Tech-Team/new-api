@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/gin-gonic/gin"
@@ -27,6 +29,7 @@ type APIChannelCatalog struct {
 }
 
 type APIChannelPrice struct {
+	GroupName     string `json:"-" gorm:"-"`
 	ID            int64  `json:"id"`
 	Revision      int64  `json:"revision" gorm:"uniqueIndex:idx_api_channel_revision,priority:1"`
 	Model         string `json:"model" gorm:"type:varchar(191);uniqueIndex:idx_api_channel_revision,priority:2;index:idx_api_channel_lookup,priority:1"`
@@ -179,7 +182,7 @@ func APIChannelModelsForGroups(db *gorm.DB, groups []string) (map[string]bool, e
 		return nil, err
 	}
 	var abilities []Ability
-	if err := db.Where(commonGroupCol+" IN ? AND enabled = ?", groups, true).Find(&abilities).Error; err != nil {
+	if err := db.Where(clause.Eq{Column: "group", Value: groups}).Where("enabled = ?", true).Find(&abilities).Error; err != nil {
 		return nil, err
 	}
 	type pair struct {
@@ -191,7 +194,7 @@ func APIChannelModelsForGroups(db *gorm.DB, groups []string) (map[string]bool, e
 		allowed[pair{ability.Model, ability.ChannelId}] = true
 	}
 	var channels []Channel
-	if err := db.Select("id", "models", "model_mapping").Where("status = ?", common.ChannelStatusEnabled).Find(&channels).Error; err != nil {
+	if err := db.Select("id", "type", "models", "model_mapping", "setting").Where("status = ?", common.ChannelStatusEnabled).Find(&channels).Error; err != nil {
 		return nil, err
 	}
 	bindings := make(map[int]Channel, len(channels))
@@ -199,6 +202,33 @@ func APIChannelModelsForGroups(db *gorm.DB, groups []string) (map[string]bool, e
 		bindings[channel.Id] = channel
 	}
 	result := make(map[string]bool)
+	// These providers have measured task billing. They must not require a token-price
+	// catalog row to appear in model discovery, or inherit one for charging.
+	for _, key := range []string{"jiliu-h3", "tencent-vod", "tokenhub-media"} {
+		plugin, ok := jsplugin.DefaultRegistry.Generation().Get(key)
+		if !ok {
+			continue
+		}
+		for _, channel := range channels {
+			if (channel.Type != constant.ChannelTypeTaskPlugin && channel.Type != constant.ChannelTypeNewAPI) || !channel.GetSetting().BindsTaskPlugin(plugin.Meta.Key) {
+				continue
+			}
+			for _, name := range channel.GetModels() {
+				if !allowed[pair{name, channel.Id}] {
+					continue
+				}
+				mapped, err := ResolveMappedModelName(channel.GetModelMapping(), name)
+				if err != nil || !slices.Contains(plugin.Meta.Models, mapped) {
+					continue
+				}
+				expression, configured := billing_setting.ResolveTaskBillingExpr(plugin.Meta.Key, name, mapped)
+				schema, _ := plugin.Meta.UsageForModels(mapped, name)
+				if configured && billing_setting.TaskExprCompatible(expression, schema) {
+					result[name] = true
+				}
+			}
+		}
+	}
 	for _, row := range rows {
 		channel, ok := bindings[row.ChannelID]
 		if !ok || !row.Enabled || !allowed[pair{row.Model, row.ChannelID}] || !slices.Contains(channel.GetModels(), row.Model) {
@@ -207,6 +237,16 @@ func APIChannelModelsForGroups(db *gorm.DB, groups []string) (map[string]bool, e
 		mapped, err := ResolveMappedModelName(channel.GetModelMapping(), row.Model)
 		if err == nil && mapped == row.UpstreamModel {
 			result[row.Model] = true
+		}
+	}
+	local, err := ReadGroupModelPrices(db, groups, "")
+	if err != nil {
+		return nil, err
+	}
+	for _, price := range local {
+		channel, ok := bindings[price.ChannelID]
+		if ok && allowed[pair{price.Model, price.ChannelID}] && slices.Contains(channel.GetModels(), price.Model) {
+			result[price.Model] = true
 		}
 	}
 	return result, nil
@@ -218,7 +258,7 @@ type APIChannelPriceSnapshot struct {
 }
 
 // RequestAPIChannelPrices freezes the full candidate set before selecting a
-// channel. Nil means the explicit legacy rollout mode, not a missing price.
+// channel. Nil selects native pricing: legacy rollout mode or a pinned measured task.
 func RequestAPIChannelPrices(ctx *gin.Context, modelName string) (*APIChannelPriceSnapshot, error) {
 	key := "iflink_api_channel_prices:" + modelName
 	if value, ok := ctx.Get(key); ok {
@@ -229,13 +269,43 @@ func RequestAPIChannelPrices(ctx *gin.Context, modelName string) (*APIChannelPri
 		return nil, err
 	}
 	var snapshot *APIChannelPriceSnapshot
+	// Only validated measured-task providers opt into their existing task price
+	// and completion settlement. Other non-token endpoints remain fail-closed.
+	if enabled && ctx.Request != nil && ctx.Request.Method == "POST" {
+		pinned, ok := common.GetContextKeyType[jsplugin.PinnedPlugin](ctx, constant.ContextKey(jsplugin.ContextKeyPinnedPlugin))
+		if ok && pinned.Plugin != nil && slices.Contains([]string{"jiliu-h3", "tencent-vod", "tokenhub-media"}, pinned.Plugin.Meta.Key) && ctx.GetString("expected_task_plugin_key") == pinned.Plugin.Meta.Key {
+			native, hasNative := common.GetContextKeyType[jsplugin.PinnedRoute](ctx, constant.ContextKey(jsplugin.ContextKeyPinnedRoute))
+			path := ctx.Request.URL.Path
+			standard := path == "/v1/videos" || (slices.Contains([]string{"tencent-vod", "tokenhub-media"}, pinned.Plugin.Meta.Key) && (path == "/v1/images/generations" || path == "/v1/images/edits"))
+			declared := hasNative && native.Plugin == pinned.Plugin && native.Route.Type == jsplugin.RouteTypeSubmit && native.Route.Path == path
+			endpoint, hasEndpoint := common.GetContextKeyType[jsplugin.PinnedEndpoint](ctx, constant.ContextKey(jsplugin.ContextKeyPinnedEndpoint))
+			miniMax := hasEndpoint && endpoint.Plugin == pinned.Plugin && endpoint.Protocol == jsplugin.ProtocolMiniMaxVideo && endpoint.Operation.Name == "create" && endpoint.Operation.Path == path
+			if standard || declared || miniMax {
+				ctx.Set(key, snapshot)
+				return nil, nil
+			}
+		}
+	}
 	if enabled {
 		revision, rows, err := ReadAPIChannelCatalog(DB, modelName)
 		if err != nil {
 			return nil, fmt.Errorf("API channel catalog unavailable: %w", err)
 		}
 		snapshot = &APIChannelPriceSnapshot{Revision: revision, Rows: make([]APIChannelPrice, 0, len(rows))}
-		ids := make([]int, 0, len(rows))
+		// A bound plan retains its original prices. The authenticated token group,
+		// not the account's primary group, selects autonomous group pricing.
+		var local []GroupModelPrice
+		group := common.GetContextKeyString(ctx, constant.ContextKeyUsingGroup)
+		if group != "" && common.GetContextKeyInt(ctx, constant.ContextKeyTokenUserSubscriptionId) == 0 {
+			local, err = ReadGroupModelPrices(DB, []string{group}, modelName)
+			if err != nil {
+				return nil, err
+			}
+		}
+		ids := make([]int, 0, len(rows)+len(local))
+		for _, price := range local {
+			ids = append(ids, price.ChannelID)
+		}
 		for _, row := range rows {
 			ids = append(ids, row.ChannelID)
 		}
@@ -243,6 +313,25 @@ func RequestAPIChannelPrices(ctx *gin.Context, modelName string) (*APIChannelPri
 		if len(ids) > 0 {
 			if err := DB.Select("id", "models", "model_mapping").Where("id IN ?", ids).Find(&channels).Error; err != nil {
 				return nil, err
+			}
+		}
+		for _, price := range local {
+			for _, channel := range channels {
+				if channel.Id != price.ChannelID {
+					continue
+				}
+				row, mapErr := price.APIPrice(channel)
+				if mapErr != nil {
+					return nil, mapErr
+				}
+				for _, previous := range rows {
+					if previous.ChannelID == row.ChannelID {
+						row.Position = previous.Position
+						break
+					}
+				}
+				rows = slices.DeleteFunc(rows, func(old APIChannelPrice) bool { return old.ChannelID == row.ChannelID })
+				rows = append(rows, row)
 			}
 		}
 		bindings := make(map[int]string, len(channels))
@@ -258,6 +347,22 @@ func RequestAPIChannelPrices(ctx *gin.Context, modelName string) (*APIChannelPri
 		for _, row := range rows {
 			if row.Enabled && row.Model == modelName && bindings[row.ChannelID] == row.UpstreamModel && row.UpstreamModel != "" {
 				snapshot.Rows = append(snapshot.Rows, row)
+			}
+		}
+		// A new group-only route has no global position. Append it to an
+		// explicitly ordered catalog rather than silently excluding it.
+		lastPosition := -1
+		for _, row := range snapshot.Rows {
+			if row.Position != nil {
+				lastPosition = max(lastPosition, *row.Position)
+			}
+		}
+		if len(local) > 0 && lastPosition >= 0 {
+			for i := range snapshot.Rows {
+				if snapshot.Rows[i].Position == nil {
+					lastPosition++
+					snapshot.Rows[i].Position = common.GetPointer(lastPosition)
+				}
 			}
 		}
 		slices.SortStableFunc(snapshot.Rows, func(left, right APIChannelPrice) int {

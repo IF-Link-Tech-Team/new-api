@@ -134,6 +134,9 @@ func injectGlobals(runtime *moejs.Runtime, identity func() string, now func() ti
 		"uuid": runtime.Function("uuid", 0, func(*moejs.Realm, moejs.Value, []moejs.Value) (moejs.Value, error) {
 			return moejs.String(uuid.NewString()), nil
 		}),
+		"tencentSignTC3": runtime.Function("tencentSignTC3", 1, func(r *moejs.Realm, _ moejs.Value, args []moejs.Value) (moejs.Value, error) {
+			return tencentSigningHeaders(r, moejs.Arg(args, 0), now())
+		}),
 		"volcSignV4": runtime.Function("volcSignV4", 1, func(r *moejs.Realm, _ moejs.Value, args []moejs.Value) (moejs.Value, error) {
 			// Fields are read by their Go names, as plugins have always
 			// passed them.

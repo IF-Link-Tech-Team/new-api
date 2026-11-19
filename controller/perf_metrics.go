@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
@@ -25,7 +26,10 @@ func GetPerfMetricsSummary(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
-	activeGroups := append(lo.Keys(ratio_setting.GetGroupRatioCopy()), "auto")
+	activeGroups := lo.Filter(lo.Keys(ratio_setting.GetGroupRatioCopy()), func(group string, _ int) bool {
+		return service.GroupRoleAllowed(group, c.GetInt("role"))
+	})
+	activeGroups = append(activeGroups, "auto")
 	result, err := perfmetrics.QuerySummaryAll(hours, activeGroups, recentModels...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -58,11 +62,14 @@ func GetPerfMetrics(c *gin.Context) {
 		}
 	}
 
+	allowedGroups := lo.Filter(lo.Keys(ratio_setting.GetGroupRatioCopy()), func(group string, _ int) bool {
+		return service.GroupRoleAllowed(group, c.GetInt("role"))
+	})
 	result, err := perfmetrics.Query(perfmetrics.QueryParams{
 		Model:         modelName,
 		Group:         c.Query("group"),
 		Hours:         hours,
-		AllowedGroups: append(lo.Keys(ratio_setting.GetGroupRatioCopy()), "auto"),
+		AllowedGroups: append(allowedGroups, "auto"),
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{

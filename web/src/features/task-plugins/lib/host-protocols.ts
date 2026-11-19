@@ -41,6 +41,10 @@ export const HOST_PROTOCOL_ENDPOINTS: Record<string, HostProtocolEndpoint[]> = {
     { method: 'POST', path: '/v1/responses', modeBearing: true },
     { method: 'GET', path: '/v1/responses/{response_id}' },
   ],
+  minimax_video: [
+    { method: 'POST', path: '/v2/video_generation' },
+    { method: 'GET', path: '/v2/query/video_generation/{task_id}' },
+  ],
   openai_video: [
     { method: 'POST', path: '/v1/videos', modeBearing: true },
     { method: 'GET', path: '/v1/videos/{task_id}' },

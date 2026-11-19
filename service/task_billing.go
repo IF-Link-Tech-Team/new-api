@@ -114,6 +114,9 @@ func taskIsSubscription(task *model.Task) bool {
 
 // taskAdjustFunding 调整任务的资金来源（钱包或订阅），delta > 0 表示扣费，delta < 0 表示退还。
 func taskAdjustFunding(task *model.Task, delta int) error {
+	if task.PrivateData.BillingSource == BillingSourceGroupWallet {
+		return model.SettleGroupWallet(task.PrivateData.GroupWalletID, task.UserId, task.PrivateData.GroupWalletRequestID, task.Quota+delta)
+	}
 	if taskIsSubscription(task) {
 		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
 	}
@@ -147,6 +150,10 @@ func taskAdjustTokenQuota(ctx context.Context, task *model.Task, delta int) {
 // taskBillingOther 从 task 的 BillingContext 构建日志 Other 字段。
 func taskBillingOther(task *model.Task) *model.LogOther {
 	other := model.NewLogOther()
+	if task.PrivateData.GroupWalletID > 0 {
+		other.SetPublic("billing_source", BillingSourceGroupWallet)
+		other.SetPublic("group_wallet_id", task.PrivateData.GroupWalletID)
+	}
 	// 前端列表按 is_task 选择任务档位渲染分支,缺失会把差额/退款日志误判成普通 relay 动态计费
 	other.SetPublic("is_task", true)
 	if bc := task.PrivateData.BillingContext; bc != nil {
@@ -267,8 +274,14 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 	}
 
 	// 1. 退还资金来源（钱包或订阅）
-	if err := taskAdjustFunding(task, -quota); err != nil {
-		logger.LogWarn(ctx, common.LogText("failed to refund the funding source, task %s: %s", task.TaskID, err.Error()))
+	var fundingErr error
+	if task.PrivateData.BillingSource == BillingSourceGroupWallet {
+		fundingErr = model.RefundGroupWallet(task.PrivateData.GroupWalletID, task.UserId, task.PrivateData.GroupWalletRequestID)
+	} else {
+		fundingErr = taskAdjustFunding(task, -quota)
+	}
+	if fundingErr != nil {
+		logger.LogWarn(ctx, common.LogText("failed to refund the funding source, task %s: %s", task.TaskID, fundingErr.Error()))
 		return false
 	}
 

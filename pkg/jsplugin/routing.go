@@ -95,6 +95,10 @@ var hostProtocols = []HostProtocolDefinition{
 		{Name: "retrieve", Methods: []string{http.MethodGet}, Path: "/v1/videos/:task_id", BodyKinds: []BodyKind{BodyNone}, RequiredProtocolMembers: []string{"render"}},
 		{Name: "content", Methods: []string{http.MethodGet, http.MethodHead}, Path: "/v1/videos/:task_id/content", BodyKinds: []BodyKind{BodyNone}, RequiredDriverHooks: []string{"listArtifacts", "buildContentRequest"}},
 	}},
+	{Name: ProtocolMiniMaxVideo, Operations: []HostProtocolOperation{
+		{Name: "create", Methods: []string{http.MethodPost}, Path: "/v2/video_generation", BodyKinds: []BodyKind{BodyJSON}, ModelField: "model", RequiredProtocolMembers: []string{"decodeRequest"}},
+		{Name: "retrieve", Methods: []string{http.MethodGet}, Path: "/v2/query/video_generation/:task_id", BodyKinds: []BodyKind{BodyNone}, RequiredProtocolMembers: []string{"render"}},
+	}},
 	// The OpenAI Images API is synchronous: both operations create a task and
 	// the host answers with the rendered image response once the task is
 	// terminal, so there is no retrieve operation and no request modes.
@@ -107,6 +111,9 @@ var hostProtocols = []HostProtocolDefinition{
 // ProtocolOpenAIImage is the host protocol that serves the OpenAI Images API
 // (`POST /v1/images/generations` and `POST /v1/images/edits`) from a plugin.
 const ProtocolOpenAIImage = "openai_image"
+
+// ProtocolMiniMaxVideo serves the shared MiniMax V2 video endpoints.
+const ProtocolMiniMaxVideo = "minimax_video"
 
 func HostProtocol(name string) (HostProtocolDefinition, bool) {
 	for _, definition := range hostProtocols {
@@ -286,13 +293,14 @@ func ParseFileReference(ref string) (field string, index int, ok bool) {
 // routing hooks. RequestBody contains decoded JSON or multipart text fields;
 // raw binary and multipart file bytes remain host-owned.
 type RouteRequestContext struct {
-	Path        string              `json:"path"`
-	Method      string              `json:"method"`
-	Params      map[string]string   `json:"params"`
-	Query       map[string][]string `json:"query"`
-	Body        any                 `json:"body"`
-	Files       []map[string]any    `json:"-"`
-	RequestBody any                 `json:"-"`
+	ServerAddress string              `json:"serverAddress,omitempty"`
+	Path          string              `json:"path"`
+	Method        string              `json:"method"`
+	Params        map[string]string   `json:"params"`
+	Query         map[string][]string `json:"query"`
+	Body          any                 `json:"body"`
+	Files         []map[string]any    `json:"-"`
+	RequestBody   any                 `json:"-"`
 	// BodyText is the JSON body as the client sent it, which JSValueFor
 	// gives to plugins that preserve JSON order; Body stays the Go value the
 	// host reads. Body storage never changes these bytes, which the engine
@@ -313,11 +321,12 @@ func (r RouteRequestContext) JSValue() map[string]any {
 		query = map[string][]string{}
 	}
 	return map[string]any{
-		"path":   r.Path,
-		"method": r.Method,
-		"params": params,
-		"query":  query,
-		"body":   r.Body,
+		"serverAddress": r.ServerAddress,
+		"path":          r.Path,
+		"method":        r.Method,
+		"params":        params,
+		"query":         query,
+		"body":          r.Body,
 	}
 }
 

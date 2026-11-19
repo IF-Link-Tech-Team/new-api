@@ -47,6 +47,7 @@ import {
 import { pluginUsageSchema } from '@/features/pricing/lib/plugin-pricing'
 import { taskUsageUnitLabel } from '@/features/pricing/lib/task-price-display'
 import type { BillingUsageSchema } from '@/features/pricing/types'
+import { usePrivateUserName } from '@/features/private-user-alias/api'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTimestampToDate } from '@/lib/format'
@@ -555,7 +556,10 @@ export function useCommonLogsColumns(
               setUserInfoDialogOpen,
             } = useUsageLogsContext()
             const log = row.original
-
+            const privateName = usePrivateUserName(
+              log.user_id,
+              log.username || ''
+            )
             if (!log.username) return null
 
             return (
@@ -592,10 +596,10 @@ export function useCommonLogsColumns(
                         <span className='text-muted-foreground max-w-[100px] truncate text-sm hover:underline' />
                       }
                     >
-                      {sensitiveVisible ? log.username : '••••'}
+                      {sensitiveVisible ? privateName : '••••'}
                     </TooltipTrigger>
-                    {sensitiveVisible && log.username.length > 12 && (
-                      <TooltipContent side='top'>{log.username}</TooltipContent>
+                    {sensitiveVisible && privateName.length > 12 && (
+                      <TooltipContent side='top'>{privateName}</TooltipContent>
                     )}
                   </Tooltip>
                 </TooltipProvider>

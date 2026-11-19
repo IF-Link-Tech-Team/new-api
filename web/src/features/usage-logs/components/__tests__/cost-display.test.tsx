@@ -150,6 +150,7 @@ describe('log cost display', () => {
   test.each([
     { source: 'subscription', label: 'Subscription' },
     { source: 'wallet', label: 'Wallet' },
+    { source: 'group_wallet', label: 'Group balance' },
   ])(
     'vertically centers the $source icon within its container',
     ({ source, label }) => {
@@ -171,6 +172,7 @@ describe('log cost display', () => {
   test.each([
     { source: 'subscription', label: 'Subscription' },
     { source: 'wallet', label: 'Wallet' },
+    { source: 'group_wallet', label: 'Group balance' },
   ])(
     'reveals the $source label on hover and keyboard focus',
     async ({ source, label }) => {

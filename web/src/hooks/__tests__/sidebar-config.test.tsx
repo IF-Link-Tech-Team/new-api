@@ -30,6 +30,12 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import { useSidebarConfig } from '../use-sidebar-config'
 import { useSidebarData } from '../use-sidebar-data'
+import { useSidebarView } from '../use-sidebar-view'
+
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  useLocation: () => '/groups',
+}))
 
 beforeEach(() => {
   vi.stubGlobal('localStorage', {
@@ -83,7 +89,14 @@ describe('security sidebar visibility', () => {
       result.current
         .find((group) => group.id === 'personal')
         ?.items.map((item) => item.title)
-    ).toEqual(['Wallet', 'Plans', 'Traffic Packs', 'Profile', 'Security & Access'])
+    ).toEqual([
+      'My groups',
+      'Wallet',
+      'Plans',
+      'Traffic Packs',
+      'Profile',
+      'Security & Access',
+    ])
     expect(
       result.current
         .flatMap((group) => group.items)
@@ -118,6 +131,15 @@ describe('security sidebar visibility', () => {
         .some((item) => item.title === 'Security & Access')
     ).toBe(true)
   })
+})
+
+it('the group workspace entry can be hidden without changing other personal entries', () => {
+  const { result } = sidebarFor({ personal: { enabled: true, groups: false } })
+  const titles = result.current
+    .find((group) => group.id === 'personal')
+    ?.items.map((item) => item.title)
+  expect(titles).not.toContain('My groups')
+  expect(titles).toContain('Security & Access')
 })
 
 describe('audit log sidebar entry', () => {
@@ -180,3 +202,38 @@ describe('audit log sidebar entry', () => {
     expect(titles).toContain('Audit Logs')
   })
 })
+
+it.each([false, true, undefined])(
+  'global admin visibility follows the current capability (%s)',
+  (access) => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(['status'], {})
+    useAuthStore.getState().auth.setUser({
+      id: 762,
+      username: 'group-manager',
+      role: 10,
+      group: '内部',
+      permissions: {
+        admin_permissions:
+          access === undefined ? {} : { administration: { access } },
+      },
+    })
+    const { result } = renderHook(() => useSidebarView(), {
+      wrapper: (props: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>
+          {props.children}
+        </QueryClientProvider>
+      ),
+    })
+    expect(result.current.navGroups.some((group) => group.id === 'admin')).toBe(
+      access !== false
+    )
+    expect(
+      result.current.navGroups
+        .flatMap((group) => group.items)
+        .some((item) => item.url === '/groups')
+    ).toBe(true)
+  }
+)

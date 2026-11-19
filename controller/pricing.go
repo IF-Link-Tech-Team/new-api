@@ -2,6 +2,7 @@ package controller
 
 import (
 	"maps"
+	"slices"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -21,15 +22,15 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 
 	filtered := make([]model.Pricing, 0, len(pricing))
 	for _, item := range pricing {
-		if common.StringsContains(item.EnableGroup, "all") {
-			filtered = append(filtered, item)
-			continue
-		}
+		visibleGroups := make([]string, 0, len(item.EnableGroup))
 		for _, group := range item.EnableGroup {
-			if _, ok := usableGroup[group]; ok {
-				filtered = append(filtered, item)
-				break
+			if _, ok := usableGroup[group]; ok || group == "all" {
+				visibleGroups = append(visibleGroups, group)
 			}
+		}
+		if len(visibleGroups) > 0 {
+			item.EnableGroup = visibleGroups
+			filtered = append(filtered, item)
 		}
 	}
 	return filtered
@@ -42,10 +43,12 @@ func GetPricing(c *gin.Context) {
 	groupRatio := map[string]float64{}
 	maps.Copy(groupRatio, ratio_setting.GetGroupRatioCopy())
 	var group string
+	role := common.RoleGuestUser
 	if exists {
 		user, err := model.GetUserCache(userId.(int))
 		if err == nil {
 			group = user.Group
+			role = user.Role
 			for g := range groupRatio {
 				ratio, ok := ratio_setting.GetGroupGroupRatio(group, g)
 				if ok {
@@ -55,8 +58,41 @@ func GetPricing(c *gin.Context) {
 		}
 	}
 
-	usableGroup = service.GetUserUsableGroups(group)
-	pricing = filterPricingByUsableGroups(pricing, usableGroup)
+	usableGroup = service.GetUserUsableGroups(group, role)
+	channelPricing, err := model.APIChannelPricingMode()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if channelPricing {
+		pricing, err = model.GetGroupPricing(slices.Collect(maps.Keys(usableGroup)))
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	} else {
+		pricing = filterPricingByUsableGroups(pricing, usableGroup)
+	}
+	visibleVendors := make(map[int]bool)
+	visibleEndpoints := make(map[string]bool)
+	for _, item := range pricing {
+		visibleVendors[item.VendorID] = true
+		for _, endpoint := range item.SupportedEndpointTypes {
+			visibleEndpoints[string(endpoint)] = true
+		}
+	}
+	vendors := []model.PricingVendor{}
+	for _, vendor := range model.GetVendors() {
+		if visibleVendors[vendor.ID] {
+			vendors = append(vendors, vendor)
+		}
+	}
+	endpoints := make(map[string]common.EndpointInfo)
+	for key, endpoint := range model.GetSupportedEndpointMap() {
+		if visibleEndpoints[key] {
+			endpoints[key] = endpoint
+		}
+	}
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := usableGroup[group]; !ok {
@@ -67,11 +103,11 @@ func GetPricing(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"success":            true,
 		"data":               pricing,
-		"vendors":            model.GetVendors(),
+		"vendors":            vendors,
 		"group_ratio":        groupRatio,
 		"usable_group":       usableGroup,
-		"supported_endpoint": model.GetSupportedEndpointMap(),
-		"auto_groups":        service.GetUserAutoGroup(group),
+		"supported_endpoint": endpoints,
+		"auto_groups":        service.GetUserAutoGroup(group, role),
 		"pricing_version":    "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
 }

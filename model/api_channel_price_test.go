@@ -5,12 +5,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -22,6 +27,37 @@ import (
 )
 
 func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
+	originalRegistry := jsplugin.DefaultRegistry
+	jsplugin.DefaultRegistry = jsplugin.NewRegistry()
+	t.Cleanup(func() { jsplugin.DefaultRegistry = originalRegistry })
+	h3, err := jsplugin.DefaultRegistry.Register(`
+export const meta = {apiVersion: 1, key: "jiliu-h3", name: "H3", version: "1.0.0", author: {name: "Test"}, models: ["MiniMax-H3"], fetchMode: "per_task", usageSchema: {seconds: {type: "number", unit: "second"}}};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+`, jsplugin.Options{})
+	require.NoError(t, err)
+	vod, err := jsplugin.DefaultRegistry.Register(`
+export const meta = {apiVersion: 1, key: "tencent-vod", name: "VOD", version: "1.0.0", author: {name: "Test"}, models: ["wand-vega-video-1.5-pro", "wand-vega-image-1.0-flash"], fetchMode: "per_task", usageSchema: {seconds: {type: "number", unit: "second"}}, routes: [{method:"POST",path:"/vod/v1/videos",type:"submit",decode:"create",render:"render"}]};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+export const native = { create() { return {}; }, render() { return {}; } };
+`, jsplugin.Options{})
+	require.NoError(t, err)
+	media, err := jsplugin.DefaultRegistry.Register(`
+export const meta = {apiVersion: 1, key: "tokenhub-media", name: "TokenHub Media", version: "1.0.0", author: {name: "Test"}, models: ["minimax-video-h3", "seedream-image-v5.0-pro"], fetchMode: "per_task", usageSchema: {tokens: {type: "number", unit: "token"}}, usageExamples:[{label:"Media",facts:{tokens:10000}}], routes:[{method:"POST",path:"/tokenhub-media/v1/audio/generations",type:"submit",decode:"create",render:"render"}]};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+export const native = { create() { return {}; }, render() { return {}; } };
+`, jsplugin.Options{})
+	require.NoError(t, err)
+	savedSettings := config.GlobalConfig.ExportAllConfigs()
+	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(savedSettings)) })
 	for _, engine := range []string{"sqlite", "mysql", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			var dialect gorm.Dialector
@@ -55,7 +91,7 @@ func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
 				initCol()
 				require.NoError(t, sqlDB.Close())
 			})
-			tables := []any{&APIChannelPrice{}, &APIChannelCatalog{}, &Channel{}, &Ability{}, &PriceBookPrice{}, &SubscriptionPlan{}, &UserSubscription{}}
+			tables := []any{&APIChannelPrice{}, &APIChannelCatalog{}, &Channel{}, &Ability{}, &PriceBookPrice{}, &SubscriptionPlan{}, &UserSubscription{}, &Model{}, &Vendor{}, &GroupModelPrice{}, &GroupWallet{}, &GroupChannel{}}
 			require.NoError(t, db.Migrator().DropTable(tables...))
 			t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(tables...)) })
 			for _, upgrade := range []bool{false, true} {
@@ -131,6 +167,16 @@ func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
 					private, err := APIChannelModelsForGroups(db, []string{"unrelated-group"})
 					require.NoError(t, err)
 					require.Empty(t, private, "sales rows must not expand model-list group authorization")
+					InvalidatePricingCache()
+					square, err := GetGroupPricing([]string{"default"})
+					require.NoError(t, err)
+					require.Len(t, square, 1)
+					require.Len(t, square[0].GroupPricing, 2, "retain distinct eligible channel prices")
+					assert.Equal(t, []string{"default"}, square[0].EnableGroup)
+					assert.NotContains(t, square[0].BillingExpr, "p * 100", "do not use legacy price-book expressions")
+					hidden, err := GetGroupPricing([]string{"unrelated-group"})
+					require.NoError(t, err)
+					require.Empty(t, hidden)
 					_, err = PublishAPIChannelPrices(db, 0, []APIChannelPrice{a}, 2, "stale administrator")
 					require.ErrorIs(t, err, ErrAPIChannelPriceConflict)
 					ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -238,6 +284,125 @@ func TestAPIChannelCatalogDatabaseMatrix(t *testing.T) {
 					if stored.Enabled {
 						require.NoError(t, validateProductPlanPrices(db, &stored, true))
 					}
+					t.Run("native H3 discovery and routing", func(t *testing.T) {
+						require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+							billing_setting.PluginBillingExprOption: `{"jiliu-h3::MiniMax-H3":"u(\"seconds\") * 0.06","tencent-vod::wand-vega-video-1.5-pro":"u(\"seconds\") * 0.1","tencent-vod::wand-vega-image-1.0-flash":"u(\"seconds\") * 0.2","tokenhub-media::minimax-video-h3":"u(\"tokens\") * 10 / 1000000","tokenhub-media::seedream-image-v5.0-pro":"u(\"tokens\") * 10 / 1000000"}`,
+						}))
+						for _, fixture := range []struct {
+							id, status                  int
+							name, group, plugin, mapped string
+						}{
+							{81, common.ChannelStatusEnabled, "h3-alias", "default", "jiliu-h3", "MiniMax-H3"},
+							{82, common.ChannelStatusManuallyDisabled, "h3-disabled", "default", "jiliu-h3", "MiniMax-H3"},
+							{83, common.ChannelStatusEnabled, "h3-other", "default", "hailuo", "MiniMax-H3"},
+							{84, common.ChannelStatusEnabled, "h3-private", "内部", "jiliu-h3", "MiniMax-H3"},
+							{85, common.ChannelStatusEnabled, "h3-invalid", "default", "jiliu-h3", "unknown-model"},
+							{86, common.ChannelStatusEnabled, "vod-video", "default", "tencent-vod", "wand-vega-video-1.5-pro"},
+							{87, common.ChannelStatusEnabled, "vod-image", "default", "tencent-vod", "wand-vega-image-1.0-flash"},
+							{88, common.ChannelStatusEnabled, "media-video", "default", "tokenhub-media", "minimax-video-h3"},
+							{89, common.ChannelStatusEnabled, "media-image", "default", "tokenhub-media", "seedream-image-v5.0-pro"},
+						} {
+							setting, marshalErr := common.Marshal(map[string]string{"task_plugin_key": fixture.plugin})
+							require.NoError(t, marshalErr)
+							mapping, marshalErr := common.Marshal(map[string]string{fixture.name: fixture.mapped})
+							require.NoError(t, marshalErr)
+							channel := Channel{Id: fixture.id, Type: constant.ChannelTypeTaskPlugin, Name: fixture.name, Models: fixture.name, Group: fixture.group, Status: fixture.status, Key: "synthetic", Setting: common.GetPointer(string(setting)), ModelMapping: common.GetPointer(string(mapping))}
+							require.NoError(t, db.Create(&channel).Error)
+							require.NoError(t, channel.AddAbilities(db))
+						}
+						visible, err := APIChannelModelsForGroups(db, []string{"default"})
+						require.NoError(t, err)
+						assert.True(t, visible["h3-alias"])
+						assert.True(t, visible["vod-video"])
+						assert.True(t, visible["vod-image"])
+						assert.True(t, visible["media-video"])
+						assert.True(t, visible["media-image"])
+						for _, name := range []string{"h3-disabled", "h3-other", "h3-private", "h3-invalid"} {
+							assert.False(t, visible[name], name)
+						}
+						private, err := APIChannelModelsForGroups(db, []string{"内部"})
+						require.NoError(t, err)
+						assert.True(t, private["h3-private"])
+						InvalidatePricingCache()
+						square, err := GetGroupPricing([]string{"default"})
+						require.NoError(t, err)
+						foundH3 := false
+						for _, item := range square {
+							assert.NotContains(t, item.EnableGroup, "内部")
+							assert.NotEqual(t, "h3-private", item.ModelName)
+							if item.ModelName == "h3-alias" {
+								foundH3 = true
+								assert.Equal(t, `u("seconds") * 0.06`, item.BillingExpr)
+							}
+						}
+						require.True(t, foundH3, "native task sales keep their measured-usage prices")
+						require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{billing_setting.PluginBillingExprOption: `{}`}))
+						visible, err = APIChannelModelsForGroups(db, []string{"default"})
+						require.NoError(t, err)
+						assert.False(t, visible["h3-alias"], "unpriced H3 must not be advertised")
+						assert.False(t, visible["vod-video"], "unpriced VOD must not be advertised")
+						assert.False(t, visible["vod-image"], "unpriced VOD must not be advertised")
+						assert.False(t, visible["media-video"], "unpriced TokenHub must not be advertised")
+						assert.False(t, visible["media-image"], "unpriced TokenHub must not be advertised")
+
+						for _, fixture := range []struct {
+							name, path, expected string
+							pinned               bool
+							native               bool
+							shared               bool
+						}{
+							{"H3", "/v1/videos", "jiliu-h3", true, true, false},
+							{"unvalidated identity", "/v1/videos", "jiliu-h3", false, false, false},
+							{"other task", "/v1/videos", "hailuo", true, false, false},
+							{"text path", "/v1/chat/completions", "jiliu-h3", true, false, false},
+							{"VOD video", "/v1/videos", "tencent-vod", true, true, false},
+							{"VOD images", "/v1/images/generations", "tencent-vod", true, true, false},
+							{"VOD edit", "/v1/images/edits", "tencent-vod", true, true, false},
+							{"VOD text stays token-priced", "/v1/chat/completions", "tencent-vod", true, false, false},
+							{"VOD unpinned", "/v1/videos", "tencent-vod", false, false, false},
+							{"VOD native pinned", "/vod/v1/videos", "tencent-vod", true, true, false},
+							{"H3 MiniMax", "/v2/video_generation", "jiliu-h3", true, true, true},
+							{"VOD MiniMax", "/v2/video_generation", "tencent-vod", true, true, true},
+							{"TokenHub MiniMax", "/v2/video_generation", "tokenhub-media", true, true, true},
+							{"TokenHub image", "/v1/images/generations", "tokenhub-media", true, true, false},
+							{"TokenHub image edit", "/v1/images/edits", "tokenhub-media", true, true, false},
+							{"TokenHub native", "/tokenhub-media/v1/audio/generations", "tokenhub-media", true, true, false},
+							{"TokenHub chat remains catalog priced", "/v1/chat/completions", "tokenhub-media", true, false, false},
+							{"MiniMax without endpoint pin", "/v2/video_generation", "tencent-vod", true, false, false},
+						} {
+							t.Run(fixture.name, func(t *testing.T) {
+								ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+								ctx.Request = httptest.NewRequest("POST", fixture.path, nil)
+								ctx.Set("expected_task_plugin_key", fixture.expected)
+								if fixture.pinned {
+									plugin := h3
+									if fixture.expected == "tencent-vod" {
+										plugin = vod
+									} else if fixture.expected == "tokenhub-media" {
+										plugin = media
+									}
+									ctx.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Plugin: plugin})
+									if fixture.shared {
+										_, op, ok := jsplugin.LookupHostProtocolOperation("POST", fixture.path)
+										require.True(t, ok)
+										ctx.Set(jsplugin.ContextKeyPinnedEndpoint, jsplugin.PinnedEndpoint{Plugin: plugin, Protocol: jsplugin.ProtocolMiniMaxVideo, Operation: op})
+									}
+									if strings.HasPrefix(fixture.path, "/vod/") || strings.HasPrefix(fixture.path, "/tokenhub-media/") {
+										route, ok := jsplugin.DefaultRegistry.Generation().LookupDeclaredRoute("POST", fixture.path)
+										require.True(t, ok)
+										ctx.Set(jsplugin.ContextKeyPinnedRoute, jsplugin.PinnedRoute{Plugin: route.Plugin, Route: route.Route, Generation: jsplugin.DefaultRegistry.Generation()})
+									}
+								}
+								prices, err := RequestAPIChannelPrices(ctx, "MiniMax-H3")
+								require.NoError(t, err)
+								if fixture.native {
+									assert.Nil(t, prices)
+								} else {
+									assert.NotNil(t, prices)
+								}
+							})
+						}
+					})
 				})
 			}
 		})

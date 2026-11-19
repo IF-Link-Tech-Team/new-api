@@ -53,6 +53,7 @@ const DEFAULT_SIDEBAR_MODULES: SidebarModulesAdminConfig = {
   },
   personal: {
     enabled: true,
+    groups: true,
     topup: true,
     plans: true,
     traffic_packs: true,
@@ -115,6 +116,7 @@ const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
   '/plans': { section: 'personal', module: 'plans' },
   '/traffic-packs': { section: 'personal', module: 'traffic_packs' },
   '/profile': { section: 'personal', module: 'personal' },
+  '/groups': { section: 'personal', module: 'groups' },
   '/security': { section: 'personal', module: 'security' },
   '/channels': { section: 'admin', module: 'channel' },
   '/models': { section: 'admin', module: 'models' },

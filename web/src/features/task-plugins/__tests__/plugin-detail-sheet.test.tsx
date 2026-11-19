@@ -120,6 +120,17 @@ describe('PluginDetailSheet metadata fields', () => {
 })
 
 describe('PluginDetailSheet host protocol endpoints', () => {
+  test('given a minimax_video claim, lists the standard endpoints without a vendor prefix', async () => {
+    renderSheet({ protocols: ['minimax_video'] })
+    expect(await screen.findByText('/v2/video_generation')).toBeInTheDocument()
+    expect(
+      screen.getByText('/v2/query/video_generation/{task_id}')
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText('/vod/v2/video_generation')
+    ).not.toBeInTheDocument()
+  })
+
   test('given an openai_responses claim, both the create and the retrieve endpoint are listed', async () => {
     renderSheet({
       protocols: [{ name: 'openai_responses', supports: ['stream'] }],

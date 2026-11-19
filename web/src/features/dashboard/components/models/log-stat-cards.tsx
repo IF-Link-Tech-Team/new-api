@@ -33,6 +33,7 @@ import type {
   DashboardFilters,
 } from '@/features/dashboard/types'
 import { toIntlLocale } from '@/i18n/languages'
+import { canAccessGlobalAdmin } from '@/lib/admin-permissions'
 import { formatCompactNumber, formatNumber, formatQuota } from '@/lib/format'
 import { computeTimeRange } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -62,7 +63,7 @@ export function LogStatCards(props: LogStatCardsProps) {
   const { i18n } = useTranslation()
   const statCardsConfig = useModelStatCardsConfig()
   const user = useAuthStore((state) => state.auth.user)
-  const isAdmin = !!(user?.role && user.role >= 10)
+  const isAdmin = canAccessGlobalAdmin(user)
   const [stats, setStats] = useState<ReturnType<
     typeof calculateDashboardStats
   > | null>(null)

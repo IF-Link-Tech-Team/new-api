@@ -24,7 +24,7 @@ import {
   MODELS_SECTION_IDS,
   MODELS_DEFAULT_SECTION,
 } from '@/features/models/section-registry'
-import { ROLE } from '@/lib/roles'
+import { canAccessGlobalAdmin } from '@/lib/admin-permissions'
 import { useAuthStore } from '@/stores/auth-store'
 
 const modelsSearchSchema = z.object({
@@ -52,7 +52,7 @@ export const Route = createFileRoute('/_authenticated/models/$section')({
   beforeLoad: ({ params }) => {
     const { auth } = useAuthStore.getState()
 
-    if (!auth.user || auth.user.role < ROLE.ADMIN) {
+    if (!canAccessGlobalAdmin(auth.user)) {
       throw redirect({
         to: '/403',
       })

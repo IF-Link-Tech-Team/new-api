@@ -3,6 +3,7 @@ package ratio_setting
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/config"
@@ -31,6 +32,7 @@ type GroupRatioSetting struct {
 	GroupRatio              *types.RWMap[string, float64]            `json:"group_ratio"`
 	GroupGroupRatio         *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
 	GroupSpecialUsableGroup *types.RWMap[string, map[string]string]  `json:"group_special_usable_group"`
+	GroupMinRole            *types.RWMap[string, int]                `json:"group_min_role"`
 }
 
 var groupRatioSetting GroupRatioSetting
@@ -46,6 +48,7 @@ func init() {
 		GroupSpecialUsableGroup: groupSpecialUsableGroup,
 		GroupRatio:              groupRatioMap,
 		GroupGroupRatio:         groupGroupRatioMap,
+		GroupMinRole:            types.NewRWMap[string, int](),
 	}
 
 	config.GlobalConfig.Register("group_ratio_setting", &groupRatioSetting)
@@ -61,6 +64,18 @@ func GetGroupRatioSetting() *GroupRatioSetting {
 
 func GetGroupRatioCopy() map[string]float64 {
 	return groupRatioMap.ReadAll()
+}
+
+// GetRoleRestrictedGroups lists groups whose traffic must not be published.
+func GetRoleRestrictedGroups() []string {
+	groups := make([]string, 0)
+	for group, minimum := range GetGroupRatioSetting().GroupMinRole.ReadAll() {
+		if minimum > common.RoleCommonUser {
+			groups = append(groups, group)
+		}
+	}
+	slices.Sort(groups)
+	return groups
 }
 
 func ContainsGroupRatio(name string) bool {

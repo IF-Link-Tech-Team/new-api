@@ -83,6 +83,7 @@ func TestTaskAdaptorRejectsDeprecatedClientResponse(t *testing.T) {
 	require.NotNil(t, taskErr)
 	require.Error(t, taskErr.Error)
 	assert.Contains(t, taskErr.Error.Error(), "must not return clientResponse")
+	assert.True(t, taskErr.NoRetry, "a parser error after accepted submission must not repeat billable work")
 }
 
 func TestTaskAdaptorBuildsMultipartFromOpaqueFileReference(t *testing.T) {
@@ -2743,4 +2744,27 @@ func TestTaskAdaptorChainsSunoBatchFetchThroughNewAPIUpstream(t *testing.T) {
 	require.Contains(t, results, "task_up_public")
 	assert.Equal(t, "SUCCESS", results["task_up_public"].TaskInfo.Status)
 	assert.Equal(t, []string{"POST /suno/submit/MUSIC", "POST /suno/fetch"}, seen)
+}
+
+func TestTaskSubmitJSONFailureNeverRetriesAcceptedWork(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"invalid JSON", `not-json`},
+		{"missing task id", `{}`},
+		{"oversized response", strings.Repeat("x", maxTaskPluginPersistedJSONBytes+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin, err := pluginruntime.CompilePlugin(mockPlugin, pluginruntime.Options{})
+			require.NoError(t, err)
+			adaptor := New(plugin)
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}, TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"}}
+			adaptor.Init(info)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", nil)
+			response := &http.Response{StatusCode: http.StatusAccepted, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body))}
+			result, taskErr := adaptor.ParseResponse(c, response, info)
+			assert.Nil(t, result)
+			require.NotNil(t, taskErr)
+			assert.True(t, taskErr.NoRetry)
+		})
+	}
 }

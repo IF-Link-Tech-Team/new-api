@@ -887,6 +887,11 @@ protocols.openai_video = {
       if (req.seconds !== undefined) req.seconds = Number(req.seconds);
       else if (req.duration !== undefined) req.seconds = Number(req.duration);
     }
+    // The shared model name also has a separate Jiliu wire contract. Do not
+    // accept its target/conditions as ignored fields and send a different job.
+    if (isH3(ctx.upstreamModel || ctx.model) && req.target !== undefined && ["t2va", "ref2va", "fl2va"].includes(req.task)) {
+      throw new Error("task and target use the Jiliu H3 request format");
+    }
     const seconds = req.seconds === undefined ? req.duration : req.seconds;
     if (seconds !== undefined) req.duration = Number(seconds);
     if (hasInputReferenceFile) {

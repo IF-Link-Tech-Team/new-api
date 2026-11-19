@@ -37,6 +37,43 @@ export function buildQueryRequest() { return {url: "https://example.com"}; }
 export function parseTaskResult() { return {status: "SUCCESS"}; }
 `
 
+func TestJiliuH3UsesNativeBillingWithTokenCatalog(t *testing.T) {
+	t.Setenv("IFLINK_API_CHANNEL_PRICING", "enabled")
+	previous := jsplugin.DefaultRegistry
+	jsplugin.DefaultRegistry = jsplugin.NewRegistry()
+	t.Cleanup(func() { jsplugin.DefaultRegistry = previous })
+	for _, key := range []string{"hailuo", "jiliu-h3"} {
+		source, err := builtinplugins.Source(key)
+		require.NoError(t, err)
+		_, err = jsplugin.DefaultRegistry.RegisterFactory(source, jsplugin.Options{Key: key})
+		require.NoError(t, err)
+	}
+	for _, body := range []string{
+		`{"model":"MiniMax-H3","task":"t2va","prompt":"ocean","target":{"duration_seconds":4,"short_edge":480,"aspect_ratio":"16:9"}}`,
+		`{"model":"MiniMax-H3","task":"ref2va","prompt":"ocean","target":{"duration_seconds":4,"short_edge":480,"aspect_ratio":"16:9"},"conditions":[{"type":"image","role":"reference","uri":"https://assets.example/image.jpg"}]}`,
+		`{"model":"MiniMax-H3","task":"fl2va","prompt":"ocean","target":{"duration_seconds":4,"short_edge":480,"aspect_ratio":"16:9"},"conditions":[{"type":"image","role":"keyframe","frame_index":0,"uri":"https://assets.example/image.jpg"}]}`,
+		`{"model":"MiniMax-H3","prompt":"ocean","seconds":4,"size":"768P"}`,
+	} {
+		router := gin.New()
+		router.POST("/v1/videos", PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), func(c *gin.Context) {
+			if strings.Contains(body, `"target"`) {
+				require.Equal(t, "jiliu-h3", c.GetString("expected_task_plugin_key"))
+				policy, err := service.ResolveChannelSelectionPolicy(c, "MiniMax-H3")
+				require.NoError(t, err)
+				assert.Nil(t, policy)
+			} else {
+				assert.Equal(t, "hailuo", c.GetString("expected_task_plugin_key"), "the existing official format must retain its provider")
+			}
+			c.Status(http.StatusNoContent)
+		})
+		request := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		assert.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPrepareTaskPluginSubmitRejectsMissingModel(t *testing.T) {
 	_, err := jsplugin.DefaultRegistry.Register(genericTaskPluginSource, jsplugin.Options{})
 	require.NoError(t, err)

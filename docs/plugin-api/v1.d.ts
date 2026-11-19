@@ -1,6 +1,6 @@
 export type JSONValue = null | boolean | number | string | readonly JSONValue[] | {readonly [key: string]: JSONValue};
 /** json-clone@1 and submit-sse-delta@1 are accepted for earlier hosts; new plugins need neither. */
-export type HostCapability = "json-clone@1" | "submit-sse-delta@1" | "json-order@1" | "duration-auto@1";
+export type HostCapability = "json-clone@1" | "submit-sse-delta@1" | "json-order@1" | "duration-auto@1" | "submit-idempotency@1" | "submit-once@1";
 /** Kinds of upstream a driver can address: the vendor API itself, or another New API gateway with the same plugin installed. */
 export type UpstreamKind = "vendor" | "new_api";
 /** Host-injected on every driver hook context. With "new_api" the driver uses its own native-route prefix and the host already set Bearer credentials. */
@@ -13,6 +13,8 @@ export interface HostUtils {
   unixNow(): number;
   uuid(): string;
   hmacSHA256(message: string, secret: string): string;
+  /** TC3 signature for the exact JSON body sent to an HTTPS Tencent API root; timestamp comes from the host clock. */
+  tencentSignTC3(request: {url: string; body: string; secretId: string; secretKey: string; action: string; version: string; region?: string; token?: string}): Record<string, string>;
   jwtSignHS256(claims: Record<string, JSONValue>, secret: string): string;
   base64(value: string): string;
   base64URL(value: string): string;
@@ -33,20 +35,22 @@ export type DecodedBody =
   | Readonly<{kind: "multipart"; fields: Readonly<Record<string, readonly string[]>>; files: readonly FileReference[]}>
   | Readonly<{kind: "none"}>;
 
-export interface NativeDecodeContext {method: string; path: string; params: Readonly<Record<string, string>>; query: Readonly<Record<string, readonly string[]>>; body: DecodedBody}
+export interface NativeDecodeContext {serverAddress?: string; /** Single-task query renderers receive stored model identities. */ model?: string; upstreamModel?: string; method: string; path: string; params: Readonly<Record<string, string>>; query: Readonly<Record<string, readonly string[]>>; body: DecodedBody}
 export interface ProtocolDecodeContext extends NativeDecodeContext {protocol: ProtocolName; operation: string; model: string; upstreamModel?: string; stream: boolean}
 export type SubmitIntent = {kind: "submit"; model: string; action?: string; requestBody?: unknown; originTaskIds?: readonly string[]};
 export type QueryIntent = {kind: "query"; taskIds: readonly string[]};
 export type TaskIntent = SubmitIntent | QueryIntent;
 export interface NativeRoute {method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; path: string; type: "submit" | "query" | "dynamic"; action?: string; taskIdParam?: string; decode?: string; render: string; models?: readonly string[]; retainResult?: boolean}
-export type ProtocolName = "openai_responses" | "openai_video" | "openai_image";
+export type ProtocolName = "openai_responses" | "openai_video" | "openai_image" | "minimax_video";
 export type ResponsesMode = "stream" | "sync" | "background";
 export type ProtocolClaim =
   | "openai_video"
   | "openai_image"
+  | "minimax_video"
   | {name: "openai_responses"; supports: readonly ResponsesMode[]; models?: readonly string[]}
   | {name: "openai_video"; models?: readonly string[]}
-  | {name: "openai_image"; models?: readonly string[]};
+  | {name: "openai_image"; models?: readonly string[]}
+  | {name: "minimax_video"; models?: readonly string[]};
 /** One entry of the OpenAI ImageResponse `data` array rendered by protocols.openai_image.render. */
 export type ImageResponseEntry = {url?: string; b64_json?: string; revised_prompt?: string};
 export type LocalizedText = string | ({ en: string } & Record<string, string>);
@@ -63,7 +67,7 @@ export interface DriverContext {requestBody: unknown; requestHeaders: Readonly<R
 export interface TaskQueryContext {taskId: string; publicTaskId: string; action: string; model: string; upstreamModel: string; baseUrl: string; apiKey?: string; authHeader: string; auth?: unknown; upstream: UpstreamContext; data: unknown; state: unknown}
 export interface BatchQueryContext {baseUrl: string; apiKey?: string; authHeader: string; auth?: unknown; upstream: UpstreamContext; tasks: readonly TaskQueryContext[]}
 export type HookHTTPResponse = {readonly status: number; readonly headers: Readonly<Record<string, string>>}
-export interface RequestDescriptor {responseType?: "json" | "sse"; url: string; method?: string; headers?: Record<string, string>; /** JSON body may contain FilePlaceholder objects at any depth; the host replaces each with a Base64 or data-URL string. */ body?: unknown; credentialless?: boolean; action?: string; model?: string; rewriteModel?: string; bodyType?: "json" | "multipart"; parts?: readonly {name: string; value?: unknown; fileRef?: string; filename?: string}[]}
+export interface RequestDescriptor {responseType?: "json" | "sse"; url: string; method?: string; headers?: Record<string, string>; /** JSON body may contain FilePlaceholder objects at any depth; the host replaces each with a Base64 or data-URL string. */ body?: unknown; credentialless?: boolean; allowCredentiallessRedirects?: boolean; action?: string; model?: string; rewriteModel?: string; bodyType?: "json" | "multipart"; parts?: readonly {name: string; value?: unknown; fileRef?: string; filename?: string}[]}
 export interface UpstreamResponse {statusCode: number; headers: Readonly<Record<string, readonly string[]>>; body: unknown}
 export interface NormalizedTaskResult {taskId?: string; status: "NOT_START" | "SUBMITTED" | "QUEUED" | "IN_PROGRESS" | "SUCCESS" | "FAILURE" | "UNKNOWN"; progress?: string; reason?: string; url?: string; remoteUrl?: string; completionTokens?: number; totalTokens?: number}
 export interface TaskArtifact {key: string; type: "video" | "audio" | "image" | "file"; mimeType?: string}
@@ -72,6 +76,7 @@ export declare const native: Record<string, ((ctx: NativeDecodeContext) => TaskI
 export declare const protocols: {
   openai_responses?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; renderEvents?(ctx: unknown, task: TaskView, previousState: unknown): unknown; renderFinal?(ctx: unknown, task: TaskView): unknown};
   openai_video?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: unknown, task: TaskView): unknown};
+  minimax_video?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: ProtocolDecodeContext, task: TaskView): unknown};
   /** render returns the OpenAI ImageResponse; the host adds `created` when absent and resolves response_format b64_json. */
   openai_image?: {decodeRequest(ctx: ProtocolDecodeContext): SubmitIntent; render(ctx: unknown, task: TaskView): {created?: number; data: readonly ImageResponseEntry[]} & Record<string, unknown>};
 };

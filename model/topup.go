@@ -246,6 +246,76 @@ func GetTopUpByTradeNo(tradeNo string) *TopUp {
 	return topUp
 }
 
+// PendingOrderCursor is a keyset position in create_time/id order. A reconciler
+// that only ever re-read the oldest page would stop seeing new orders as soon as
+// that page filled with orders nobody will pay; rotating through pages keeps
+// every order in the window reachable.
+type PendingOrderCursor struct {
+	CreateTime int64
+	Id         int
+}
+
+// IsZero reports whether the cursor still points at the start of the window.
+func (c PendingOrderCursor) IsZero() bool {
+	return c.CreateTime == 0 && c.Id == 0
+}
+
+// after restricts a query to rows strictly after this cursor position. The
+// parentheses are explicit because the clause is combined with other filters by
+// AND, and OR binds less tightly.
+func (c PendingOrderCursor) after(q *gorm.DB) *gorm.DB {
+	if c.IsZero() {
+		return q
+	}
+	return q.Where("(create_time > ? OR (create_time = ? AND id > ?))",
+		c.CreateTime, c.CreateTime, c.Id)
+}
+
+// ListPendingIFLinkPayTopUps returns recent unsettled wallet orders so a
+// reconciler can ask the payment provider about them. Read-only: it never
+// changes an order, and settlement still requires provider confirmation.
+func ListPendingIFLinkPayTopUps(createdAfter int64, after PendingOrderCursor, limit int) ([]TopUp, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows := make([]TopUp, 0, limit)
+	q := DB.Where("payment_provider = ? AND status = ? AND create_time >= ?",
+		PaymentProviderIFLinkPay, common.TopUpStatusPending, createdAfter)
+	err := after.after(q).
+		Order("create_time asc").
+		Order("id asc").
+		Limit(limit).
+		Find(&rows).Error
+	return rows, err
+}
+
+// ReusableIFLinkPayTopUp returns this user's newest still-pending IFLinkPay
+// wallet order for the same amount, so a payer who clicks pay again re-uses one
+// order instead of leaving another abandoned row behind. Read-only.
+//
+// The order is chosen by create_time, not by primary key: the caller applies an
+// age bound to the result, and only create_time expresses how old the order is.
+//
+// The amount is compared as a narrow range rather than with equality: the column
+// is a decimal on MySQL/PostgreSQL and a real on SQLite, so float equality is not
+// portable, while the amount is always rounded to two decimals before it is
+// stored.
+func ReusableIFLinkPayTopUp(userId int, money float64) []TopUp {
+	const epsilon = 0.0000005
+	rows := make([]TopUp, 0, 1)
+	err := DB.
+		Where("user_id = ? AND payment_provider = ? AND status = ? AND money >= ? AND money <= ?",
+			userId, PaymentProviderIFLinkPay, common.TopUpStatusPending, money-epsilon, money+epsilon).
+		Order("create_time desc").
+		Order("id desc").
+		Limit(1).
+		Find(&rows).Error
+	if err != nil {
+		return nil
+	}
+	return rows
+}
+
 func UpdatePendingTopUpStatus(tradeNo string, expectedPaymentProvider string, targetStatus string) error {
 	if tradeNo == "" {
 		return errors.New("payment order number not provided")
@@ -573,7 +643,13 @@ func ManualCompleteTopUp(tradeNo string, callerIp string) error {
 			return nil
 		}
 
-		if topUp.Status != common.TopUpStatusPending {
+		// An expired order stays completable by an administrator. Reconciliation
+		// only retires an order after the provider said the payment can no longer
+		// succeed, so an expired row normally means nothing was paid -- but the
+		// administrator is the human check of last resort, and refusing here would
+		// remove the only remaining remedy if a payment did arrive. Anything else
+		// (failed, or an unknown state) still refuses.
+		if topUp.Status != common.TopUpStatusPending && topUp.Status != common.TopUpStatusExpired {
 			return common.NewMessage("Order is not pending payment and cannot be completed")
 		}
 

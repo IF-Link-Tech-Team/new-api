@@ -173,9 +173,17 @@ export function ApiKeysMutateDrawer({
     [groupsData, t]
   )
   const backendHasAuto = groups.some((g) => g.value === 'auto')
+  const autoGroupOptions = useMemo(() => {
+    const available = autoGroupsData?.data?.available_groups
+    return groups.filter(
+      (group) =>
+        group.value !== 'auto' &&
+        (available === undefined || available.includes(group.value))
+    )
+  }, [groups, autoGroupsData])
   const availableAutoGroupNames = useMemo(
-    () => groups.filter((group) => group.value !== 'auto').map((g) => g.value),
-    [groups]
+    () => autoGroupOptions.map((group) => group.value),
+    [autoGroupOptions]
   )
   const globalAutoGroups = useMemo(() => {
     const available = new Set(availableAutoGroupNames)
@@ -465,7 +473,7 @@ export function ApiKeysMutateDrawer({
                         <AutoGroupOrderEditor
                           value={field.value}
                           mode={autoGroupsMode}
-                          options={groups}
+                          options={autoGroupOptions}
                           globalOptions={globalAutoGroupOptions}
                           maxCount={maxAutoGroups}
                           onChange={(value) => {

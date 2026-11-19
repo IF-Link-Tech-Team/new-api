@@ -88,6 +88,11 @@ func authHelper(c *gin.Context, minRole int) {
 	var auditWriter *auditResponseWriter
 	if minRole >= common.RoleAdminUser {
 		auditWriter = beginAdminAudit(c)
+		if !authz.Can(user.Id, user.Role, authz.GlobalAdminAccess) {
+			abortWithWebMessage(c, http.StatusForbidden, "AUTH_INSUFFICIENT_PRIVILEGE", common.NewMessage("Unauthorized, insufficient privileges"))
+			finishAdminAudit(c, auditWriter)
+			return
+		}
 	}
 
 	c.Next()
@@ -621,9 +626,21 @@ func TokenAuth() func(c *gin.Context) {
 
 		userGroup := userCache.Group
 		tokenGroup := token.Group
+		if tokenGroup == "" && token.UserSubscriptionId > 0 {
+			wallet, walletErr := model.FindGroupWallet(userGroup)
+			if walletErr != nil {
+				abortWithOpenAiMessage(c, http.StatusInternalServerError, common.TranslateMessage(c, i18n.MsgDatabaseError))
+				return
+			}
+			// Provisioned plan keys have no explicit group. Joining an independent
+			// group must not reroute those existing entitlements into its credits.
+			if wallet.IsIndependent() {
+				tokenGroup = "default"
+			}
+		}
 		if tokenGroup != "" {
 			// check common.UserUsableGroups[userGroup]
-			if _, ok := service.GetUserUsableGroups(userGroup)[tokenGroup]; !ok {
+			if _, ok := service.GetUserUsableGroups(userGroup, userCache.Role)[tokenGroup]; !ok {
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupForbidden, map[string]any{"Group": tokenGroup}))
 				return
 			}
@@ -635,6 +652,10 @@ func TokenAuth() func(c *gin.Context) {
 				}
 			}
 			userGroup = tokenGroup
+		}
+		if !service.GroupRoleAllowed(userGroup, userCache.Role) {
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgAuthTokenGroupForbidden, map[string]any{"Group": userGroup}))
+			return
 		}
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, userGroup)
 

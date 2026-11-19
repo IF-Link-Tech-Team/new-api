@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -498,7 +499,21 @@ func RelayTask(c *gin.Context) {
 		return
 	}
 
+	clientRequest := c.Request
+	if pinned, ok := c.Get(pluginruntime.ContextKeyPinnedRoute); ok {
+		if route, ok := pinned.(pluginruntime.PinnedRoute); ok && route.Plugin != nil && route.Plugin.Meta.Key == "tokenhub-media" {
+			// Synchronous media can finish upstream after the client times out.
+			// Keep its result and settlement, just like the image protocol bridge.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(clientRequest.Context()), defaultPluginProtocolBridgeDeps().submissionTimeout)
+			defer cancel()
+			c.Request = clientRequest.Clone(ctx)
+			defer func() { c.Request = clientRequest }()
+		}
+	}
 	outcome, taskErr := executeTaskSubmission(c, relayInfo)
+	if clientRequest.Context().Err() != nil {
+		return
+	}
 	if taskErr != nil {
 		respondTaskSubmissionError(c, taskErr)
 		return
@@ -509,8 +524,8 @@ func RelayTask(c *gin.Context) {
 // executeTaskSubmission owns the retry, billing, and persistence lifecycle.
 // It deliberately performs no client response writes so JSON and protocol
 // presenters share the same durable task barrier. Its cancellation semantics
-// come from c.Request.Context: native task endpoints use the client context,
-// while the Responses bridge supplies an independently bounded context.
+// come from c.Request.Context: TokenHub media and host protocol bridges supply
+// independently bounded contexts; other native task endpoints keep the client context.
 func executeTaskSubmission(c *gin.Context, relayInfo *relaycommon.RelayInfo) (*taskSubmissionOutcome, *taskdto.TaskError) {
 	return executeTaskSubmissionWith(c, relayInfo, relay.RelayTaskSubmit)
 }
@@ -522,9 +537,44 @@ func executeTaskSubmissionWith(
 	relayInfo *relaycommon.RelayInfo,
 	submit taskSubmitAttempt,
 ) (*taskSubmissionOutcome, *taskdto.TaskError) {
+	defer relay.ReleaseTaskIdempotency(c)
 	selectionPolicy, policyErr := service.ResolveChannelSelectionPolicy(c, relayInfo.OriginModelName)
 	if policyErr != nil {
 		return nil, service.TaskErrorWrapperLocal(policyErr, "product_route_policy_failed", http.StatusServiceUnavailable)
+	}
+	order, orderErr := relay.LookupTaskIdempotency(c, relayInfo)
+	if orderErr != nil {
+		return nil, orderErr
+	}
+	if order != nil {
+		if order.TaskRowID != 0 {
+			task, err := model.TaskIdempotencyResult(c.Request.Context(), order)
+			if err != nil {
+				return nil, service.TaskErrorWrapperLocal(errors.New("the original task is no longer available"), "idempotency_result_unavailable", http.StatusGone)
+			}
+			return &taskSubmissionOutcome{Result: &relay.TaskSubmitResult{}, Task: task, RelayInfo: relayInfo}, nil
+		}
+		channel, err := model.GetChannelById(order.ChannelID, true)
+		if err != nil || channel.Status != common.ChannelStatusEnabled {
+			return nil, service.TaskErrorWrapperLocal(errors.New("the original task channel is unavailable"), "idempotency_route_changed", http.StatusConflict)
+		}
+		allowed, err := model.TaskIdempotencyChannelAllowed(c.Request.Context(), order, relayInfo.OriginModelName)
+		if err != nil || !allowed {
+			return nil, service.TaskErrorWrapperLocal(errors.New("the original task channel no longer permits this model and group"), "idempotency_route_changed", http.StatusConflict)
+		}
+		if relayInfo.LockedChannel != nil {
+			if locked, ok := relayInfo.LockedChannel.(*model.Channel); !ok || locked.Id != channel.Id {
+				return nil, service.TaskErrorWrapperLocal(errors.New("the order conflicts with the pinned channel"), "idempotency_route_changed", http.StatusConflict)
+			}
+		}
+		relayInfo.LockedChannel = channel
+		c.Set("expected_task_plugin_key", order.PluginKey)
+		if setupErr := middleware.SetupContextForSelectedChannel(c, channel, relayInfo.OriginModelName); setupErr != nil {
+			return nil, service.TaskErrorFromAPIError(setupErr)
+		}
+		if !relay.RestoreTaskIdempotencyKey(c, channel, order) {
+			return nil, service.TaskErrorWrapperLocal(errors.New("the original task credential is unavailable"), "idempotency_route_changed", http.StatusConflict)
+		}
 	}
 	policy := service.RequestPolicy(c)
 	diagnostics := newTaskPluginSubmitDiagnostics(c)
@@ -602,6 +652,11 @@ func executeTaskSubmissionWith(
 
 		stage = "submit"
 		result, taskErr = submit(c, relayInfo)
+		if taskErr != nil && relay.HasTaskIdempotencyLease(c) {
+			// The upstream may already have accepted the order. Let the client
+			// retry the same key on its pinned channel instead of failing over.
+			taskErr.NoRetry = true
+		}
 		if requestErr := c.Request.Context().Err(); requestErr != nil {
 			diagnostics.cancelled("after_submit", retryParam.GetRetry()+1)
 			taskErr = service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
@@ -646,6 +701,9 @@ func executeTaskSubmissionWith(
 		diagnostics.failed("submit", "missing_result", taskErr, false)
 		return nil, taskErr
 	}
+	if result.ReplayTask != nil {
+		return &taskSubmissionOutcome{Result: result, Task: result.ReplayTask, RelayInfo: relayInfo}, nil
+	}
 	if requestErr := c.Request.Context().Err(); requestErr != nil {
 		diagnostics.cancelled("before_reserve", retryParam.GetRetry()+1)
 		return nil, service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
@@ -675,6 +733,8 @@ func executeTaskSubmissionWith(
 	task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
 	task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
 	task.PrivateData.BillingSource = relayInfo.BillingSource
+	task.PrivateData.GroupWalletID = relayInfo.GroupWalletID
+	task.PrivateData.GroupWalletRequestID = relayInfo.GroupWalletRequestID
 	task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
 	task.PrivateData.TokenId = relayInfo.TokenId
 	task.PrivateData.NodeName = common.NodeName
@@ -712,10 +772,8 @@ func executeTaskSubmissionWith(
 	// to immediate terminal results: the client receives the complete response
 	// once, the upstream snapshot is never persisted, and the task is not
 	// retrievable afterwards. An asynchronous result on such a route keeps its
-	// snapshot because polling and retrieval need it. The OpenAI Images
-	// protocol delivers its images inline in the same HTTP response, so its
-	// immediate results follow the same rule; an asynchronous image task is
-	// expected there and is polled inside the request.
+	// snapshot because polling and retrieval need it. Host image protocols
+	// retain results too: the client may disconnect before receiving them.
 	var insertOmits []string
 	immediateTerminal := result.Immediate != nil && (result.Immediate.Status == model.TaskStatusSuccess || result.Immediate.Status == model.TaskStatusFailure)
 	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedRoute); exists {
@@ -729,14 +787,8 @@ func executeTaskSubmissionWith(
 			}
 		}
 	}
-	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists && immediateTerminal {
-		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Protocol == pluginruntime.ProtocolOpenAIImage {
-			task.PrivateData.ResultDiscarded = true
-			insertOmits = append(insertOmits, "data")
-		}
-	}
 	diagnostics.insertStart(task)
-	if insertErr := task.InsertWithContext(c.Request.Context(), insertOmits...); insertErr != nil {
+	if insertErr := relay.PersistTaskSubmission(c, task, insertOmits...); insertErr != nil {
 		common.SysError(common.LogText("insert task error: %s", insertErr.Error()))
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to persist task"), "task_insert_failed", http.StatusInternalServerError)
 		diagnostics.failed("insert", "database_error", taskErr, false)
@@ -797,10 +849,17 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 		}
 	}
 	if pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint); exists {
-		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Protocol == "openai_video" && pinned.Operation.Name == "create" {
-			diagnostics.present(outcome.Task, "openai_video_create")
-			c.JSON(http.StatusOK, outcome.Task.ToOpenAIVideo())
-			return
+		if pinned, ok := pinnedValue.(pluginruntime.PinnedEndpoint); ok && pinned.Operation.Name == "create" {
+			switch pinned.Protocol {
+			case "openai_video":
+				diagnostics.present(outcome.Task, "openai_video_create")
+				c.JSON(http.StatusOK, outcome.Task.ToOpenAIVideo())
+				return
+			case pluginruntime.ProtocolMiniMaxVideo:
+				diagnostics.present(outcome.Task, "minimax_video_create")
+				c.JSON(http.StatusOK, gin.H{"task_id": outcome.Task.TaskID})
+				return
+			}
 		}
 	}
 	createdAt := outcome.Task.CreatedAt
@@ -820,7 +879,7 @@ func presentTaskSubmission(c *gin.Context, outcome *taskSubmissionOutcome) {
 func respondTaskSubmissionError(c *gin.Context, taskErr *taskdto.TaskError) {
 	service.RecordRequestPolicyTermination(c, taskSubmissionAPIError(taskErr))
 	newTaskPluginSubmitDiagnostics(c).presentError(taskErr)
-	if middleware.RespondTaskPluginError(c, taskErr) {
+	if middleware.RespondMiniMaxVideoError(c, taskErr) || middleware.RespondTaskPluginError(c, taskErr) {
 		return
 	}
 	respondTaskError(c, taskErr)

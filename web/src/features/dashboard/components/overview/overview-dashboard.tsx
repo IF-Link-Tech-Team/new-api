@@ -54,10 +54,10 @@ import { fetchTokenKey, getApiKeys } from '@/features/keys/api'
 import type { ApiKey } from '@/features/keys/types'
 import { getSelfSubscriptionFull } from '@/features/subscriptions/api'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+import { canAccessGlobalAdmin } from '@/lib/admin-permissions'
 import { getUserModels } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { MOTION_TRANSITION } from '@/lib/motion'
-import { ROLE } from '@/lib/roles'
 import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
@@ -570,7 +570,7 @@ export function OverviewDashboard() {
   >(() => getSavedSetupGuideExpanded())
 
   const requestCount = Number(user?.request_count ?? 0)
-  const isAdmin = Boolean(user?.role && user.role >= ROLE.ADMIN)
+  const isAdmin = canAccessGlobalAdmin(user)
 
   const apiKeysQuery = useQuery({
     queryKey: ['dashboard', 'overview', 'api-keys'],

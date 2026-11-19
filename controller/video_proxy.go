@@ -199,6 +199,12 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 			message: "Artifact request body was rejected", err: errTaskMediaRequestRejected,
 		}
 	}
+	if descriptor.AllowCredentiallessRedirects && (method != http.MethodGet && method != http.MethodHead || descriptor.Body != nil) {
+		return &taskMediaProxyError{
+			status: http.StatusBadGateway, code: "artifact_request_rejected",
+			message: "Credentialless redirects require a bodyless GET or HEAD", err: errTaskMediaRequestRejected,
+		}
+	}
 	if descriptor.Credentialless &&
 		(method != http.MethodGet && method != http.MethodHead ||
 			descriptor.Body != nil || len(descriptor.Headers) != 0) {
@@ -256,7 +262,7 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 		req.Header.Set(name, value)
 	}
 
-	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless)
+	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless || descriptor.AllowCredentiallessRedirects)
 	clientWithoutBodyTimeout := *client
 	clientWithoutBodyTimeout.Timeout = 0
 	resp, err := doTaskMediaRequest(&clientWithoutBodyTimeout, req, taskMediaResponseHeaderTimeout)
@@ -399,8 +405,9 @@ func applyTaskMediaRequestHeaders(destination http.Header, headers map[string]st
 	return nil
 }
 
-func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, clientHeaders map[string]string, credentialless bool) *http.Client {
+func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, clientHeaders map[string]string, allowCrossOrigin bool) *http.Client {
 	cloned := *base
+	credentialsDropped := false
 	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
 			return fmt.Errorf("%w: too many redirects", errTaskMediaRequestRejected)
@@ -416,9 +423,15 @@ func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, cl
 			return fmt.Errorf("%w: proxy loop", errTaskMediaRequestRejected)
 		}
 		if len(via) > 0 && !sameTaskMediaOrigin(via[len(via)-1].URL, req.URL) {
-			if !credentialless {
+			if !allowCrossOrigin {
 				return fmt.Errorf("%w: credentialed cross-origin redirect", errTaskMediaRequestRejected)
 			}
+			if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
+				return fmt.Errorf("%w: insecure artifact redirect", errTaskMediaRequestRejected)
+			}
+			credentialsDropped = true
+		}
+		if credentialsDropped {
 			for name := range req.Header {
 				req.Header.Del(name)
 			}

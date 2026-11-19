@@ -46,6 +46,7 @@ export type BillingUsageExample = {
 }
 
 export type BillingPluginVariant = {
+  group?: string
   plugin_key: string
   plugin_name: string
   icon?: string
@@ -56,6 +57,7 @@ export type BillingPluginVariant = {
 }
 
 export type PricingModel = {
+  group_pricing?: (BillingPluginVariant & { group: string })[]
   billing_plugin_variants?: BillingPluginVariant[]
   id: number
   model_name: string

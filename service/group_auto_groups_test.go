@@ -3,19 +3,34 @@ package service
 import (
 	"fmt"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func configureRequestAutoGroupsTest(t *testing.T) {
 	t.Helper()
+	previousDB := model.DB
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "groups.db")), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.GroupWallet{}))
+	model.DB = db
+	t.Cleanup(func() {
+		model.DB = previousDB
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		require.NoError(t, sqlDB.Close())
+	})
 	originalMax := setting.GetMaxTokenAutoGroups()
 	originalAutoGroups := setting.AutoGroups2JsonString()
 	originalUsableGroups := setting.UserUsableGroups2JSONString()

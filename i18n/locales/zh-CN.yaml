@@ -90,3 +90,5 @@ channel.upstream_update_added_models: "新增模型示例（展示 {{.Shown}}/{{
 channel.upstream_update_removed_models: "删除模型示例（展示 {{.Shown}}/{{.Total}}）：{{.Models}}"
 channel.upstream_update_failed_channels: "失败渠道 ID（展示 {{.Shown}}/{{.Total}}）：{{.Ids}}"
 channel.upstream_update_more_omitted: "（其余 {{.Count}} 个已省略）"
+
+quota.independent_subscription_key: "套餐专属 Key 不能用于独立自治组，请使用该组的普通 Key"

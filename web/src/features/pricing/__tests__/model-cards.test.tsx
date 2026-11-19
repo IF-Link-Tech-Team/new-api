@@ -38,7 +38,14 @@ import {
 import { CachedPriceCell } from '../components/cached-price-cell'
 import { ModelCard } from '../components/model-card'
 import { ModelCardGrid } from '../components/model-card-grid'
+import { ModelDetailsContent } from '../components/model-details'
+import { withGroupPricing } from '../lib/plugin-pricing'
 import type { PricingModel } from '../types'
+
+// Charts are outside the group-price table contract and require a real canvas.
+vi.mock('../components/model-details-performance', () => ({
+  ModelDetailsPerformance: () => null,
+}))
 
 function pricingModel(overrides: Partial<PricingModel> = {}): PricingModel {
   return {
@@ -88,6 +95,98 @@ afterEach(() => {
 })
 
 describe('model cards', () => {
+  it('shows token price tables when switching group detail tabs', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: { success: true, data: { models: [] } },
+    })
+    const model = withGroupPricing(
+      pricingModel({
+        enable_groups: ['Astro', 'default'],
+        group_ratio: { Astro: 1, default: 1 },
+        group_pricing: [
+          {
+            group: 'Astro',
+            plugin_key: 'price-1',
+            plugin_name: 'Astro',
+            billing_expr: 'tier("base", p * 0 + c * 0)',
+            billing_usage_schema: {},
+          },
+          {
+            group: 'default',
+            plugin_key: 'price-2',
+            plugin_name: 'default',
+            billing_expr: 'tier("base", p * 1 + c * 4)',
+            billing_usage_schema: {},
+          },
+        ],
+      })
+    )
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ModelDetailsContent
+          model={model}
+          groupRatio={{ Astro: 1, default: 1 }}
+          usableGroup={{
+            Astro: { desc: 'Astro', ratio: 1 },
+            default: { desc: 'Default', ratio: 1 },
+          }}
+          autoGroups={[]}
+          endpointMap={{}}
+          priceRate={1}
+          usdExchangeRate={1}
+          tokenUnit='M'
+        />
+      </QueryClientProvider>
+    )
+    expect(
+      screen.queryByText('Special billing expression')
+    ).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'default' }))
+    const panel = screen.getByRole('tabpanel', { name: 'default' })
+    expect(within(panel).getByText('$1')).toBeVisible()
+    expect(within(panel).getByText('$4')).toBeVisible()
+  })
+  it('switches shared model prices between default and Astro without mixing them', () => {
+    const model = pricingModel({
+      enable_groups: ['default', 'Astro'],
+      group_ratio: { default: 1, Astro: 1 },
+      group_pricing: [
+        {
+          group: 'default',
+          plugin_key: 'price-1',
+          plugin_name: 'default',
+          billing_expr: 'tier("base", p * 1 + c * 4)',
+          billing_usage_schema: {},
+        },
+        {
+          group: 'Astro',
+          plugin_key: 'price-2',
+          plugin_name: 'Astro',
+          billing_expr: 'tier("base", p * 0 + c * 0)',
+          billing_usage_schema: {},
+        },
+      ],
+    })
+    const { rerender } = render(
+      <ModelCard
+        model={withGroupPricing(model, 'default')}
+        selectedGroup='default'
+        onClick={vi.fn()}
+      />
+    )
+    expect(screen.getByText('$1')).toBeVisible()
+    expect(screen.getByText('$4')).toBeVisible()
+    expect(screen.queryByText('Astro')).not.toBeInTheDocument()
+    rerender(
+      <ModelCard
+        model={withGroupPricing(model, 'Astro')}
+        selectedGroup='Astro'
+        onClick={vi.fn()}
+      />
+    )
+    expect(screen.getAllByText('$0')).toHaveLength(2)
+    expect(screen.queryByText('$4')).not.toBeInTheDocument()
+  })
   it('shows separate generic and image cache prices including a free image cache', () => {
     render(
       <CachedPriceCell

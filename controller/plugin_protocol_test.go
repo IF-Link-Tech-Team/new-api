@@ -15,8 +15,10 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
+	builtinplugins "github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
@@ -1695,6 +1697,8 @@ func TestServeTaskPluginImageProtocolRendersImmediateResultAndInlinesBase64(t *t
 			var response map[string]any
 			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 			assert.Equal(t, float64(1_710_000_000), response["created"])
+			assert.Equal(t, "task_image", response["task_id"])
+			assert.Equal(t, "task_image", recorder.Header().Get("X-Task-Id"))
 			assert.Equal(t, "test", response["vendor"], "plugin fields are preserved")
 			data, ok := response["data"].([]any)
 			require.True(t, ok)
@@ -1862,8 +1866,131 @@ func TestServeTaskPluginImageProtocolDisconnectDuringSubmissionKeepsDurableSettl
 	require.NoError(t, database.Where("task_id = ?", "task_image_disconnect").First(&persisted).Error)
 	assert.Equal(t, model.TaskStatus(model.TaskStatusSuccess), persisted.Status)
 	assert.Equal(t, 7, persisted.Quota)
-	assert.True(t, persisted.PrivateData.ResultDiscarded, "the inline image result is not retained after the barrier")
+	assert.False(t, persisted.PrivateData.ResultDiscarded, "a disconnected client must be able to recover its image")
+	assert.JSONEq(t, `{"images":["https://cdn.example/1.png"]}`, string(persisted.Data))
+	assert.True(t, persisted.ResultRetrievable())
 	assert.Zero(t, polls, "an immediate result is never polled")
 	assert.False(t, c.Writer.Written())
 	assert.Empty(t, recorder.Body.String())
+}
+
+func TestMiniMaxSharedRoutesPreserveProviderMappingAndTaskOwnership(t *testing.T) {
+	previousDB, previousRegistry, previousCache := model.DB, pluginruntime.DefaultRegistry, common.MemoryCacheEnabled
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Task{}))
+	model.DB, common.MemoryCacheEnabled = db, false
+	registry := pluginruntime.NewRegistry()
+	pluginruntime.DefaultRegistry = registry
+	for _, key := range []string{"jiliu-h3", "tencent-vod", "tokenhub-media", "sora"} {
+		source, err := builtinplugins.Source(key)
+		require.NoError(t, err)
+		_, err = registry.RegisterFactory(source, pluginruntime.Options{Key: key})
+		require.NoError(t, err)
+	}
+	require.NoError(t, db.Create(&model.Channel{Id: 24, Type: constant.ChannelTypeTaskPlugin, Status: common.ChannelStatusEnabled,
+		Models: "H3-VOD", ModelMapping: common.GetPointer(`{"H3-VOD":"wand-vega-video-1.0-lite"}`), Group: "default",
+		Setting: common.GetPointer(`{"task_plugin_key":"tencent-vod"}`), Key: "unused-test-key"}).Error)
+	model.InitChannelCache()
+	t.Cleanup(func() {
+		model.DB, pluginruntime.DefaultRegistry, common.MemoryCacheEnabled = previousDB, previousRegistry, previousCache
+		if previousDB != nil {
+			model.InitChannelCache()
+		}
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		require.NoError(t, sqlDB.Close())
+	})
+
+	for _, tc := range []struct {
+		name, model, provider, upstream, bodyField string
+		status                                     int
+	}{
+		{"existing Jiliu client", "MiniMax-H3", "jiliu-h3", "MiniMax-H3", "target", 200},
+		{"VOD canonical model", "wand-vega-video-1.0-lite", "tencent-vod", "wand-vega-video-1.0-lite", "OutputConfig", 200},
+		{"channel mapped VOD alias", "H3-VOD", "tencent-vod", "wand-vega-video-1.0-lite", "OutputConfig", 200},
+		{"TokenHub video", "minimax-video-h3", "tokenhub-media", "minimax-video-h3", "content", 200},
+		{"unsupported model", "missing-model", "", "", "", 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := gin.New()
+			engine.POST("/v2/video_generation", middleware.PinTaskPluginEndpoint(), middleware.RequireTaskPluginEndpoint(), middleware.PrepareTaskPluginEndpoint(), func(c *gin.Context) {
+				pin := c.MustGet(pluginruntime.ContextKeyPinnedEndpoint).(pluginruntime.PinnedEndpoint)
+				assert.Equal(t, tc.provider, pin.Plugin.Meta.Key)
+				assert.Equal(t, tc.model, c.GetString("resolved_task_model"))
+				request := c.MustGet("task_request").(map[string]any)
+				assert.Contains(t, request, tc.bodyField)
+				if tc.provider == "jiliu-h3" || tc.provider == "tokenhub-media" {
+					assert.Equal(t, tc.upstream, request["model"])
+				} else {
+					assert.Equal(t, strings.TrimPrefix(tc.upstream, "wand-vega-video-"), request["ModelVersion"])
+				}
+				presentTaskSubmission(c, &taskSubmissionOutcome{Task: &model.Task{TaskID: "task_public"}, RelayInfo: &relaycommon.RelayInfo{}})
+			})
+			body, err := common.Marshal(map[string]any{"model": tc.model, "duration": 5, "resolution": "768P", "ratio": "16:9", "content": []any{map[string]any{"type": "text", "text": "sea"}}})
+			require.NoError(t, err)
+			req := httptest.NewRequest("POST", "/v2/video_generation", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			engine.ServeHTTP(rec, req)
+			require.Equal(t, tc.status, rec.Code, rec.Body.String())
+			if tc.status == 200 {
+				assert.JSONEq(t, `{"task_id":"task_public"}`, rec.Body.String())
+			} else {
+				assert.Contains(t, rec.Body.String(), `"http_code":"400"`)
+			}
+		})
+	}
+
+	for _, task := range []*model.Task{
+		{TaskID: "task_vod", UserId: 71, Platform: "tencent-vod", Status: model.TaskStatusInProgress, Properties: model.Properties{OriginModelName: "H3-VOD", UpstreamModelName: "wand-vega-video-1.0-lite"}},
+		{TaskID: "task_jiliu", UserId: 71, Platform: "jiliu-h3", Status: model.TaskStatusQueued, Properties: model.Properties{OriginModelName: "MiniMax-H3", UpstreamModelName: "MiniMax-H3"}},
+		{TaskID: "task_vod_done", UserId: 71, Platform: "tencent-vod", Status: model.TaskStatusSuccess,
+			Properties: model.Properties{OriginModelName: "H3-VOD", UpstreamModelName: "wand-vega-video-1.0-lite"},
+			Data:       []byte(`{"Response":{"AigcVideoTask":{"Status":"FINISH","ErrCode":0,"TaskId":"upstream-private","Input":{"OutputConfig":{"Resolution":"768P","AspectRatio":"16:9"}},"Output":{"Usage":{"OutputSeconds":5,"InputSeconds":0,"InputImageCount":0},"FileInfos":[{"FileUrl":"https://cdn.example/final.mp4"}]}}}}`)},
+		{TaskID: "task_other_user", UserId: 72, Platform: "tencent-vod", Status: model.TaskStatusInProgress, Properties: model.Properties{OriginModelName: "H3-VOD", UpstreamModelName: "wand-vega-video-1.0-lite"}},
+		{TaskID: "task_image", UserId: 71, Platform: "tencent-vod", Status: model.TaskStatusQueued, Properties: model.Properties{OriginModelName: "wand-vega-image-1.0-lite", UpstreamModelName: "wand-vega-image-1.0-lite"}},
+	} {
+		require.NoError(t, db.Create(task).Error)
+	}
+	deps := defaultPluginProtocolBridgeDeps()
+	deps.resolvePlugin = func(platform constant.TaskPlatform) (*pluginruntime.LoadedPlugin, *pluginruntime.RoutingGeneration, bool) {
+		p, found := registry.Generation().Get(string(platform))
+		return p, registry.Generation(), found
+	}
+	for _, tc := range []struct {
+		id, model, status string
+		code              int
+	}{
+		{"task_vod", "H3-VOD", "running", 200}, {"task_jiliu", "MiniMax-H3", "queued", 200},
+		{"task_vod_done", "H3-VOD", "succeeded", 200},
+		{"task_other_user", "", "", 404}, {"task_missing", "", "", 404}, {"task_image", "", "", 404},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			engine := gin.New()
+			engine.GET("/v2/query/video_generation/:task_id", func(c *gin.Context) {
+				common.SetContextKey(c, constant.ContextKeyUserId, 71)
+				retrieveMiniMaxVideo(c, deps)
+			})
+			rec := httptest.NewRecorder()
+			engine.ServeHTTP(rec, httptest.NewRequest("GET", "/v2/query/video_generation/"+tc.id, nil))
+			require.Equal(t, tc.code, rec.Code, rec.Body.String())
+			var body map[string]any
+			require.NoError(t, common.Unmarshal(rec.Body.Bytes(), &body))
+			if tc.code == 200 {
+				task := body["task"].(map[string]any)
+				assert.Equal(t, tc.id, task["id"])
+				assert.Equal(t, tc.model, task["model"])
+				assert.Equal(t, tc.status, task["status"])
+				if tc.id == "task_vod_done" {
+					assert.Equal(t, float64(5), task["duration"])
+					assert.Equal(t, "768P", task["resolution"])
+					assert.Equal(t, "https://cdn.example/final.mp4", task["content"].(map[string]any)["url"])
+					assert.NotContains(t, rec.Body.String(), "upstream-private")
+				}
+			} else {
+				assert.Equal(t, "404", body["error"].(map[string]any)["http_code"])
+			}
+		})
+	}
 }

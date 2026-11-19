@@ -25,6 +25,7 @@ import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { usePrivateUserName } from '@/features/private-user-alias/api'
 import { getUserAvatarFallback, getUserAvatarStyle } from '@/lib/avatar'
 import { formatTimestampToDate } from '@/lib/format'
 import { translateServerText } from '@/lib/server-error-message'
@@ -131,6 +132,7 @@ export function useTaskLogsColumns(
             } = useUsageLogsContext()
             const log = row.original
             const displayName = log.username || String(log.user_id || '?')
+            const privateName = usePrivateUserName(log.user_id, displayName)
 
             return (
               <button
@@ -160,7 +162,7 @@ export function useTaskLogsColumns(
                   </AvatarFallback>
                 </Avatar>
                 <span className='text-muted-foreground truncate text-sm hover:underline'>
-                  {sensitiveVisible ? displayName : '••••'}
+                  {sensitiveVisible ? privateName : '••••'}
                 </span>
               </button>
             )

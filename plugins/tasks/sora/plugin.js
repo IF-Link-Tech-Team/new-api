@@ -7,7 +7,7 @@ export const meta = {
     en: "OpenAI Sora video generation (text-to-video, image-to-video, and remix)",
     zh: "OpenAI Sora 视频生成（文生视频、图生视频、remix）",
   },
-  version: "1.1.0",
+  version: "1.1.1",
   channelTypes: [55, 1], // OpenAI-type channels natively serve sora with the same wire format
   author: { name: "QuantumNous" },
   models: ["sora-2", "sora-2-pro"],
@@ -33,7 +33,7 @@ export const meta = {
       description: { en: "Output video dimensions", zh: "输出视频尺寸" },
     },
   },
-  protocols: [{ name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_video"],
+  protocols: [{ name: "openai_responses", supports: ["stream", "sync", "background"] }, "openai_video", "minimax_video"],
 };
 
 function trimmed(value) {
@@ -314,4 +314,46 @@ protocols.openai_video = {
     if (task.data && typeof task.data === "object" && !Array.isArray(task.data)) return task.data;
     return legacyRenderers.openai_video(task);
   },
+};
+
+
+// Preserve the existing Sora driver; translate only the MiniMax V2 surface.
+protocols.minimax_video = {
+  decodeRequest: function (ctx) {
+    if (!ctx.body || ctx.body.kind !== "json") throw new Error("JSON body required");
+    const b = ctx.body.value;
+    const allowed = ["model", "content", "duration", "resolution", "ratio", "callback_url", "aigc_watermark"];
+    for (const key of Object.keys(b)) if (!allowed.includes(key)) throw new Error("Unsupported Sora field: " + key);
+    if (b.callback_url) throw new Error("Use task polling instead of callback_url");
+    if (b.aigc_watermark !== undefined) throw new Error("Sora does not support aigc_watermark");
+    const model = ctx.upstreamModel || ctx.model;
+    if (!["sora-2", "sora-2-pro"].includes(model)) throw new Error("Unsupported Sora model");
+    if (![4, 8, 12].includes(b.duration)) throw new Error("Sora duration must be 4, 8 or 12 seconds");
+    const resolution = String(b.resolution || "720P").toUpperCase();
+    const ratio = b.ratio || "9:16";
+    let size;
+    if (resolution === "720P" && ratio === "9:16") size = "720x1280";
+    else if (resolution === "720P" && ratio === "16:9") size = "1280x720";
+    else if (model === "sora-2-pro" && resolution === "1024P" && ratio === "9:16") size = "1024x1792";
+    else if (model === "sora-2-pro" && resolution === "1024P" && ratio === "16:9") size = "1792x1024";
+    else throw new Error("Unsupported Sora resolution and ratio combination");
+    if (!Array.isArray(b.content)) throw new Error("content must be an array");
+    const texts = [], images = [];
+    for (const item of b.content) {
+      if (item.type === "text" && typeof item.text === "string" && item.text.trim()) texts.push(item.text);
+      else if (item.type === "image_url" && item.role === "first_frame" && item.image_url && typeof item.image_url.url === "string") images.push(item.image_url.url);
+      else throw new Error("Sora supports text and one first_frame image only");
+    }
+    if (!texts.length || images.length > 1) throw new Error("Sora requires text and at most one first frame");
+    const request = {model: ctx.model, prompt: texts.join("\n"), seconds: b.duration, size: size};
+    if (images.length) request.input_reference = images[0];
+    return {kind: "submit", model: ctx.model, action: images.length ? "image_to_video" : "text_to_video", requestBody: request};
+  },
+  render: function (ctx, task) {
+    const status = {NOT_START:"queued", SUBMITTED:"queued", QUEUED:"queued", IN_PROGRESS:"running", SUCCESS:"succeeded", FAILURE:"failed"}[task.status] || "unknown";
+    const value = {id: task.task_id, model: ctx.model, status: status, task_type:"generation", modality:"video", created_at:task.created_at, updated_at:task.updated_at || task.created_at};
+    if (task.status === "SUCCESS") value.content = {url:(ctx.serverAddress || "") + "/v1/videos/" + encodeURIComponent(task.task_id) + "/content"};
+    if (task.status === "FAILURE") value.error = {message:task.fail_reason};
+    return {task:value};
+  }
 };

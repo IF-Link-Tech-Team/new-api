@@ -88,7 +88,7 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 					if playgroundRequest.Group != "" {
-						if !service.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group) && playgroundRequest.Group != usingGroup {
+						if !service.GroupInUserUsableGroups(usingGroup, playgroundRequest.Group, c.GetInt("role")) && playgroundRequest.Group != usingGroup {
 							abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
 							return
 						}
@@ -99,6 +99,10 @@ func Distribute() func(c *gin.Context) {
 		}
 		if pinned || shouldSelectChannel {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+			if !service.GroupRoleAllowed(usingGroup, c.GetInt("role")) {
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+				return
+			}
 			var selectErr *service.ChannelSelectError
 			channel, _, selectErr = service.SelectChannelForRequest(c, modelRequest.Model, &service.RetryParam{
 				Ctx:         c,

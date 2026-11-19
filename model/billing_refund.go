@@ -31,6 +31,7 @@ type BillingRefund struct {
 	UserID            int    `json:"user_id" gorm:"index"`
 	TokenID           int    `json:"token_id"`
 	SubscriptionID    int    `json:"subscription_id"`
+	GroupWalletID     int    `json:"group_wallet_id"`
 	WalletQuota       int64  `json:"wallet_quota" gorm:"type:bigint"`
 	SubscriptionQuota int64  `json:"subscription_quota" gorm:"type:bigint"`
 	ExtraQuota        int64  `json:"extra_quota" gorm:"type:bigint"`
@@ -168,6 +169,14 @@ func ProcessBillingRefund(id int64) error {
 		}
 		if (receipt.WalletQuota > 0 && receipt.SubscriptionQuota > 0) || (receipt.ExtraQuota > 0 && receipt.SubscriptionQuota == 0) {
 			return errors.New("invalid refund funding source")
+		}
+		if receipt.GroupWalletID > 0 {
+			if receipt.WalletQuota != 0 || receipt.SubscriptionQuota != 0 || receipt.ExtraQuota != 0 {
+				return errors.New("invalid group wallet refund source")
+			}
+			if err := RefundGroupWalletTx(tx, receipt.GroupWalletID, receipt.UserID, receipt.RequestID); err != nil {
+				return err
+			}
 		}
 		if receipt.SubscriptionQuota > 0 {
 			var record SubscriptionPreConsumeRecord

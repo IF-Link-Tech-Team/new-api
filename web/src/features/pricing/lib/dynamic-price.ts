@@ -36,7 +36,7 @@ import {
   type ParsedTier,
 } from './billing-expr'
 import { compileBillingExpression } from './billing-expression/parser'
-import { getDisplayGroupRatio } from './model-helpers'
+import { getConfiguredGroupRatio, getDisplayGroupRatio } from './model-helpers'
 import { withPluginPricing } from './plugin-pricing'
 import {
   evaluateTaskVisualConfig,
@@ -389,12 +389,32 @@ export function getDynamicPricingSummary(
 ): DynamicPricingSummary | null {
   const variants = model.billing_plugin_variants
   if (variants?.length) {
+    const groupPrices = variants.some((variant) => variant.group !== undefined)
+    if (groupPrices) options = { ...options, groupRatioMultiplier: 1 }
     const summaries = variants.flatMap((variant) => {
       const summary = getDynamicPricingSummary(
         withPluginPricing(model, variant),
         options
       )
-      return summary ? [summary] : []
+      if (!summary) return []
+      if (!variant.group) return [summary]
+      const ratio = getConfiguredGroupRatio(
+        model.group_ratio ?? {},
+        variant.group
+      )
+      const applyRatio = (entry: DynamicPriceEntry): DynamicPriceEntry => ({
+        ...entry,
+        value: entry.value * ratio,
+        minValue: (entry.minValue ?? entry.value) * ratio,
+        maxValue: (entry.maxValue ?? entry.value) * ratio,
+      })
+      return [
+        {
+          ...summary,
+          entries: summary.entries.map(applyRatio),
+          primaryEntries: summary.primaryEntries.map(applyRatio),
+        },
+      ]
     })
     const perCallEntries: DynamicPriceEntry[] = []
     if (
@@ -440,17 +460,23 @@ export function getDynamicPricingSummary(
         })
       }
     }
-    const entries = [...ranges.values()].map(({ entry, min, max }) => ({
-      ...entry,
-      value: min,
-      minValue: min,
-      maxValue: max,
-      formatted: formatTaskUsageUnitPrice(min, options),
-      formattedRange:
-        min === max
-          ? undefined
-          : `${formatTaskUsageUnitPrice(min, options)} – ${formatTaskUsageUnitPrice(max, options)}`,
-    }))
+    const entries = [...ranges.values()].map(({ entry, min, max }) => {
+      const format =
+        entry.unit === 'token'
+          ? formatDynamicUnitPrice
+          : formatTaskUsageUnitPrice
+      return {
+        ...entry,
+        value: min,
+        minValue: min,
+        maxValue: max,
+        formatted: format(min, options),
+        formattedRange:
+          min === max
+            ? undefined
+            : `${format(min, options)} – ${format(max, options)}`,
+      }
+    })
     const primaryKeys = new Set(
       summaries.flatMap((summary) =>
         summary.primaryEntries
@@ -484,8 +510,12 @@ export function getDynamicPricingSummary(
           (entry.unit === 'request' || entry.unit === 'image') &&
           entry.field !== 'modelPrice'
       ),
-      isTaskUsage: true,
-      providerCount: variants.length >= 2 ? variants.length : undefined,
+      isTaskUsage: groupPrices
+        ? summaries.some((summary) => summary.isTaskUsage)
+        : true,
+      isTimePricing: summaries.some((summary) => summary.isTimePricing),
+      providerCount:
+        !groupPrices && variants.length >= 2 ? variants.length : undefined,
       hasUnconfiguredProviders: variants.some((variant) =>
         variant.billing_mode === 'ratio'
           ? isUnconfiguredTaskUsageModel(withPluginPricing(model, variant))

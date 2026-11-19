@@ -85,6 +85,7 @@ func TestClassroomAndWalletBillingChainsHTTP(t *testing.T) {
 		&model.SubscriptionPlan{}, &model.SubscriptionOrder{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.BillingRefund{},
 		&model.ProductPrice{}, &model.PriceBookPrice{}, &model.ProductTemplate{}, &model.Redemption{}, &model.ProductRedemptionClaim{},
 		&model.SubscriptionKeyBinding{},
+		&model.GroupWallet{},
 	))
 	require.NoError(t, model.EnsureEntitlementKeyUniqueIndex())
 	require.NoError(t, model.SeedProductTemplates())
@@ -331,7 +332,7 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"default"}`))
 	// Native group prices must not multiply the absolute channel sales price.
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":7}`))
-	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Log{}, &model.BillingRefund{}, &model.APIChannelCatalog{}, &model.APIChannelPrice{}))
+	require.NoError(t, db.AutoMigrate(&model.Token{}, &model.Log{}, &model.BillingRefund{}, &model.APIChannelCatalog{}, &model.APIChannelPrice{}, &model.GroupModelPrice{}, &model.GroupWallet{}, &model.GroupChannel{}))
 	require.NoError(t, db.AutoMigrate(&model.SubscriptionPlan{}, &model.PriceBookPrice{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}, &model.SubscriptionKeyBinding{}))
 	require.NoError(t, model.InitializeAPIChannelCatalog(db))
 	oldEstimate, oldSensitive := constant.CountToken, setting.CheckSensitiveEnabled
@@ -518,5 +519,55 @@ func TestAPIChannelPricingRetryBillingHTTP(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("autonomous_group_key_charges_its_allocation_not_the_personal_wallet", func(t *testing.T) {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":7,"Astro":1}`))
+		require.NoError(t, db.Model(&model.Ability{}).Where("channel_id IN ?", []int{101, 102}).Update("group", "default").Error)
+		_, err := model.PublishAPIChannelPrices(db, publicationRevision, []model.APIChannelPrice{a, b}, 1, "restore public prices")
+		require.NoError(t, err)
+		require.NoError(t, db.AutoMigrate(&model.GroupWalletMember{}, &model.GroupWalletCharge{}, &model.GroupWalletEntry{}))
+		channel := model.Channel{Id: 103, Name: "Astro", Type: constant.ChannelTypeOpenAI, Models: "channel-priced-model", Group: "Astro", Status: 1, Key: "synthetic-key", BaseURL: &primary.URL, AutoBan: &off, ModelMapping: common.GetPointer(`{"channel-priced-model":"vendor-a"}`)}
+		require.NoError(t, db.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(db))
+		require.NoError(t, db.Create(&model.GroupChannel{GroupName: "Astro", ChannelID: 103, Owned: true, Reviewed: true}).Error)
+		require.NoError(t, db.Create(&model.GroupModelPrice{GroupName: "Astro", ChannelID: 103, Model: "channel-priced-model", Revision: 1, SellingPrice: b.SellingPrice}).Error)
+		wallet := model.GroupWallet{GroupName: "Astro", Mode: model.GroupWalletIndependent, Enabled: true, Activated: true}
+		require.NoError(t, db.Create(&wallet).Error)
+		user := model.User{Username: "astro-member", AffCode: "astro-member", Status: 1, Role: 1, Group: "Astro", Quota: 5555}
+		require.NoError(t, db.Create(&user).Error)
+		member := model.GroupWalletMember{WalletID: wallet.ID, UserID: user.Id, Quota: 100000}
+		require.NoError(t, db.Create(&member).Error)
+		for _, group := range []string{"Astro", "default"} {
+			token := model.Token{UserId: user.Id, Key: "astrotest" + group, Name: group, Group: group, Status: 1, ExpiredTime: -1, UnlimitedQuota: true, ProductType: model.ProductTypeWallet, EntitlementType: model.ProductTypeWallet}
+			require.NoError(t, token.Insert())
+			mode = "primary-success"
+			request := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"channel-priced-model","messages":[{"role":"user","content":"hello"}]}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer sk-"+token.Key)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			require.Equal(t, 200, recorder.Code, recorder.Body.String())
+			var after model.User
+			require.NoError(t, db.First(&after, user.Id).Error)
+			require.NoError(t, db.First(&member, member.ID).Error)
+			require.EqualValues(t, 100000-1220, member.Quota)
+			require.EqualValues(t, 1220, member.UsedQuota)
+			if group == "Astro" {
+				require.Equal(t, 5555, after.Quota)
+			} else {
+				require.Equal(t, 5555-610, after.Quota)
+			}
+			var log model.Log
+			require.NoError(t, db.Where("user_id = ? AND token_id = ? AND type = ?", user.Id, token.Id, model.LogTypeConsume).First(&log).Error)
+			if group == "Astro" {
+				require.Equal(t, 103, log.ChannelId)
+				require.Contains(t, log.Other, "group_price_revision")
+				require.Contains(t, log.Other, "group_wallet")
+			} else {
+				require.Equal(t, 101, log.ChannelId)
+				require.Contains(t, log.Other, "api_price_revision")
+			}
+		}
+	})
 	require.Positive(t, primaryCalls.Load())
 }

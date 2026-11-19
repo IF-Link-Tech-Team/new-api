@@ -37,17 +37,18 @@ import (
 )
 
 type requestDescriptor struct {
-	ResponseType   string            `json:"responseType"`
-	URL            string            `json:"url"`
-	Method         string            `json:"method"`
-	Headers        map[string]string `json:"headers"`
-	Body           any               `json:"body"`
-	Credentialless bool              `json:"credentialless"`
-	Action         string            `json:"action"`
-	Model          string            `json:"model"`
-	RewriteModel   string            `json:"rewriteModel"`
-	BodyType       string            `json:"bodyType"`
-	Parts          []requestPart     `json:"parts"`
+	ResponseType                 string            `json:"responseType"`
+	URL                          string            `json:"url"`
+	Method                       string            `json:"method"`
+	Headers                      map[string]string `json:"headers"`
+	Body                         any               `json:"body"`
+	Credentialless               bool              `json:"credentialless"`
+	AllowCredentiallessRedirects bool              `json:"allowCredentiallessRedirects"`
+	Action                       string            `json:"action"`
+	Model                        string            `json:"model"`
+	RewriteModel                 string            `json:"rewriteModel"`
+	BodyType                     string            `json:"bodyType"`
+	Parts                        []requestPart     `json:"parts"`
 	// BodyText is the body as JSON.stringify wrote it, for a plugin that
 	// preserves JSON order: the upstream gets the members in that order.
 	BodyText json.RawMessage `json:"-"`
@@ -57,17 +58,18 @@ type requestDescriptor struct {
 // JSON order returns it: decoded from the JSON.stringify text of the result,
 // with the body kept as that text.
 type orderedRequestDescriptor struct {
-	ResponseType   string            `json:"responseType"`
-	URL            string            `json:"url"`
-	Method         string            `json:"method"`
-	Headers        map[string]string `json:"headers"`
-	Body           json.RawMessage   `json:"body"`
-	Credentialless bool              `json:"credentialless"`
-	Action         string            `json:"action"`
-	Model          string            `json:"model"`
-	RewriteModel   string            `json:"rewriteModel"`
-	BodyType       string            `json:"bodyType"`
-	Parts          []requestPart     `json:"parts"`
+	ResponseType                 string            `json:"responseType"`
+	URL                          string            `json:"url"`
+	Method                       string            `json:"method"`
+	Headers                      map[string]string `json:"headers"`
+	Body                         json.RawMessage   `json:"body"`
+	Credentialless               bool              `json:"credentialless"`
+	AllowCredentiallessRedirects bool              `json:"allowCredentiallessRedirects"`
+	Action                       string            `json:"action"`
+	Model                        string            `json:"model"`
+	RewriteModel                 string            `json:"rewriteModel"`
+	BodyType                     string            `json:"bodyType"`
+	Parts                        []requestPart     `json:"parts"`
 }
 
 type requestPart struct {
@@ -515,7 +517,9 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	acceptedStream := streaming || mediaType == "text/event-stream"
 	defer func() {
-		if acceptedStream && taskErr != nil {
+		if taskErr != nil {
+			// A successful HTTP submission may already have generated billable
+			// output. A local reader/parser failure must never submit it again.
 			taskErr.NoRetry = true
 		}
 	}()
@@ -1119,6 +1123,9 @@ func (a *TaskAdaptor) BuildContentRequest(ctx context.Context, task *model.Task,
 	if method != http.MethodGet && method != http.MethodHead && method != http.MethodPost {
 		return nil, fmt.Errorf("plugin returned an unsupported artifact request method")
 	}
+	if descriptor.AllowCredentiallessRedirects && ((method != http.MethodGet && method != http.MethodHead) || descriptor.Body != nil) {
+		return nil, fmt.Errorf("credentialless redirects require a bodyless GET or HEAD request")
+	}
 	if descriptor.Credentialless {
 		if method != http.MethodGet && method != http.MethodHead {
 			return nil, fmt.Errorf("credentialless artifact requests must use GET or HEAD")
@@ -1166,11 +1173,12 @@ func (a *TaskAdaptor) BuildContentRequest(ctx context.Context, task *model.Task,
 		}
 	}
 	return &channel.TaskContentRequest{
-		URL:            descriptor.URL,
-		Method:         method,
-		Headers:        headers,
-		Body:           body,
-		Credentialless: descriptor.Credentialless,
+		URL:                          descriptor.URL,
+		Method:                       method,
+		Headers:                      headers,
+		Body:                         body,
+		Credentialless:               descriptor.Credentialless,
+		AllowCredentiallessRedirects: descriptor.AllowCredentiallessRedirects,
 	}, nil
 }
 
@@ -1421,7 +1429,8 @@ func (a *TaskAdaptor) requestDescriptor(ctx context.Context, hook string, args .
 	descriptor := requestDescriptor{
 		ResponseType: ordered.ResponseType, URL: ordered.URL, Method: ordered.Method, Headers: ordered.Headers,
 		Credentialless: ordered.Credentialless, Action: ordered.Action, Model: ordered.Model,
-		RewriteModel: ordered.RewriteModel, BodyType: ordered.BodyType, Parts: ordered.Parts,
+		AllowCredentiallessRedirects: ordered.AllowCredentiallessRedirects,
+		RewriteModel:                 ordered.RewriteModel, BodyType: ordered.BodyType, Parts: ordered.Parts,
 	}
 	switch {
 	case len(ordered.Body) == 0 || string(ordered.Body) == "null":

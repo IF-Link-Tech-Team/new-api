@@ -375,7 +375,7 @@ func TestStorefrontModelsOnlyExposePublicLiveSalesAndNativeMetadata(t *testing.T
 	initModelListColumnNames(t)
 	router := setupStorefrontCatalogTest(t)
 	t.Setenv("IFLINK_API_CHANNEL_PRICING", "enabled")
-	require.NoError(t, model.DB.AutoMigrate(&model.APIChannelCatalog{}, &model.APIChannelPrice{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.APIChannelCatalog{}, &model.APIChannelPrice{}, &model.GroupModelPrice{}, &model.GroupWallet{}, &model.GroupChannel{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}, &model.GroupWallet{}))
 	require.NoError(t, model.InitializeAPIChannelCatalog(model.DB))
 	require.NoError(t, model.DB.Model(&model.APIChannelCatalog{}).Where("id = ?", 1).Update("revision", 1).Error)
 	channel := model.Channel{Id: 71, Type: 1, Name: "private channel name", Models: "live-model,unpriced-model,disabled-model,hidden-model", Group: "default", Status: common.ChannelStatusEnabled, Key: "private-upstream-key"}

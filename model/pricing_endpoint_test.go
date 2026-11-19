@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -291,4 +292,30 @@ func TestCacheUpdateChannelSyncsAdvancedCustomConfig(t *testing.T) {
 	CacheUpdateChannel(channel)
 
 	assert.Nil(t, channel2advancedCustomConfig[401])
+}
+
+func TestPricingTaskEndpointsUseBoundPluginAndMappedModel(t *testing.T) {
+	source := `export const meta={apiVersion:1,key:"tokenhub-media",name:"Media",version:"1.0.1",author:{name:"Test"},models:["media-video","media-image","media-audio","hy-3d-3.1"],fetchMode:"per_task",protocols:[{name:"minimax_video",models:["media-video"]},{name:"openai_video",models:["media-video"]},{name:"openai_image",models:["media-image"]}]};
+ export function buildSubmitRequest(){return {}};export function parseSubmitResponse(){return {}};export function buildQueryRequest(){return {}};export function parseTaskResult(){return {}};export function listArtifacts(){return []};export function buildContentRequest(){return {}};
+ export const protocols={minimax_video:{decodeRequest(){},render(){}},openai_video:{decodeRequest(){},render(){}},openai_image:{decodeRequest(){},render(){}}};`
+	_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister("tokenhub-media") })
+	setting := `{"task_plugin_key":"tokenhub-media"}`
+	mapping := `{"public-video":"media-video"}`
+	for _, tc := range []struct {
+		model string
+		want  []constant.EndpointType
+	}{
+		{"public-video", []constant.EndpointType{"minimax-video", constant.EndpointTypeOpenAIVideo}},
+		{"media-image", []constant.EndpointType{constant.EndpointTypeImageGeneration}},
+		{"media-audio", []constant.EndpointType{"tokenhub-audio"}},
+		{"hy-3d-3.1", []constant.EndpointType{"tokenhub-3d"}},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			ability := AbilityWithChannel{Ability: Ability{Model: tc.model}, ChannelType: constant.ChannelTypeTaskPlugin, ChannelSetting: &setting, ChannelModelMapping: &mapping}
+			assert.Equal(t, tc.want, getPricingEndpointTypesForAbility(ability, nil))
+			assert.NotContains(t, getPricingEndpointTypesForAbility(ability, nil), constant.EndpointTypeOpenAI)
+		})
+	}
 }

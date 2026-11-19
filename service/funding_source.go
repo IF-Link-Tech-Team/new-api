@@ -8,12 +8,12 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// FundingSource — 资金来源接口（钱包 or 订阅）
+// FundingSource — 资金来源接口（个人钱包、分组钱包或订阅）
 // ---------------------------------------------------------------------------
 
 // FundingSource 抽象了预扣费的资金来源。
 type FundingSource interface {
-	// Source 返回资金来源标识："wallet" 或 "subscription"
+	// Source 返回资金来源标识："wallet"、"group_wallet" 或 "subscription"
 	Source() string
 	// PreConsume 从该资金来源预扣 amount 额度
 	PreConsume(amount int) error
@@ -21,6 +21,29 @@ type FundingSource interface {
 	Settle(delta int) error
 	// Refund 退还所有预扣费
 	Refund() error
+}
+
+type GroupWalletFunding struct {
+	walletID  int
+	groupName string
+	userID    int
+	requestID string
+	consumed  int
+}
+
+func (g *GroupWalletFunding) Source() string { return BillingSourceGroupWallet }
+func (g *GroupWalletFunding) PreConsume(amount int) error {
+	if err := model.ReserveGroupWallet(g.walletID, g.userID, g.requestID, g.consumed+amount); err != nil {
+		return err
+	}
+	g.consumed += amount
+	return nil
+}
+func (g *GroupWalletFunding) Settle(delta int) error {
+	return model.SettleGroupWallet(g.walletID, g.userID, g.requestID, g.consumed+delta)
+}
+func (g *GroupWalletFunding) Refund() error {
+	return model.RefundGroupWallet(g.walletID, g.userID, g.requestID)
 }
 
 // ---------------------------------------------------------------------------

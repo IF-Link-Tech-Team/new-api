@@ -23,6 +23,13 @@ func Can(userID int, systemRole int, permission Permission) bool {
 	if e == nil {
 		return false
 	}
+	// Group-only administrators retain their system role for restricted model
+	// access, but no resource override may restore global management authority.
+	if permission != GlobalAdminAccess {
+		if effect, ok := explicitSubjectEffect(e, UserSubject(userID), GlobalAdminAccess); ok && effect == EffectDeny {
+			return false
+		}
+	}
 	if effect, ok := explicitSubjectEffect(e, UserSubject(userID), permission); ok {
 		return effect == EffectAllow
 	}

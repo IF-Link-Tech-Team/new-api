@@ -138,6 +138,12 @@ func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usag
 	quota, clamp := calculateAudioQuota(quotaInfo)
 	noteQuotaClamp(relayInfo, clamp)
 
+	if relayInfo.BillingSource == BillingSourceGroupWallet {
+		if relayInfo.Billing == nil {
+			return errors.New("group wallet billing session is missing")
+		}
+		return relayInfo.Billing.ReserveBeforeSubmit(relayInfo.Billing.GetPreConsumedQuota() + quota)
+	}
 	if userQuota < quota {
 		return fmt.Errorf("user quota is not enough, user quota: %s, need quota: %s", logger.FormatQuota(userQuota), logger.FormatQuota(quota))
 	}
@@ -440,7 +446,16 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (result postConsumeQuotaResult, err error) {
 
 	// 1) Consume from wallet quota OR subscription item
-	if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {
+	if relayInfo != nil && relayInfo.BillingSource == BillingSourceGroupWallet {
+		// The regular request is settled by BillingSession. This path is only
+		// for separate surcharges; keep them in a separate idempotent charge.
+		if quota < 0 {
+			return result, errors.New("group wallet refunds require their original reservation")
+		}
+		if err := model.ReserveGroupWallet(relayInfo.GroupWalletID, relayInfo.UserId, relayInfo.GroupWalletRequestID+":extra", quota); err != nil {
+			return result, err
+		}
+	} else if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {
 		if relayInfo.SubscriptionId == 0 {
 			return result, errors.New("subscription id is missing")
 		}
@@ -476,7 +491,7 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 		result.TokenApplied = true
 	}
 
-	if sendEmail {
+	if sendEmail && relayInfo.BillingSource != BillingSourceGroupWallet {
 		if (quota + preConsumedQuota) != 0 {
 			checkAndSendQuotaNotify(relayInfo, quota, preConsumedQuota)
 		}

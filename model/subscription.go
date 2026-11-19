@@ -483,6 +483,24 @@ func GetSubscriptionOrderByTradeNo(tradeNo string) *SubscriptionOrder {
 	return &order
 }
 
+// ListPendingIFLinkPaySubscriptionOrders returns recent unsettled plan/pack
+// orders so a reconciler can ask the payment provider about them. Read-only:
+// settlement still requires provider confirmation.
+func ListPendingIFLinkPaySubscriptionOrders(createdAfter int64, after PendingOrderCursor, limit int) ([]SubscriptionOrder, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows := make([]SubscriptionOrder, 0, limit)
+	q := DB.Where("payment_provider = ? AND status = ? AND create_time >= ?",
+		PaymentProviderIFLinkPay, common.TopUpStatusPending, createdAfter)
+	err := after.after(q).
+		Order("create_time asc").
+		Order("id asc").
+		Limit(limit).
+		Find(&rows).Error
+	return rows, err
+}
+
 // GetUserSubscriptionOrders returns only orders owned by the user. The
 // controller projects these rows to a public DTO so provider payloads never
 // leave the server. tradeNo is optional and is used by payment-return polling.

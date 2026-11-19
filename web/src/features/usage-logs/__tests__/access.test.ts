@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import assert from 'node:assert/strict'
+
 import { describe, test } from 'vitest'
 
 import { ROLE } from '@/lib/roles'
@@ -28,6 +29,10 @@ describe('usage log access tier', () => {
     assert.equal(resolveLogsViewAccess(ROLE.USER, 'all'), 'self')
     assert.equal(resolveLogsViewAccess(ROLE.ADMIN, 'self'), 'self')
     assert.equal(resolveLogsViewAccess(ROLE.SUPER_ADMIN, 'self'), 'self')
+  })
+
+  test('keeps group-only administrators on their own logs', () => {
+    assert.equal(resolveLogsViewAccess(ROLE.ADMIN, 'all', false), 'self')
   })
 
   test('distinguishes admin and root while viewing all logs', () => {

@@ -124,6 +124,12 @@ export function SidebarModulesSection({
       },
     },
     personal: {
+      groups: {
+        title: t('My groups'),
+        description: t(
+          'A super administrator can grant management permissions for a specific group.'
+        ),
+      },
       topup: {
         title: t('Wallet'),
         description: t('Top up balance and view billing history.'),

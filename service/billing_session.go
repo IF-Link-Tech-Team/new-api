@@ -155,6 +155,9 @@ func (s *BillingSession) needsRefundLocked() bool {
 	if sub, ok := s.funding.(*SubscriptionFunding); ok && sub.preConsumed > 0 {
 		return true
 	}
+	if group, ok := s.funding.(*GroupWalletFunding); ok && group.consumed > 0 {
+		return true
+	}
 	return false
 }
 
@@ -177,6 +180,24 @@ func (s *BillingSession) ReserveBeforeSubmit(targetQuota int) error {
 func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if group, ok := s.funding.(*GroupWalletFunding); ok && group.groupName != s.relayInfo.UsingGroup {
+		return model.ErrGroupWalletUnavailable
+	}
+	wallet, err := model.FindGroupWallet(s.relayInfo.UsingGroup)
+	if err != nil {
+		return err
+	}
+	if wallet.IsIndependent() && s.funding.Source() == BillingSourceSubscription {
+		return model.ErrGroupWalletUnavailable
+	}
+	if s.funding.Source() != BillingSourceSubscription {
+		if wallet != nil && (wallet.Activated || wallet.IsIndependent()) {
+			group, ok := s.funding.(*GroupWalletFunding)
+			if !ok || !wallet.Enabled || group.walletID != wallet.ID {
+				return model.ErrGroupWalletUnavailable
+			}
+		}
+	}
 
 	if s.relayInfo != nil {
 		_, imageRequest := s.relayInfo.Request.(*dto.ImageRequest)
@@ -194,6 +215,9 @@ func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) er
 		// 预扣截断为 0 的会话还没有持久凭据；本次 Reserve 会真实扣款，
 		// 必须先建立审计锚点，否则后续 Refund 会静默丢失这笔退款。
 		receipt := &model.BillingRefund{RequestID: s.relayInfo.RequestId, UserID: s.relayInfo.UserId, TokenID: s.relayInfo.TokenId}
+		if group, ok := s.funding.(*GroupWalletFunding); ok {
+			receipt.GroupWalletID = group.walletID
+		}
 		if sub, ok := s.funding.(*SubscriptionFunding); ok {
 			receipt.SubscriptionID = sub.boundSubscriptionId
 		}
@@ -205,7 +229,7 @@ func (s *BillingSession) reserve(targetQuota int, requireAvailableQuota bool) er
 		walletQuota, tokenQuota, extraQuota := s.refundReceipt.WalletQuota, s.refundReceipt.TokenQuota, s.refundReceipt.ExtraQuota
 		if s.funding.Source() == BillingSourceWallet {
 			walletQuota += int64(delta)
-		} else {
+		} else if s.funding.Source() == BillingSourceSubscription {
 			extraQuota += int64(delta)
 		}
 		if !s.relayInfo.IsPlayground {
@@ -297,6 +321,9 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			s.refundReceipt.SubscriptionID = sub.boundSubscriptionId
 			s.refundReceipt.SubscriptionQuota = int64(effectiveQuota)
 		}
+		if group, ok := s.funding.(*GroupWalletFunding); ok {
+			s.refundReceipt.GroupWalletID = group.walletID
+		}
 		if err := model.CreateBillingRefundReceipt(s.refundReceipt); err != nil {
 			return types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 		}
@@ -341,6 +368,14 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 				types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
 		}
 		errMsg := err.Error()
+		if errors.Is(err, model.ErrGroupWalletInsufficient) || errors.Is(err, model.ErrGroupWalletUnavailable) {
+			if rollbackErr == nil && s.refundReceipt != nil {
+				if closeErr := model.TransitionBillingRefund(s.refundReceipt.ID, []string{model.BillingRefundPrepared}, model.BillingRefundSettled); closeErr != nil {
+					common.SysError(closeErr.Error())
+				}
+			}
+			return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
 		if errors.Is(err, model.ErrNoActiveSubscription) ||
 			errors.Is(err, model.ErrSubscriptionQuotaInsufficient) ||
 			errors.Is(err, model.ErrBoundSubscriptionUnavailable) ||
@@ -368,6 +403,8 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 
 func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) error {
 	switch funding := s.funding.(type) {
+	case *GroupWalletFunding:
+		return funding.PreConsume(delta)
 	case *WalletFunding:
 		if requireAvailableQuota {
 			// Image quantities and task retry prices are known before
@@ -407,6 +444,11 @@ func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) e
 
 func (s *BillingSession) rollbackFundingReserve(delta int) error {
 	switch funding := s.funding.(type) {
+	case *GroupWalletFunding:
+		if err := model.SettleGroupWallet(funding.walletID, funding.userID, funding.requestID, funding.consumed-delta); err != nil {
+			return err
+		}
+		funding.consumed -= delta
 	case *WalletFunding:
 		if err := model.AdjustUserQuotaDirect(funding.userId, delta); err != nil {
 			common.SysLog("error rolling back wallet funding reserve: " + err.Error())
@@ -472,6 +514,9 @@ func (s *BillingSession) syncRelayInfo() {
 	info := s.relayInfo
 	info.FinalPreConsumedQuota = s.preConsumedQuota
 	info.BillingSource = s.funding.Source()
+	if group, ok := s.funding.(*GroupWalletFunding); ok {
+		info.GroupWalletID, info.GroupWalletRequestID = group.walletID, group.requestID
+	}
 
 	if sub, ok := s.funding.(*SubscriptionFunding); ok {
 		info.SubscriptionId = sub.subscriptionId
@@ -491,9 +536,9 @@ func (s *BillingSession) syncRelayInfo() {
 // NewBillingSession — 根据 Key 绑定选择唯一资金来源
 // ---------------------------------------------------------------------------
 
-// NewBillingSession uses the API key as the sole funding selector. Bound keys
-// consume exactly one entitlement; every unbound key is wallet-only. V1 has no
-// automatic search, cross-pool split, or wallet/subscription fallback.
+// Bound keys keep their entitlement outside independent groups. Unbound keys use the explicitly activated
+// wallet of the effective group, or the original personal wallet otherwise.
+// An unavailable group allocation never falls back to another funding source.
 func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preConsumedQuota int) (*BillingSession, *types.NewAPIError) {
 	if relayInfo == nil {
 		return nil, types.NewError(fmt.Errorf("relayInfo is nil"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
@@ -503,6 +548,13 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		return nil, types.NewError(fmt.Errorf("invalid preConsumedQuota"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
 	var funding FundingSource
+	wallet, err := model.FindGroupWallet(relayInfo.UsingGroup)
+	if err != nil {
+		return nil, types.NewError(err, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
+	}
+	if wallet.IsIndependent() && relayInfo.TokenUserSubscriptionId > 0 {
+		return nil, types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgIndependentSubscriptionKey)), types.ErrorCodeInvalidRequest, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+	}
 	if relayInfo.TokenUserSubscriptionId > 0 {
 		if preConsumedQuota == 0 {
 			preConsumedQuota = 1 // A subscription reservation must have a persisted, refundable amount.
@@ -511,6 +563,11 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			requestId: relayInfo.RequestId, userId: relayInfo.UserId, modelName: relayInfo.GetBillingModelName(),
 			boundSubscriptionId: relayInfo.TokenUserSubscriptionId,
 		}
+	} else if wallet != nil && (wallet.Activated || wallet.IsIndependent()) {
+		if !wallet.Enabled {
+			return nil, types.NewErrorWithStatusCode(model.ErrGroupWalletUnavailable, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+		}
+		funding = &GroupWalletFunding{walletID: wallet.ID, groupName: wallet.GroupName, userID: relayInfo.UserId, requestID: relayInfo.RequestId}
 	} else {
 		userQuota, err := model.GetUserQuota(relayInfo.UserId, false)
 		if err != nil {

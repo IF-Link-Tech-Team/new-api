@@ -128,6 +128,9 @@ func AccessTokenCatalog(userID, role int) []AccessTokenCatalogGroup {
 		if role < resource.minRole {
 			continue
 		}
+		if resource.minRole >= common.RoleAdminUser && !authz.Can(userID, role, authz.GlobalAdminAccess) {
+			continue
+		}
 		resource.Actions = slices.Clone(resource.Actions)
 		resources[resource.group] = append(resources[resource.group], resource)
 	}

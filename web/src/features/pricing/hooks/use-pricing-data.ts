@@ -21,14 +21,17 @@ import { useMemo } from 'react'
 
 import { useStatus } from '@/hooks/use-status'
 import { requireServerSuccess } from '@/lib/server-error-message'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { getPricing } from '../api'
+import { withGroupPricing } from '../lib/plugin-pricing'
 
 export function usePricingData(enabled = true) {
   const { status } = useStatus()
+  const user = useAuthStore((state) => state.auth.user)
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['pricing'],
+    queryKey: ['pricing', user?.id, user?.group, user?.role],
     queryFn: async () => requireServerSuccess(await getPricing()),
     staleTime: 5 * 60 * 1000,
     enabled,
@@ -53,14 +56,14 @@ export function usePricingData(enabled = true) {
       const vendor = model.vendor_id
         ? vendorMap.get(model.vendor_id)
         : undefined
-      return {
+      return withGroupPricing({
         ...model,
         key: model.model_name,
         vendor_name: vendor?.name,
         vendor_icon: vendor?.icon,
         vendor_description: vendor?.description,
         group_ratio: data.group_ratio,
-      }
+      })
     })
   }, [data])
 

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -11,7 +12,32 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func GetUserUsableGroups(userGroup string) map[string]string {
+// GroupRoleAllowed enforces the configured minimum role on every use of a group.
+func GroupRoleAllowed(group string, role int) bool {
+	minimum, restricted := ratio_setting.GetGroupRatioSetting().GroupMinRole.Get(group)
+	return !restricted || role >= minimum
+}
+
+func GetUserUsableGroups(userGroup string, roles ...int) map[string]string {
+	return userUsableGroups(userGroup, false, roles...)
+}
+
+func GetUserSelectableAutoGroups(userGroup string, roles ...int) []string {
+	groups := make([]string, 0)
+	for group := range userUsableGroups(userGroup, true, roles...) {
+		if group != "auto" && ratio_setting.ContainsGroupRatio(group) {
+			groups = append(groups, group)
+		}
+	}
+	slices.Sort(groups)
+	return groups
+}
+
+func userUsableGroups(userGroup string, autoRouting bool, roles ...int) map[string]string {
+	role := common.RoleGuestUser
+	if len(roles) > 0 {
+		role = roles[0]
+	}
 	groupsCopy := setting.GetUserUsableGroupsCopy()
 	if userGroup != "" {
 		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
@@ -38,27 +64,57 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 			groupsCopy[userGroup] = "User group"
 		}
 	}
+	for group, minimum := range ratio_setting.GetGroupRatioSetting().GroupMinRole.ReadAll() {
+		if role >= minimum && ratio_setting.ContainsGroupRatio(group) {
+			groupsCopy[group] = setting.GetUsableGroupDescription(group)
+		}
+	}
+	independent, err := model.IndependentGroupNames()
+	if err != nil {
+		common.SysError(common.LogText("failed to load independent groups: %s", err.Error()))
+		return map[string]string{}
+	}
+	if autoRouting && slices.Contains(independent, userGroup) {
+		// Existing Auto keys stay in their original funding pool. Normal models
+		// remain available through a key explicitly selecting a normal group.
+		groupsCopy = map[string]string{userGroup: setting.GetUsableGroupDescription(userGroup)}
+	} else {
+		for _, group := range independent {
+			if group != userGroup {
+				delete(groupsCopy, group)
+			}
+		}
+	}
+	for group := range groupsCopy {
+		if !GroupRoleAllowed(group, role) {
+			delete(groupsCopy, group)
+		}
+	}
 	return groupsCopy
 }
 
-func GroupInUserUsableGroups(userGroup, groupName string) bool {
-	_, ok := GetUserUsableGroups(userGroup)[groupName]
+func GroupInUserUsableGroups(userGroup, groupName string, roles ...int) bool {
+	_, ok := GetUserUsableGroups(userGroup, roles...)[groupName]
 	return ok
 }
 
-func IsUserSelectableGroup(userGroup, groupName string) bool {
+func IsUserSelectableGroup(userGroup, groupName string, roles ...int) bool {
 	if groupName == "" || groupName == "auto" {
 		return false
 	}
-	return GroupInUserUsableGroups(userGroup, groupName) && ratio_setting.ContainsGroupRatio(groupName)
+	// This validates the members of a token's custom Auto list, whose funding
+	// boundary must match the inherited Auto list.
+	_, allowed := userUsableGroups(userGroup, true, roles...)[groupName]
+	return allowed && ratio_setting.ContainsGroupRatio(groupName)
 }
 
 // GetUserAutoGroup 根据用户分组获取自动分组设置
-func GetUserAutoGroup(userGroup string) []string {
+func GetUserAutoGroup(userGroup string, roles ...int) []string {
 	autoGroups := make([]string, 0)
 	seen := make(map[string]struct{})
+	usable := userUsableGroups(userGroup, true, roles...)
 	for _, group := range setting.GetAutoGroups() {
-		if !IsUserSelectableGroup(userGroup, group) {
+		if _, ok := usable[group]; !ok || !ratio_setting.ContainsGroupRatio(group) {
 			continue
 		}
 		if _, ok := seen[group]; ok {
@@ -72,12 +128,13 @@ func GetUserAutoGroup(userGroup string) []string {
 
 // FilterUserTokenAutoGroups applies current permissions before the current
 // per-token limit. It intentionally does not fall back to the global Auto list.
-func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
+func FilterUserTokenAutoGroups(userGroup string, groups []string, roles ...int) []string {
 	maxCount := setting.GetMaxTokenAutoGroups()
 	filtered := make([]string, 0, min(len(groups), maxCount))
 	seen := make(map[string]struct{})
+	usable := userUsableGroups(userGroup, true, roles...)
 	for _, group := range groups {
-		if !IsUserSelectableGroup(userGroup, group) {
+		if _, ok := usable[group]; !ok || !ratio_setting.ContainsGroupRatio(group) {
 			continue
 		}
 		if _, ok := seen[group]; ok {
@@ -98,13 +155,13 @@ func FilterUserTokenAutoGroups(userGroup string, groups []string) []string {
 func GetRequestAutoGroups(c *gin.Context, userGroup string) []string {
 	value, ok := common.GetContextKey(c, constant.ContextKeyTokenAutoGroups)
 	if !ok {
-		return GetUserAutoGroup(userGroup)
+		return GetUserAutoGroup(userGroup, c.GetInt("role"))
 	}
 	groups, ok := value.([]string)
 	if !ok {
 		return []string{}
 	}
-	return FilterUserTokenAutoGroups(userGroup, groups)
+	return FilterUserTokenAutoGroups(userGroup, groups, c.GetInt("role"))
 }
 
 // GetGroupsEnabledModels 按 groups 顺序获取各分组启用的模型并去重

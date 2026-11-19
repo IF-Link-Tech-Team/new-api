@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
 const (
@@ -111,8 +112,9 @@ type rankingPeriodConfig struct {
 }
 
 type rankingCacheItem struct {
-	expiresAt time.Time
-	data      *RankingsResponse
+	expiresAt      time.Time
+	excludedGroups []string
+	data           *RankingsResponse
 }
 
 type rankingModelMeta struct {
@@ -142,22 +144,24 @@ func GetRankingsSnapshot(period string) (*RankingsResponse, error) {
 	}
 
 	now := time.Now()
+	excludedGroups := ratio_setting.GetRoleRestrictedGroups()
 	rankingCacheMu.Lock()
-	if item, ok := rankingCache[config.id]; ok && now.Before(item.expiresAt) {
+	if item, ok := rankingCache[config.id]; ok && now.Before(item.expiresAt) && slices.Equal(item.excludedGroups, excludedGroups) {
 		rankingCacheMu.Unlock()
 		return item.data, nil
 	}
 	rankingCacheMu.Unlock()
 
-	data, err := buildRankingsSnapshot(config, now)
+	data, err := buildRankingsSnapshot(config, now, excludedGroups)
 	if err != nil {
 		return nil, err
 	}
 
 	rankingCacheMu.Lock()
 	rankingCache[config.id] = rankingCacheItem{
-		expiresAt: now.Add(rankingCacheTTL),
-		data:      data,
+		expiresAt:      now.Add(rankingCacheTTL),
+		excludedGroups: excludedGroups,
+		data:           data,
 	}
 	rankingCacheMu.Unlock()
 
@@ -179,13 +183,13 @@ func rankingConfig(period string) (rankingPeriodConfig, error) {
 	}
 }
 
-func buildRankingsSnapshot(config rankingPeriodConfig, now time.Time) (*RankingsResponse, error) {
+func buildRankingsSnapshot(config rankingPeriodConfig, now time.Time, excludedGroups []string) (*RankingsResponse, error) {
 	startTime, endTime := rankingTimeRange(config, now)
-	currentTotals, err := model.GetRankingQuotaTotals(startTime, endTime)
+	currentTotals, err := model.GetRankingQuotaTotals(startTime, endTime, excludedGroups...)
 	if err != nil {
 		return nil, err
 	}
-	currentBuckets, err := model.GetRankingQuotaBuckets(startTime, endTime, config.bucketSize)
+	currentBuckets, err := model.GetRankingQuotaBuckets(startTime, endTime, config.bucketSize, excludedGroups...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +197,7 @@ func buildRankingsSnapshot(config rankingPeriodConfig, now time.Time) (*Rankings
 	var previousTotals []model.RankingQuotaTotal
 	if config.hasPrevious {
 		previousStart, previousEnd := previousRankingTimeRange(config, startTime)
-		previousTotals, err = model.GetRankingQuotaTotals(previousStart, previousEnd)
+		previousTotals, err = model.GetRankingQuotaTotals(previousStart, previousEnd, excludedGroups...)
 		if err != nil {
 			return nil, err
 		}

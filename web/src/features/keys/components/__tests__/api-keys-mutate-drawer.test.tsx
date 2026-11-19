@@ -47,7 +47,10 @@ const originalGet = apiClient.get
 const originalPost = apiClient.post
 let renderedDrawer: RenderedDrawer | null = null
 
-function installApiFixtures(createdPayloads: Array<Record<string, unknown>>) {
+function installApiFixtures(
+  createdPayloads: Array<Record<string, unknown>>,
+  availableGroups?: string[]
+) {
   apiClient.get = async (url) => {
     switch (url) {
       case '/api/status':
@@ -69,7 +72,11 @@ function installApiFixtures(createdPayloads: Array<Record<string, unknown>>) {
         return {
           data: {
             success: true,
-            data: { groups: ['vip', 'default'], max_count: 3 },
+            data: {
+              groups: ['vip', 'default'],
+              available_groups: availableGroups,
+              max_count: 3,
+            },
           },
         }
       default:
@@ -84,7 +91,7 @@ function installApiFixtures(createdPayloads: Array<Record<string, unknown>>) {
   }
 }
 
-async function renderCreateDrawer(): Promise<void> {
+async function renderCreateDrawer(availableGroups?: string[]): Promise<void> {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -115,7 +122,11 @@ async function renderCreateDrawer(): Promise<void> {
     ['token-auto-groups'],
     {
       success: true,
-      data: { groups: ['vip', 'default'], max_count: 3 },
+      data: {
+        groups: ['vip', 'default'],
+        available_groups: availableGroups,
+        max_count: 3,
+      },
     },
     { updatedAt: freshAt }
   )
@@ -204,6 +215,28 @@ afterEach(() => {
 })
 
 describe('API keys mutate drawer Auto group integration', () => {
+  test('normal groups remain selectable on separate keys but not in a restricted Auto pool', async () => {
+    const createdPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures(createdPayloads, ['vip'])
+    await renderCreateDrawer(['vip'])
+
+    const autoOrder = screen.getByRole('group', { name: 'Auto group order' })
+    const addGroup = autoOrder.querySelector<HTMLButtonElement>(
+      'button[role="combobox"]'
+    )
+    if (!addGroup) throw new Error('Expected Auto group selector')
+    fireEvent.click(addGroup)
+    expect(screen.queryByText('Standard access')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: /Priority access/ }))
+
+    selectComboboxOption(getControlByLabel('Group'), 'Standard access')
+    expect(getControlByLabel('Group')).toHaveTextContent('default')
+    changeInput(getControlByLabel('Name'), 'normal-key')
+    fireEvent.click(findButton('Save changes', true))
+    await waitFor(() => expect(createdPayloads).toHaveLength(1))
+    expect(createdPayloads[0]?.group).toBe('default')
+  })
+
   test('inherits the root Auto order and sends an empty override for every batch-created key', async () => {
     const createdPayloads: Array<Record<string, unknown>> = []
     installApiFixtures(createdPayloads)

@@ -1243,6 +1243,8 @@ func TestSubmitResponseTypesContract(t *testing.T) {
 	}{
 		{"legacy JSON", "", "", true},
 		{"SSE declared", `submitResponseTypes:["json","sse"],`, `export function parseSubmitEvent(){return {state:null,done:true};}`, true},
+		{"gateway submit once", `requiredCapabilities:["submit-once@1"],`, "", true},
+		{"conflicting submit capabilities", `requiredCapabilities:["submit-idempotency@1","submit-once@1"],`, "", false},
 		{"host JSON utility", `requiredCapabilities:["json-clone@1"],`, "", true},
 		{"SSE delta", `submitResponseTypes:["sse"],requiredCapabilities:["submit-sse-delta@1"],`, `export function parseSubmitEventDelta(){return {changes:[],state:null,done:true};}`, true},
 		{"SSE delta missing hook", `submitResponseTypes:["sse"],requiredCapabilities:["submit-sse-delta@1"],`, `export function parseSubmitEvent(){return {state:null,done:true};}`, false},

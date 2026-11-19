@@ -32,6 +32,7 @@ import {
   isUnconfiguredTaskUsageModel,
 } from '../lib/dynamic-price'
 import { isTokenBasedModel } from '../lib/model-helpers'
+import { withGroupPricing } from '../lib/plugin-pricing'
 import type { PricingModel } from '../types'
 
 function pricingModel(overrides: Partial<PricingModel>): PricingModel {
@@ -55,6 +56,55 @@ const summaryOptions = {
 }
 
 describe('expression price summaries', () => {
+  test('uses each authorized group price instead of the legacy global zero price', () => {
+    const model = pricingModel({
+      billing_mode: 'tiered_expr',
+      billing_expr: 'tier("old", p * 0 + c * 0)',
+      enable_groups: ['default', 'Astro'],
+      group_ratio: { default: 2, Astro: 1 },
+      group_pricing: [
+        {
+          group: 'default',
+          plugin_key: 'price-1',
+          plugin_name: 'default',
+          billing_expr: 'tier("base", p * 1 + cr * 0.02 + c * 4)',
+          billing_usage_schema: {},
+        },
+        {
+          group: 'Astro',
+          plugin_key: 'price-2',
+          plugin_name: 'Astro',
+          billing_expr: 'tier("base", p * 0 + cr * 0 + c * 0)',
+          billing_usage_schema: {},
+        },
+      ],
+    })
+    const normal = withGroupPricing(model, 'default')
+    expect(normal.enable_groups).toEqual(['default'])
+    expect(normal.billing_usage_schema).toBeUndefined()
+    expect(normal.billing_expr).toContain('c * 4')
+    const astro = withGroupPricing(model, 'Astro')
+    expect(astro.enable_groups).toEqual(['Astro'])
+    expect(astro.billing_expr).toContain('c * 0')
+    const all = getDynamicPricingSummary(withGroupPricing(model), {
+      tokenUnit: 'M',
+    })
+    expect(
+      all?.entries.find((entry) => entry.field === 'inputPrice')
+    ).toMatchObject({ minValue: 0, maxValue: 2 })
+    expect(
+      all?.entries.find((entry) => entry.field === 'outputPrice')
+    ).toMatchObject({ minValue: 0, maxValue: 8 })
+    expect(all?.isTaskUsage).toBe(false)
+    expect(all?.providerCount).toBeUndefined()
+    const outsider = {
+      ...model,
+      enable_groups: ['default'],
+      group_pricing: model.group_pricing?.slice(0, 1),
+    }
+    expect(withGroupPricing(outsider).billing_expr).not.toContain('old')
+    expect(withGroupPricing(outsider).billing_plugin_variants).toBeUndefined()
+  })
   test('keeps request prices unchanged by token units and separates mixed billing units', () => {
     const model = pricingModel({
       billing_mode: 'tiered_expr',

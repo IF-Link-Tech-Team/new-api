@@ -22,7 +22,7 @@ import type {
   PricingModel,
 } from '../types'
 import { compileBillingExpression } from './billing-expression/parser'
-import { visitExpression } from './billing-expression/types'
+import { TIME_FUNCTIONS, visitExpression } from './billing-expression/types'
 
 export function splitPluginBillingExprKey(
   key: string
@@ -68,9 +68,49 @@ export function withPluginPricing(
     quota_type: variant.billing_mode === 'ratio' ? model.quota_type : 0,
     billing_mode: variant.billing_mode ?? 'tiered_expr',
     billing_expr: variant.billing_expr,
-    billing_usage_schema: variant.billing_usage_schema,
+    billing_usage_schema: Object.keys(variant.billing_usage_schema ?? {}).length
+      ? variant.billing_usage_schema
+      : undefined,
     billing_usage_examples: variant.billing_usage_examples,
     billing_plugin_variants: undefined,
+    group_pricing: undefined,
+    enable_groups: variant.group ? [variant.group] : model.enable_groups,
+  }
+}
+
+/** Select only server-authorized group prices; legacy catalogs are unchanged. */
+export function withGroupPricing(
+  model: PricingModel,
+  group?: string
+): PricingModel {
+  if (!model.group_pricing?.length) return model
+  const variants = model.group_pricing.filter(
+    (variant) =>
+      model.enable_groups.includes(variant.group) &&
+      (!group || group === 'all' || variant.group === group)
+  )
+  if (variants.length === 1) {
+    return {
+      ...withPluginPricing(model, variants[0]),
+      group_pricing: model.group_pricing,
+    }
+  }
+  const first = variants[0]
+  return {
+    ...model,
+    billing_mode: 'tiered_expr',
+    // Keep the minute clock active if any visible price has time-based tiers.
+    billing_expr:
+      variants.find((variant) => {
+        const compiled = compileBillingExpression(variant.billing_expr)
+        return (
+          compiled.status === 'ready' &&
+          TIME_FUNCTIONS.some((name) => compiled.functions.has(name))
+        )
+      })?.billing_expr ?? first?.billing_expr,
+    billing_usage_schema: undefined,
+    billing_usage_examples: undefined,
+    billing_plugin_variants: variants,
   }
 }
 

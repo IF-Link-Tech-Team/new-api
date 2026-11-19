@@ -27,6 +27,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -509,6 +510,18 @@ func TaskPluginEndpointOnly(handler gin.HandlerFunc) gin.HandlerFunc {
 	}
 }
 
+// RequireTaskPluginEndpoint protects protocols with no non-plugin fallback.
+func RequireTaskPluginEndpoint() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		pinned, ok := common.GetContextKeyType[pluginruntime.PinnedEndpoint](c, constant.ContextKey(pluginruntime.ContextKeyPinnedEndpoint))
+		if !ok || pinned.Plugin == nil || pinned.Generation == nil {
+			abortWithOpenAiMessage(c, http.StatusBadRequest, "Model is not supported on this endpoint")
+			return
+		}
+		c.Next()
+	}
+}
+
 // PrepareTaskPluginEndpoint normalizes a claimed shared request through the
 // candidates pinned before distribution, retaining only plugins that accept it.
 func PrepareTaskPluginEndpoint() gin.HandlerFunc {
@@ -751,11 +764,12 @@ func PrepareTaskPluginEndpoint() gin.HandlerFunc {
 
 func buildTaskPluginRouteRequest(c *gin.Context) (pluginruntime.RouteRequestContext, error) {
 	requestContext := pluginruntime.RouteRequestContext{
-		Path:   c.Request.URL.Path,
-		Method: c.Request.Method,
-		Params: make(map[string]string, len(c.Params)),
-		Query:  make(map[string][]string),
-		Body:   map[string]any{"kind": string(pluginruntime.BodyNone)},
+		ServerAddress: strings.TrimRight(system_setting.ServerAddress, "/"),
+		Path:          c.Request.URL.Path,
+		Method:        c.Request.Method,
+		Params:        make(map[string]string, len(c.Params)),
+		Query:         make(map[string][]string),
+		Body:          map[string]any{"kind": string(pluginruntime.BodyNone)},
 	}
 	for _, param := range c.Params {
 		requestContext.Params[param.Key] = param.Value
@@ -1214,7 +1228,13 @@ func renderTaskPluginQuery(
 		return
 	}
 	renderStarted := time.Now()
-	result, err := pinned.Plugin.Engine.CallPath(c.Request.Context(), "native", []string{renderer}, requestContext.JSValue(), pluginruntime.RawJSON(encoded))
+	rendererContext := requestContext.JSValue()
+	if !multiple {
+		task := tasksByID[taskIDs[0]]
+		rendererContext["model"] = task.Properties.OriginModelName
+		rendererContext["upstreamModel"] = task.Properties.UpstreamModelName
+	}
+	result, err := pinned.Plugin.Engine.CallPath(c.Request.Context(), "native", []string{renderer}, rendererContext, pluginruntime.RawJSON(encoded))
 	if err != nil {
 		logger.LogDebug(
 			c,
@@ -1238,6 +1258,22 @@ func renderTaskPluginQuery(
 	)
 	c.Abort()
 	c.JSON(http.StatusOK, result)
+}
+
+// RespondMiniMaxVideoError preserves the MiniMax envelope on shared routes,
+// including authentication and validation errors before a plugin is selected.
+func RespondMiniMaxVideoError(c *gin.Context, taskErr *dto.TaskError) bool {
+	if taskErr == nil || !((c.Request.Method == http.MethodPost && c.Request.URL.Path == "/v2/video_generation") ||
+		(c.Request.Method == http.MethodGet && c.FullPath() == "/v2/query/video_generation/:task_id")) {
+		return false
+	}
+	err := sanitizedTaskPluginError(taskErr.StatusCode, taskErr.Message)
+	c.JSON(err.HTTPStatus, gin.H{
+		"type":       "error",
+		"error":      gin.H{"type": err.Code, "message": err.Message, "http_code": strconv.Itoa(err.HTTPStatus)},
+		"request_id": c.GetString(common.RequestIdKey),
+	})
+	return true
 }
 
 // RespondTaskPluginError gives a pinned plugin a sanitized error DTO and writes

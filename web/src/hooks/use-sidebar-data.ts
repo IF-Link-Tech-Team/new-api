@@ -114,6 +114,11 @@ export function useSidebarData(): SidebarData {
         title: t('Personal'),
         items: [
           {
+            title: t('My groups'),
+            url: '/groups',
+            icon: Users,
+          },
+          {
             title: t('Wallet'),
             url: '/wallet',
             icon: Wallet,

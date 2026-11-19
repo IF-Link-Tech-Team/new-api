@@ -94,6 +94,7 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		return
 	}
 	task := outcome.Task
+	c.Header("X-Task-Id", task.TaskID)
 	if task.Status != model.TaskStatusSuccess && task.Status != model.TaskStatusFailure {
 		if taskErr = waitTaskPluginImageTask(c, task, deps); taskErr != nil {
 			if c.Request.Context().Err() == nil {
@@ -145,6 +146,7 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 		}
 		response["created"] = createdAt
 	}
+	response["task_id"] = task.TaskID
 	// response_format is host-owned: the plugin renders upstream URLs and the
 	// host inlines each image when the client asked for Base64.
 	if taskPluginImageResponseFormat(protocolRequest) == "b64_json" {

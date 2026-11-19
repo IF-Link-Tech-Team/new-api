@@ -19,13 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import { APIChannelPrices } from '@/features/api-channel-prices'
-import { ROLE } from '@/lib/roles'
+import { canAccessGlobalAdmin } from '@/lib/admin-permissions'
 import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/product-prices/')({
   beforeLoad: () => {
     const { auth } = useAuthStore.getState()
-    if (!auth.user || auth.user.role < ROLE.ADMIN) {
+    if (!canAccessGlobalAdmin(auth.user)) {
       throw redirect({ to: '/403' })
     }
   },

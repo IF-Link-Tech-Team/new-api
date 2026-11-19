@@ -140,6 +140,14 @@ func (m Meta) AcceptsAutoDuration() bool {
 	return slices.Contains(m.RequiredCapabilities, CapabilityDurationAuto)
 }
 
+func (m Meta) UsesSubmitIdempotency() bool {
+	return slices.Contains(m.RequiredCapabilities, CapabilitySubmitIdempotency) || m.UsesSubmitOnce()
+}
+
+func (m Meta) UsesSubmitOnce() bool {
+	return slices.Contains(m.RequiredCapabilities, CapabilitySubmitOnce)
+}
+
 // JSONTextMember names the member of a hook result (a decoded requestBody, a
 // request descriptor's body) that the host also takes as JSON text, for a
 // plugin that preserves JSON order; it is empty for other plugins.
@@ -1217,6 +1225,9 @@ func normalizeV1Meta(meta *Meta) error {
 			return fmt.Errorf("%s requires submitResponseTypes to include sse", name)
 		}
 		seenCapabilities[name] = true
+	}
+	if seenCapabilities[CapabilitySubmitIdempotency] && seenCapabilities[CapabilitySubmitOnce] {
+		return errors.New("submit-idempotency@1 and submit-once@1 are mutually exclusive")
 	}
 	seenUpstreams := make(map[string]bool, len(meta.Upstreams))
 	for _, kind := range meta.Upstreams {

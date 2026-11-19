@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -152,7 +153,9 @@ type RelayInfo struct {
 	Billing BillingSettler
 	// BillingSource indicates whether this request is billed from wallet quota or subscription.
 	// "" or "wallet" => wallet; "subscription" => subscription
-	BillingSource string
+	BillingSource        string
+	GroupWalletID        int
+	GroupWalletRequestID string
 	// SubscriptionId is the user_subscriptions.id used when BillingSource == "subscription"
 	SubscriptionId int
 	// SubscriptionPreConsumed is the amount pre-consumed on subscription item (quota units or 1)
@@ -164,6 +167,9 @@ type RelayInfo struct {
 	SubscriptionPlanTitle string
 	// RequestId is used for idempotent pre-consume/refund
 	RequestId string
+	// TaskRequestPreflight verifies a final upstream request after overrides.
+	// It is set only for task plugins opting into durable idempotency.
+	TaskRequestPreflight func(*http.Request) error
 	// SubscriptionAmountTotal / SubscriptionAmountUsedAfterPreConsume are used to compute remaining in logs.
 	SubscriptionAmountTotal               int64
 	SubscriptionAmountUsedAfterPreConsume int64
@@ -249,9 +255,10 @@ type RelayInfo struct {
 }
 
 type APIChannelPriceAttempt struct {
-	ChannelID int   `json:"channel_id"`
-	PriceID   int64 `json:"price_id"`
-	Revision  int64 `json:"revision"`
+	GroupName string `json:"group_name,omitempty"`
+	ChannelID int    `json:"channel_id"`
+	PriceID   int64  `json:"price_id"`
+	Revision  int64  `json:"revision"`
 }
 
 // UpdateImageCount replaces the billable quantity without changing the frozen

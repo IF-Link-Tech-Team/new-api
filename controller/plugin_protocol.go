@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
@@ -23,6 +25,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -937,6 +940,68 @@ func renderTaskPluginProtocolEventsResponse(
 		return nil, hookElapsed, err
 	}
 	return response, hookElapsed, nil
+}
+
+func RetrieveMiniMaxVideo(c *gin.Context) {
+	retrieveMiniMaxVideo(c, defaultPluginProtocolBridgeDeps())
+}
+
+func retrieveMiniMaxVideo(c *gin.Context, deps pluginProtocolBridgeDeps) {
+	deps = deps.withDefaults()
+	taskID := strings.TrimSpace(c.Param("task_id"))
+	userID := common.GetContextKeyInt(c, constant.ContextKeyUserId)
+	task, exists, err := deps.getByTaskId(userID, taskID)
+	if err != nil {
+		logger.LogError(c, common.LogText("task protocol retrieve lookup failed"))
+		middleware.RespondMiniMaxVideoError(c, &dto.TaskError{StatusCode: http.StatusInternalServerError})
+		return
+	}
+	if !exists || task == nil || !task.ResultRetrievable() {
+		middleware.RespondMiniMaxVideoError(c, &dto.TaskError{StatusCode: http.StatusNotFound})
+		return
+	}
+	plugin, _, found := deps.resolvePlugin(task.Platform)
+	claimsModel := false
+	if found && plugin != nil {
+		for _, claim := range plugin.Meta.Protocols {
+			if claim.Name == pluginruntime.ProtocolMiniMaxVideo && (len(claim.Models) == 0 ||
+				slices.Contains(claim.Models, task.Properties.UpstreamModelName) || slices.Contains(claim.Models, task.Properties.OriginModelName)) {
+				claimsModel = true
+				break
+			}
+		}
+	}
+	if !claimsModel {
+		middleware.RespondMiniMaxVideoError(c, &dto.TaskError{StatusCode: http.StatusNotFound})
+		return
+	}
+	view, err := service.BuildTaskPluginView(task)
+	if err != nil {
+		middleware.RespondMiniMaxVideoError(c, &dto.TaskError{StatusCode: http.StatusInternalServerError})
+		return
+	}
+	viewValue, err := taskPluginProtocolJSONValue(view)
+	if err != nil {
+		middleware.RespondMiniMaxVideoError(c, &dto.TaskError{StatusCode: http.StatusInternalServerError})
+		return
+	}
+	ctx := pluginruntime.ProtocolRequestContext{
+		RouteRequestContext: pluginruntime.RouteRequestContext{
+			ServerAddress: strings.TrimRight(system_setting.ServerAddress, "/"),
+			Path:          c.Request.URL.Path, Method: c.Request.Method,
+			Params: map[string]string{"task_id": taskID}, Query: c.Request.URL.Query(),
+			Body: map[string]any{"kind": string(pluginruntime.BodyNone)},
+		},
+		Protocol: pluginruntime.ProtocolMiniMaxVideo, Operation: "retrieve",
+		Model: task.Properties.OriginModelName, UpstreamModel: task.Properties.UpstreamModelName,
+	}
+	body, err := plugin.Engine.CallPath(c.Request.Context(), "protocols", []string{pluginruntime.ProtocolMiniMaxVideo, "render"}, ctx.JSValueFor(plugin.Meta), viewValue)
+	if err != nil {
+		logger.LogError(c, common.LogText("task protocol retrieve render failed"))
+		middleware.RespondMiniMaxVideoError(c, &dto.TaskError{StatusCode: http.StatusInternalServerError})
+		return
+	}
+	c.JSON(http.StatusOK, body)
 }
 
 func RetrieveTaskPluginResponse(c *gin.Context) {

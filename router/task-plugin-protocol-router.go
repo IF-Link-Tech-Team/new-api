@@ -48,6 +48,14 @@ func taskPluginProtocolHandlers(protocol, operation string) ([]gin.HandlerFunc, 
 			middleware.PinTaskPluginEndpoint(), middleware.TaskPluginEndpointOnly(middleware.ModelRequestRateLimit()), middleware.PrepareTaskPluginEndpoint(), middleware.Distribute(),
 			func(c *gin.Context) { controller.RelayTaskPluginEndpoint(c, controller.RelayTask) },
 		}, nil
+	case "minimax_video.create":
+		return []gin.HandlerFunc{
+			middleware.RouteTag("relay"), middleware.TokenAuth(), middleware.SystemPerformanceCheck(),
+			middleware.PinTaskPluginEndpoint(), middleware.RequireTaskPluginEndpoint(), middleware.ModelRequestRateLimit(), middleware.PrepareTaskPluginEndpoint(), middleware.Distribute(),
+			controller.RelayTask,
+		}, nil
+	case "minimax_video.retrieve":
+		return []gin.HandlerFunc{middleware.RouteTag("relay"), middleware.TokenAuth(), controller.RetrieveMiniMaxVideo}, nil
 	case "openai_responses.retrieve":
 		return []gin.HandlerFunc{middleware.RouteTag("relay"), middleware.TokenAuth(), controller.RetrieveTaskPluginResponse}, nil
 	case "openai_video.retrieve":

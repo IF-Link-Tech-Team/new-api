@@ -28,8 +28,8 @@ import { useEffect, useSyncExternalStore } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { useStatus } from '@/hooks/use-status'
+import { canAccessGlobalAdmin } from '@/lib/admin-permissions'
 import { handleServerError } from '@/lib/handle-server-error'
-import { ROLE } from '@/lib/roles'
 import { statusQueryOptions } from '@/lib/status-query'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -132,7 +132,7 @@ function isBrowserOnline(): boolean {
 export function useSystemUpdate() {
   const { t } = useTranslation()
   const user = useAuthStore((state) => state.auth.user)
-  const isAdmin = (user?.role ?? 0) >= ROLE.ADMIN
+  const isAdmin = canAccessGlobalAdmin(user)
   const visible = useSyncExternalStore(focusManager.subscribe, isPageVisible)
   const online = useSyncExternalStore(onlineManager.subscribe, isBrowserOnline)
   const { status } = useStatus()

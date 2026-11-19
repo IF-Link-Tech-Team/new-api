@@ -11,7 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
+var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jiliu-h3", "jimeng", "kling", "sora", "sunoapi", "tencent-vod", "tokenhub-media", "vertex-ai", "vidu", "xai"}
+var expectedResponsesKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "sora", "sunoapi", "vertex-ai", "vidu", "xai"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -44,6 +45,8 @@ func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing
 		{"GET", "/hailuo/v1/query/video_generation/:task_id", "hailuo", jsplugin.RouteTypeQuery, "", "taskStatus"},
 		{"POST", "/hailuo/v2/video_generation", "hailuo", jsplugin.RouteTypeSubmit, "", "taskCreated"},
 		{"GET", "/hailuo/v2/query/video_generation/:task_id", "hailuo", jsplugin.RouteTypeQuery, "", "h3TaskStatus"},
+		{"POST", "/vod/v2/video_generation", "tencent-vod", jsplugin.RouteTypeSubmit, "", "miniMaxCreated"},
+		{"GET", "/vod/v2/query/video_generation/:task_id", "tencent-vod", jsplugin.RouteTypeQuery, "", "miniMaxStatus"},
 		{"POST", "/vidu/ent/v2/text2video", "vidu", jsplugin.RouteTypeSubmit, "", "taskCreated"},
 		{"POST", "/vidu/ent/v2/img2video", "vidu", jsplugin.RouteTypeSubmit, "", "taskCreated"},
 		{"POST", "/vidu/ent/v2/start-end2video", "vidu", jsplugin.RouteTypeSubmit, "", "taskCreated"},
@@ -91,7 +94,7 @@ func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing
 	}
 }
 
-func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
+func TestBuiltInTaskPluginInventoryAndUsageContracts(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
 	require.NotNil(t, generation)
 
@@ -115,7 +118,23 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			registry := jsplugin.NewRegistry()
 			plugin, registerErr := registry.RegisterFactory(source, jsplugin.Options{Key: key})
 			require.NoError(t, registerErr)
+			assert.True(t, plugin.Engine.HasExport("extractUsage"))
+			require.NotEmpty(t, plugin.Meta.UsageSchema)
+			for usageKey, schema := range plugin.Meta.UsageSchema {
+				assert.NotEmpty(t, schema.Description, usageKey)
+			}
+		})
+	}
+}
 
+func TestBuiltInTaskPluginResponsesContracts(t *testing.T) {
+	for _, key := range expectedResponsesKeys {
+		t.Run(key, func(t *testing.T) {
+			source, sourceErr := Source(key)
+			require.NoError(t, sourceErr)
+			registry := jsplugin.NewRegistry()
+			plugin, registerErr := registry.RegisterFactory(source, jsplugin.Options{Key: key})
+			require.NoError(t, registerErr)
 			var responsesClaim jsplugin.ProtocolClaim
 			foundResponses := false
 			for _, claim := range plugin.Meta.Protocols {
@@ -140,17 +159,13 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 			for _, hook := range []string{"extractUsage", "extractUsageOnComplete"} {
 				assert.True(t, plugin.Engine.HasExport(hook), hook)
 			}
-			require.NotEmpty(t, plugin.Meta.UsageSchema)
-			for usageKey, schema := range plugin.Meta.UsageSchema {
-				assert.NotEmpty(t, schema.Description, usageKey)
-			}
 		})
 	}
 }
 
 func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 	bodyOverrides := map[string]map[string]any{}
-	for _, key := range expectedKeys {
+	for _, key := range expectedResponsesKeys {
 		t.Run(key, func(t *testing.T) {
 			source, sourceErr := Source(key)
 			require.NoError(t, sourceErr)
@@ -411,4 +426,174 @@ func TestBuiltInPluginsAddressNewAPIUpstreamOnNativeRoutes(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestTokenHubIndexTTSCompletedOutput(t *testing.T) {
+	source, err := Source("tokenhub-media")
+	require.NoError(t, err)
+	plugin, err := jsplugin.CompilePlugin(source, jsplugin.Options{})
+	require.NoError(t, err)
+	ctx := map[string]any{"model": "indextts-2", "publicTaskId": "task_index", "requestBody": map[string]any{"text": "你好。", "voice": "https://cdn.example/voice.wav"}}
+	body := map[string]any{"id": "vendor-index", "status": "completed", "output": map[string]any{"data": "https://cdn.example/result.wav"}, "usage": map[string]any{"total_tokens": 270}}
+	result, err := plugin.Engine.Call(t.Context(), "parseSubmitResponse", ctx, map[string]any{"statusCode": 200, "body": body})
+	require.NoError(t, err)
+	parsed := result.(map[string]any)
+	assert.Equal(t, "SUCCESS", parsed["immediate"].(map[string]any)["status"])
+	task := map[string]any{"status": "SUCCESS", "model": "indextts-2", "data": body}
+	artifacts, err := plugin.Engine.Call(t.Context(), "listArtifacts", task)
+	require.NoError(t, err)
+	require.Len(t, artifacts.([]any), 1)
+	content, err := plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{"model": "indextts-2", "data": body, "artifactKey": "audio", "clientRequest": map[string]any{"method": "GET"}})
+	require.NoError(t, err)
+	assert.Equal(t, "https://cdn.example/result.wav", content.(map[string]any)["url"])
+	assert.Equal(t, true, content.(map[string]any)["credentialless"])
+	body["status"] = "processing"
+	_, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", ctx, map[string]any{"statusCode": 200, "body": body})
+	require.ErrorContains(t, err, "no audio URL")
+}
+
+func TestTokenHubASRAndTTSContracts(t *testing.T) {
+	source, err := Source("tokenhub-media")
+	require.NoError(t, err)
+	plugin, err := jsplugin.CompilePlugin(source, jsplugin.Options{})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name, model, input, response, path string
+		async                              bool
+		tokens                             float64
+	}{
+		{"tenlai speech", "tenlai-tts-v1.0", `{"text":"你好。","voice_setting":{"voice_id":502001,"volume":0,"speed":0},"audio_setting":{"sample_rate":8000},"output_format":"pcm"}`, `{"status":"completed","data":{"audio_url":"https://cdn.example/voice.pcm"}}`, "/v1/tenlai/ttsproxy/text_to_voice", false, 225},
+		{"hy sync", "hy-asr-3.0-preview", `{"input_url":"https://cdn.example/input.wav"}`, `{"id":"asr-old","status":"completed","output":{"text":"hello","subtitle_url":"https://cdn.example/sub.srt"},"usage":{"total_token":22}}`, "/v1/wand/asrproxy/sync_transcribe", false, 22},
+		{"wand sync", "wand-asr-v1", `{"data":"UklGRg==","source":"en","voice_encode_format":"wav"}`, `{"id":"asr-1","status":"completed","output":{"text":"hello","subtitle_url":"https://cdn.example/sub.srt"},"usage":{"total_token":50}}`, "/v1/wand/asrproxy/sync_transcribe", false, 50},
+		{"hy async", "hy-asr-3.0-preview", `{"input_url":"https://cdn.example/input.mp4","async":true,"source":"zh","subtitle_format":"vtt"}`, `{"id":"asr-2","status":"queued"}`, "/v1/wand/asrproxy/async_create", true, 33},
+		{"wand async", "wand-asr-v1", `{"input_url":"https://cdn.example/input.mp4","async":true}`, `{"id":"asr-3","status":"queued"}`, "/v1/wand/asrproxy/async_create", true, 33},
+		{"tenlai async", "tenlai-asr-v1.0", `{"input_url":"https://cdn.example/input.mp4"}`, `{"id":17256336078,"request_id":"trace"}`, "/v1/tenlai/asrproxy/create_rec_task", true, 33},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var input, response map[string]any
+			require.NoError(t, common.Unmarshal([]byte(tc.input), &input))
+			require.NoError(t, common.Unmarshal([]byte(tc.response), &response))
+			ctx := map[string]any{"model": tc.model, "baseUrl": "https://tokenhub.example", "apiKey": "test", "publicTaskId": "task_public", "requestBody": input}
+			native, err := plugin.Engine.CallPath(t.Context(), "native", []string{"create"}, map[string]any{"model": tc.model, "body": map[string]any{"kind": "json", "value": input}})
+			require.NoError(t, err)
+			assert.Equal(t, tc.model, native.(map[string]any)["model"])
+			wantAction := "transcribe_audio"
+			if tc.model == "tenlai-tts-v1.0" {
+				wantAction = "generate_audio"
+			}
+			assert.Equal(t, wantAction, native.(map[string]any)["action"])
+			desc, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+			require.NoError(t, err)
+			d := desc.(map[string]any)
+			assert.Equal(t, "https://tokenhub.example"+tc.path, d["url"])
+			body := d["body"].(map[string]any)
+			assert.NotContains(t, body, "async")
+			if tc.name == "tenlai speech" {
+				assert.EqualValues(t, 0, body["voice_setting"].(map[string]any)["volume"])
+				assert.Equal(t, "pcm", body["output_format"])
+			}
+			parsed, err := plugin.Engine.Call(t.Context(), "parseSubmitResponse", ctx, map[string]any{"body": response})
+			require.NoError(t, err)
+			result := parsed.(map[string]any)
+			ctx["state"] = result["state"]
+			if tc.async {
+				assert.NotContains(t, result, "immediate")
+				ctx["taskId"] = result["taskId"]
+				query, err := plugin.Engine.Call(t.Context(), "buildQueryRequest", ctx)
+				require.NoError(t, err)
+				q := query.(map[string]any)
+				if tc.model == "tenlai-asr-v1.0" {
+					assert.Equal(t, "17256336078", result["taskId"])
+					assert.Equal(t, "POST", q["method"])
+					assert.EqualValues(t, 17256336078, q["body"].(map[string]any)["task_id"])
+					assert.Equal(t, "https://tokenhub.example/v1/tenlai/asrproxy/describe_task_status", q["url"])
+				} else {
+					assert.Equal(t, "GET", q["method"])
+					assert.Equal(t, "https://tokenhub.example/v1/wand/asrproxy/tasks/"+result["taskId"].(string), q["url"])
+				}
+				for _, status := range []string{"queued", "in_progress", "unrecognized", "failed"} {
+					v, err := plugin.Engine.Call(t.Context(), "parseTaskResult", ctx, map[string]any{"status": status})
+					require.NoError(t, err)
+					assert.Equal(t, map[string]string{"queued": "QUEUED", "in_progress": "IN_PROGRESS", "unrecognized": "UNKNOWN", "failed": "FAILURE"}[status], v.(map[string]any)["status"])
+				}
+				response = map[string]any{"status": "completed", "output": map[string]any{"text": "hello", "subtitle_url": "https://cdn.example/sub.vtt"}, "usage": map[string]any{"total_token": 33}}
+				if tc.model == "hy-asr-3.0-preview" {
+					response["output"] = map[string]any{"subtitle_url": "https://cdn.example/sub.vtt"}
+				}
+				if tc.model == "tenlai-asr-v1.0" {
+					delete(response, "usage")
+					response["audio_duration"] = 1.5
+				}
+				v, err := plugin.Engine.Call(t.Context(), "parseTaskResult", ctx, response)
+				require.NoError(t, err)
+				assert.Equal(t, "SUCCESS", v.(map[string]any)["status"])
+			} else {
+				assert.Equal(t, "SUCCESS", result["immediate"].(map[string]any)["status"])
+			}
+			usage, err := plugin.Engine.Call(t.Context(), "extractUsageOnComplete", ctx, map[string]any{"status": "SUCCESS"}, response)
+			require.NoError(t, err)
+			assert.EqualValues(t, tc.tokens, usage.(map[string]any)["tokens"])
+			arts, err := plugin.Engine.Call(t.Context(), "listArtifacts", map[string]any{"status": "SUCCESS", "model": tc.model, "state": ctx["state"], "data": response})
+			require.NoError(t, err)
+			require.Len(t, arts.([]any), 1)
+			key := "subtitles"
+			if tc.model == "tenlai-tts-v1.0" {
+				key = "audio"
+			}
+			assert.Equal(t, key, arts.([]any)[0].(map[string]any)["key"])
+			ctx["data"], ctx["artifactKey"], ctx["clientRequest"] = response, key, map[string]any{"method": "GET"}
+			content, err := plugin.Engine.Call(t.Context(), "buildContentRequest", ctx)
+			require.NoError(t, err)
+			assert.Equal(t, true, content.(map[string]any)["credentialless"])
+		})
+	}
+}
+
+func TestTokenHubAudioValidation(t *testing.T) {
+	source, err := Source("tokenhub-media")
+	require.NoError(t, err)
+	plugin, err := jsplugin.CompilePlugin(source, jsplugin.Options{})
+	require.NoError(t, err)
+	for _, tc := range []struct{ model, input, reason string }{
+		{"wand-asr-v1", `{"input_url":"https://cdn.example/a.wav","async":true,"subtitle_format":"txt"}`, "subtitle_format"},
+		{"wand-asr-v1", `{"input_url":"https://cdn.example/a.wav","async":true,"data":"YWJj"}`, "Unsupported field"},
+		{"hy-asr-3.0-preview", `{"input_url":"https://cdn.example/a.wav","async":"true"}`, "async must be boolean"},
+		{"tenlai-asr-v1.0", `{}`, "Provide data or input_url"},
+		{"tenlai-tts-v1.0", `{"text":"hello","voice_setting":{"voice_id":"not-a-voice"}}`, "numeric voice ID"},
+		{"tenlai-tts-v1.0", `{"text":"hello","voice_setting":{"voice_id":"502001","volume":11}}`, "volume"},
+		{"tenlai-tts-v1.0", `{"text":"hello","voice_setting":{"voice_id":"502001"},"audio_setting":{"sample_rate":44100}}`, "sample_rate"},
+		{"tenlai-tts-v1.0", `{"text":"` + strings.Repeat("好", 101) + `","voice_setting":{"voice_id":"502001"}}`, "300 UTF-8 bytes"},
+	} {
+		t.Run(tc.model+"/"+tc.reason, func(t *testing.T) {
+			var input map[string]any
+			require.NoError(t, common.Unmarshal([]byte(tc.input), &input))
+			_, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{"model": tc.model, "requestBody": input, "baseUrl": "https://tokenhub.example", "apiKey": "test"})
+			require.ErrorContains(t, err, tc.reason)
+		})
+	}
+	ctx := map[string]any{"model": "minimax-speech-2.8-turbo", "baseUrl": "https://tokenhub.example", "apiKey": "test", "requestBody": map[string]any{"text": "hi", "voice_setting": map[string]any{"voice_id": ""}, "timbre_weights": []any{map[string]any{"voice_id": "v1", "weight": 100}}}}
+	_, err = plugin.Engine.Call(t.Context(), "buildSubmitRequest", ctx)
+	require.NoError(t, err)
+	for _, response := range []map[string]any{
+		{"status": "completed", "usage": map[string]any{"total_token": 33}},
+		{"status": "completed", "output": map[string]any{"text": "hello"}, "usage": map[string]any{"total_token": -1}},
+	} {
+		_, err := plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{"model": "wand-asr-v1"}, response)
+		require.Error(t, err)
+	}
+	tts := map[string]any{"status": "completed", "data": map[string]any{"audio_url": "https://cdn.example/a.mp3"}}
+	_, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", map[string]any{"model": "tenlai-tts-v1.0", "requestBody": map[string]any{"text": "hi", "voice_setting": map[string]any{"voice_id": 502001}}}, map[string]any{"body": tts})
+	require.NoError(t, err)
+	// Tenlai's field table also documents numeric status and inline base64.
+	tts["status"] = 2
+	tts["data"] = map[string]any{"audio_url": "UklGRg=="}
+	parsed, err := plugin.Engine.Call(t.Context(), "parseSubmitResponse", map[string]any{"model": "tenlai-tts-v1.0", "requestBody": map[string]any{"text": "hi", "voice_setting": map[string]any{"voice_id": 502001}}}, map[string]any{"body": tts})
+	require.NoError(t, err)
+	assert.Equal(t, "UklGRg==", parsed.(map[string]any)["taskData"].(map[string]any)["data"].(map[string]any)["audio_url"])
+	tts["status"] = "processing"
+	_, err = plugin.Engine.Call(t.Context(), "parseSubmitResponse", map[string]any{"model": "tenlai-tts-v1.0", "requestBody": map[string]any{"text": "hi", "voice_setting": map[string]any{"voice_id": 502001}}}, map[string]any{"body": tts})
+	require.ErrorContains(t, err, "no audio URL")
+	artifacts, err := plugin.Engine.Call(t.Context(), "listArtifacts", map[string]any{"status": "SUCCESS", "model": "minimax-speech-2.8-turbo", "data": map[string]any{"data": map[string]any{"audio": "https://cdn.example/a.mp3", "subtitle_file": "https://cdn.example/a.json"}}})
+	require.NoError(t, err)
+	require.Len(t, artifacts.([]any), 2)
 }

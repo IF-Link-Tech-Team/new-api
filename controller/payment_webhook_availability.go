@@ -109,12 +109,12 @@ func isEpayWebhookEnabled() bool {
 	return isEpayTopUpEnabled()
 }
 
-// The browser-visible IFLinkPay checkout signature is not payment proof.
-// Independent server-side payment verification is required before restoring
-// this provider; configuring the legacy secret must never enable it again.
-
+// IFLinkPay is only advertised when the verified-payment path is switched on and
+// its backend-only credentials are present. The legacy browser-visible checkout
+// signature never enables it: it cannot establish that a payment happened, so
+// configuring the old secret must never bring the option back.
 func isIFLinkPayTopUpEnabled() bool {
-	return false
+	return operation_setting.IFLinkPayV2QueryReady()
 }
 
 // ===== 支付宝原生集成 (MVP: 与 Waffo 同模式, 凭据到位即启用) =====

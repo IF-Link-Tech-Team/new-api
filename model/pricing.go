@@ -1,6 +1,7 @@
 package model
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ type PricingPluginVariant struct {
 }
 
 type Pricing struct {
+	GroupPricing           []PricingGroupVariant                `json:"group_pricing,omitempty"`
 	BillingPluginVariants  []PricingPluginVariant               `json:"billing_plugin_variants,omitempty"`
 	ModelName              string                               `json:"model_name"`
 	Description            string                               `json:"description,omitempty"`
@@ -120,6 +122,42 @@ func GetModelSupportEndpointTypes(model string) []constant.EndpointType {
 }
 
 func getPricingEndpointTypesForAbility(ability AbilityWithChannel, advancedCustomConfigs map[int]*dto.AdvancedCustomConfig) []constant.EndpointType {
+	channel := Channel{Type: ability.ChannelType, Setting: ability.ChannelSetting, ModelMapping: ability.ChannelModelMapping}
+	mapped, err := ResolveMappedModelName(channel.GetModelMapping(), ability.Model)
+	if err == nil {
+		generation := jsplugin.DefaultRegistry.Generation()
+		for _, plugin := range generation.PluginsByModel(mapped) {
+			bound := channel.GetSetting().BindsTaskPlugin(plugin.Meta.Key)
+			native, nativeOK := generation.GetByChannelType(ability.ChannelType)
+			if !bound && (!nativeOK || native != plugin) {
+				continue
+			}
+			endpoints := []constant.EndpointType{}
+			for _, pair := range []struct {
+				name     string
+				endpoint constant.EndpointType
+			}{
+				{jsplugin.ProtocolMiniMaxVideo, "minimax-video"},
+				{"openai_video", constant.EndpointTypeOpenAIVideo},
+				{jsplugin.ProtocolOpenAIImage, constant.EndpointTypeImageGeneration},
+			} {
+				for _, claim := range plugin.Meta.Protocols {
+					if claim.Name == pair.name && (len(claim.Models) == 0 || slices.Contains(claim.Models, mapped)) {
+						endpoints = append(endpoints, pair.endpoint)
+					}
+				}
+			}
+			if len(endpoints) > 0 {
+				return endpoints
+			}
+			if plugin.Meta.Key == "tokenhub-media" {
+				if mapped == "hy-3d-3.1" {
+					return []constant.EndpointType{"tokenhub-3d"}
+				}
+				return []constant.EndpointType{"tokenhub-audio"}
+			}
+		}
+	}
 	if ability.ChannelType != constant.ChannelTypeAdvancedCustom {
 		return common.GetEndpointTypesByChannelType(ability.ChannelType, ability.Model)
 	}

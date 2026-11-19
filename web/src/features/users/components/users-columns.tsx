@@ -32,6 +32,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { PrivateUserName } from '@/features/private-user-alias'
 import { getCurrencyDisplay } from '@/lib/currency'
 import { formatQuota } from '@/lib/format'
 import { useSystemConfigStore } from '@/stores/system-config-store'
@@ -104,7 +105,11 @@ export function useUsersColumns(): ColumnDef<User>[] {
             <div className='flex min-w-[160px] flex-col gap-1'>
               <div className='flex items-center gap-2'>
                 <LongText className='max-w-[140px] text-sm font-normal'>
-                  {username}
+                  {displayName && displayName !== username ? (
+                    username
+                  ) : (
+                    <PrivateUserName userID={row.original.id} name={username} />
+                  )}
                 </LongText>
                 {remark && (
                   <Tooltip>
@@ -130,7 +135,12 @@ export function useUsersColumns(): ColumnDef<User>[] {
                   data-table-text='secondary'
                   className='text-muted-foreground max-w-[180px] text-xs font-normal'
                 >
-                  <LongText>{displayName}</LongText>
+                  <LongText>
+                    <PrivateUserName
+                      userID={row.original.id}
+                      name={displayName}
+                    />
+                  </LongText>
                 </div>
               )}
             </div>

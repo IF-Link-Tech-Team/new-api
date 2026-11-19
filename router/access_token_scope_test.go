@@ -34,7 +34,7 @@ var accessTokenExemptRoutes = []string{
 	"GET /api/ratio_config",
 	"GET /api/user/groups",
 	"GET /api/subscription/public/catalog",
- "GET /api/subscription/public/models",
+	"GET /api/subscription/public/models",
 
 	// Anonymous account entry points.
 	"GET /api/verification",
@@ -134,6 +134,11 @@ func TestAccessTokenRouteRulesCoverEveryDashboardRoute(t *testing.T) {
 	}
 	for key := range declared {
 		assert.True(t, panel[key], "declared route %s is not a registered panel route", key)
+	}
+	for _, key := range []string{"GET /api/user/self/aliases", "PUT /api/user/self/aliases/:id", "GET /api/managed-groups/:group/models", "GET /api/managed-groups/:group/usage", "PUT /api/managed-groups/:group/channels/:id/models", "PUT /api/managed-groups/:group/channels/:id/prices"} {
+		rule, ok := middleware.AccessTokenRouteRule(key)
+		require.True(t, ok)
+		assert.Equal(t, "session", rule.Kind(), "personal access tokens must not inherit private aliases")
 	}
 
 	permissionRoutes := map[string]authz.Permission{}

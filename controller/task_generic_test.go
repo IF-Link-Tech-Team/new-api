@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -113,6 +114,11 @@ func TestGetTaskArtifactsReturnsEmptyForLegacyTask(t *testing.T) {
 
 func TestTaskArtifactAuthorizationKeepsForeignTasksHidden(t *testing.T) {
 	task := setupGenericTaskTest(t)
+	wasMaster := common.IsMasterNode
+	common.IsMasterNode = true
+	t.Cleanup(func() { common.IsMasterNode = wasMaster })
+	require.NoError(t, model.DB.AutoMigrate(&model.CasbinRule{}, &model.AuthzRole{}))
+	require.NoError(t, authz.Init(model.DB))
 
 	commonUser, _ := gin.CreateTestContext(httptest.NewRecorder())
 	commonUser.Set("id", 8)
@@ -128,6 +134,14 @@ func TestTaskArtifactAuthorizationKeepsForeignTasksHidden(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, exists)
 	assert.Equal(t, task.TaskID, found.TaskID)
+	require.NoError(t, authz.SetUserPermissions(8, authz.PermissionsMap{authz.ResourceAdministration: {"access": false}}))
+	_, exists, err = getTaskForArtifactRequest(admin, task.TaskID)
+	require.NoError(t, err)
+	assert.False(t, exists, "group-only admins cannot read another user's task artifacts")
+	admin.Set("id", task.UserId)
+	_, exists, err = getTaskForArtifactRequest(admin, task.TaskID)
+	require.NoError(t, err)
+	assert.True(t, exists, "own task artifacts remain accessible")
 
 	apiToken, _ := gin.CreateTestContext(httptest.NewRecorder())
 	apiToken.Set("id", 8)
@@ -648,7 +662,7 @@ func TestWriteVideoDataURLRejectsOversizedPayloadBeforeDecode(t *testing.T) {
 
 func TestProxyTaskMediaAllowsOnlyCredentiallessCrossOriginRedirect(t *testing.T) {
 	task := setupGenericTaskTest(t)
-	var destinationAuthorization, destinationRange string
+	var sourceAuthorization, destinationAuthorization, destinationRange string
 	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		destinationAuthorization = r.Header.Get("Authorization")
 		destinationRange = r.Header.Get("Range")
@@ -656,6 +670,7 @@ func TestProxyTaskMediaAllowsOnlyCredentiallessCrossOriginRedirect(t *testing.T)
 	}))
 	defer destination.Close()
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceAuthorization = r.Header.Get("Authorization")
 		http.Redirect(w, r, destination.URL, http.StatusFound)
 	}))
 	defer source.Close()
@@ -687,6 +702,50 @@ func TestProxyTaskMediaAllowsOnlyCredentiallessCrossOriginRedirect(t *testing.T)
 	require.ErrorAs(t, err, &proxyErr)
 	assert.Equal(t, "artifact_request_rejected", proxyErr.code)
 	assert.Empty(t, destinationRange)
+
+	allowedRecorder := httptest.NewRecorder()
+	allowedContext, _ := gin.CreateTestContext(allowedRecorder)
+	allowedContext.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
+	allowedContext.Request.Header.Set("Range", "bytes=0-3")
+	err = proxyTaskMedia(allowedContext, task, &relaychannel.TaskContentRequest{
+		URL: source.URL, Method: http.MethodGet, AllowCredentiallessRedirects: true,
+		Headers: map[string]string{"Authorization": "Bearer provider-secret"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer provider-secret", sourceAuthorization)
+	assert.Empty(t, destinationAuthorization)
+	assert.Equal(t, "bytes=0-3", destinationRange)
+}
+
+func TestTaskMediaRedirectNeverRestoresCredentials(t *testing.T) {
+	task := setupGenericTaskTest(t)
+	allowPrivateTaskMediaTest(t)
+	var source *httptest.Server
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Empty(t, r.Header.Get("Authorization"))
+		assert.Empty(t, r.Header.Get("X-Provider-Key"))
+		http.Redirect(w, r, source.URL+"/final", http.StatusFound)
+	}))
+	defer destination.Close()
+	source = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/final" {
+			assert.Empty(t, r.Header.Get("Authorization"))
+			assert.Empty(t, r.Header.Get("X-Provider-Key"))
+			_, _ = w.Write([]byte("video"))
+			return
+		}
+		assert.Equal(t, "Bearer provider-secret", r.Header.Get("Authorization"))
+		http.Redirect(w, r, destination.URL, http.StatusFound)
+	}))
+	defer source.Close()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/content", nil)
+	require.NoError(t, proxyTaskMedia(c, task, &relaychannel.TaskContentRequest{
+		URL: source.URL, Method: http.MethodGet, AllowCredentiallessRedirects: true,
+		Headers: map[string]string{"Authorization": "Bearer provider-secret", "X-Provider-Key": "private"},
+	}))
+	assert.Equal(t, "video", recorder.Body.String())
 }
 
 func TestTaskMediaRequestHeaderPolicy(t *testing.T) {

@@ -29,6 +29,7 @@ import (
 )
 
 type TaskSubmitResult struct {
+	ReplayTask     *model.Task
 	UpstreamTaskID string
 	TaskData       []byte
 	ClientResponse any
@@ -215,6 +216,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if info.PublicTaskID == "" {
 		info.PublicTaskID = model.GenerateTaskID()
 	}
+	if taskErr := prepareTaskIdempotency(c, info); taskErr != nil {
+		return nil, taskErr
+	}
 	adaptor.Init(info)
 	// Plugin submit hooks run during ValidateRequestAndSetAction and cache the
 	// upstream body. OriginModelName is already seeded on that line (protocol
@@ -231,6 +235,18 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 	if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
 		return nil, taskErr
+	}
+	validatedTaskID := info.PublicTaskID
+	if task, taskErr := claimTaskIdempotency(c, info); taskErr != nil {
+		return nil, taskErr
+	} else if task != nil {
+		return &TaskSubmitResult{ReplayTask: task}, nil
+	}
+	if info.PublicTaskID != validatedTaskID {
+		adaptor.Init(info)
+		if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
+			return nil, taskErr
+		}
 	}
 
 	// 2. 确定模型名称
@@ -351,6 +367,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// 9. 发送请求
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
+		if errors.Is(err, model.ErrTaskIdempotencyConflict) || errors.Is(err, model.ErrTaskIdempotencyLease) {
+			return nil, service.TaskErrorWrapperLocal(err, "idempotency_conflict", http.StatusConflict)
+		}
 		return nil, service.TaskErrorWrapper(err, "do_request_failed", http.StatusInternalServerError, common.UpstreamAddresses(c)...)
 	}
 	if resp == nil {
@@ -360,6 +379,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// Any 2xx is a successful submission: task APIs commonly answer 201 Created
 	// or 202 Accepted, and parseSubmitResponse receives the exact status code.
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusTooManyRequests && resp.Header.Get("Retry-After") != "" {
+			c.Header("Retry-After", resp.Header.Get("Retry-After"))
+		}
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode, common.UpstreamAddresses(c)...)
 	}

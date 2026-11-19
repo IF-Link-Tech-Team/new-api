@@ -93,6 +93,8 @@ export function LogCostDisplay(props: LogCostDisplayProps) {
   // showBillingSource.
   if (isSubscription) {
     source = t('Subscription')
+  } else if (props.other?.billing_source === 'group_wallet') {
+    source = t('Group balance')
   } else if (
     props.showBillingSource &&
     props.other?.billing_source === 'wallet'

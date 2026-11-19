@@ -31,6 +31,7 @@ import {
   type ViewMode,
 } from '../constants'
 import { filterAndSortModels, extractAllTags } from '../lib/filters'
+import { withGroupPricing } from '../lib/plugin-pricing'
 import type { PricingModel, TokenUnit } from '../types'
 
 type FilterState = {
@@ -149,15 +150,18 @@ export function useFilters(models: PricingModel[]) {
   const filteredModels = useMemo(() => {
     if (!models || models.length === 0) return []
 
-    return filterAndSortModels(models, {
-      search: debouncedSearchInput,
-      vendor: vendorFilter,
-      group: groupFilter,
-      quotaType: quotaTypeFilter,
-      endpointType: endpointTypeFilter,
-      tag: tagFilter,
-      sortBy,
-    })
+    return filterAndSortModels(
+      models.map((model) => withGroupPricing(model, groupFilter)),
+      {
+        search: debouncedSearchInput,
+        vendor: vendorFilter,
+        group: groupFilter,
+        quotaType: quotaTypeFilter,
+        endpointType: endpointTypeFilter,
+        tag: tagFilter,
+        sortBy,
+      }
+    )
   }, [
     models,
     debouncedSearchInput,

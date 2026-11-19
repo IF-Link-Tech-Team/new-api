@@ -190,6 +190,9 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) 
 	if relayInfo.BillingSource != "" {
 		other.SetPublic("billing_source", relayInfo.BillingSource)
 	}
+	if relayInfo.GroupWalletID > 0 {
+		other.SetPublic("group_wallet_id", relayInfo.GroupWalletID)
+	}
 	if relayInfo.ProductType != "" {
 		other.SetPublic("product_type", relayInfo.ProductType)
 	}
@@ -350,8 +353,13 @@ func InjectTieredBillingInfo(other *model.LogOther, relayInfo *relaycommon.Relay
 	}
 	other.SetPublic("billing_mode", "tiered_expr")
 	if price := relayInfo.APIChannelPrice; price != nil {
-		other.SetPublic("api_price_id", price.PriceID)
-		other.SetPublic("api_price_revision", price.Revision)
+		if price.GroupName != "" {
+			other.SetPublic("group_price_id", price.PriceID)
+			other.SetPublic("group_price_revision", price.Revision)
+		} else {
+			other.SetPublic("api_price_id", price.PriceID)
+			other.SetPublic("api_price_revision", price.Revision)
+		}
 		other.SetAdmin("api_price_attempts", relayInfo.APIChannelPriceAttempts)
 	}
 	other.SetPublic("expr_b64", base64.StdEncoding.EncodeToString([]byte(snap.ExprString)))

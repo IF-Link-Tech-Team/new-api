@@ -109,7 +109,7 @@ function buildChatSample(lang: Lang, ctx: SampleContext): string {
       `curl ${url} \\`,
       `  -H "Authorization: Bearer $${ctx.apiKeyEnv}" \\`,
       `  -H "Content-Type: application/json" \\`,
-      `  -d '${bodyJson.replace(/\n/g, '\n     ')}'`,
+      `  -d '${bodyJson.replaceAll('\n', '\n     ')}'`,
     ].join('\n')
   }
 
@@ -177,7 +177,7 @@ function buildAnthropicSample(lang: Lang, ctx: SampleContext): string {
       `  -H "x-api-key: $${ctx.apiKeyEnv}" \\`,
       `  -H "anthropic-version: 2023-06-01" \\`,
       `  -H "Content-Type: application/json" \\`,
-      `  -d '${body.replace(/\n/g, '\n     ')}'`,
+      `  -d '${body.replaceAll('\n', '\n     ')}'`,
     ].join('\n')
   }
   if (lang === 'python') {
@@ -249,7 +249,7 @@ function buildGeminiSample(lang: Lang, ctx: SampleContext): string {
     return [
       `curl '${url}' \\`,
       `  -H 'Content-Type: application/json' \\`,
-      `  -d '${body.replace(/\n/g, '\n     ')}'`,
+      `  -d '${body.replaceAll('\n', '\n     ')}'`,
     ].join('\n')
   }
   if (lang === 'python') {
@@ -299,7 +299,7 @@ function buildEmbeddingSample(lang: Lang, ctx: SampleContext): string {
       `curl ${url} \\`,
       `  -H "Authorization: Bearer $${ctx.apiKeyEnv}" \\`,
       `  -H "Content-Type: application/json" \\`,
-      `  -d '${body.replace(/\n/g, '\n     ')}'`,
+      `  -d '${body.replaceAll('\n', '\n     ')}'`,
     ].join('\n')
   }
   if (lang === 'python') {
@@ -356,16 +356,12 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
   const prompt = 'A serene koi pond at sunset, ukiyo-e style.'
 
   if (lang === 'curl') {
-    const body = JSON.stringify(
-      { model: ctx.modelName, prompt, size: '1024x1024', n: 1 },
-      null,
-      2
-    )
+    const body = JSON.stringify({ model: ctx.modelName, prompt, n: 1 }, null, 2)
     return [
       `curl ${url} \\`,
       `  -H "Authorization: Bearer $${ctx.apiKeyEnv}" \\`,
       `  -H "Content-Type: application/json" \\`,
-      `  -d '${body.replace(/\n/g, '\n     ')}'`,
+      `  -d '${body.replaceAll('\n', '\n     ')}'`,
     ].join('\n')
   }
   if (lang === 'python') {
@@ -377,7 +373,6 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
       'response = client.images.generate(',
       `    model="${ctx.modelName}",`,
       `    prompt="${prompt}",`,
-      `    size="1024x1024",`,
       `    n=1,`,
       ')',
       '',
@@ -396,7 +391,6 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
       `const response = await client.images.generate({`,
       `  model: '${ctx.modelName}',`,
       `  prompt: '${prompt}',`,
-      `  size: '1024x1024',`,
       `  n: 1,`,
       `})`,
       '',
@@ -413,7 +407,6 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
     `  body: JSON.stringify({`,
     `    model: '${ctx.modelName}',`,
     `    prompt: '${prompt}',`,
-    `    size: '1024x1024',`,
     `    n: 1,`,
     `  }),`,
     `})`,
@@ -423,15 +416,95 @@ function buildImageSample(lang: Lang, ctx: SampleContext): string {
   ].join('\n')
 }
 
+function buildMediaSample(lang: Lang, ctx: SampleContext): string {
+  const isMiniMax = ctx.endpointType === 'minimax-video'
+  const isAudio = ctx.endpointType === 'tokenhub-audio'
+  let body: Record<string, unknown>
+  if (ctx.endpointType === 'tokenhub-3d') {
+    body = {
+      model: ctx.modelName,
+      prompt: 'A small ceramic cat',
+      generate_type: 'Normal',
+      enable_pbr: false,
+    }
+  } else if (isAudio) {
+    if (ctx.modelName === 'hy-asr-3.0-preview') {
+      body = {
+        model: ctx.modelName,
+        input_url: 'https://example.com/audio.wav',
+      }
+    } else if (ctx.modelName === 'minimax-music-v3.0') {
+      body = {
+        model: ctx.modelName,
+        prompt: 'Gentle piano music',
+        is_instrumental: true,
+      }
+    } else if (ctx.modelName === 'indextts-2') {
+      body = {
+        model: ctx.modelName,
+        text: 'Hello world',
+        voice: 'https://example.com/reference.wav',
+      }
+    } else {
+      body = {
+        model: ctx.modelName,
+        text: 'Hello world',
+        voice_setting: { voice_id: '<VOICE_ID>' },
+      }
+    }
+  } else {
+    body = { model: ctx.modelName, prompt: 'A cat walking through a garden' }
+    if (isMiniMax) {
+      body = {
+        model: ctx.modelName,
+        content: [{ type: 'text', text: 'A cat walking through a garden' }],
+      }
+      if (ctx.modelName.startsWith('sora-')) body.duration = 4
+      if (ctx.modelName === 'minimax-video-v2.3-fast') {
+        body.content = [
+          { type: 'text', text: 'A cat walking through a garden' },
+          {
+            type: 'image_url',
+            image_url: { url: 'https://example.com/first-frame.png' },
+            role: 'first_frame',
+          },
+        ]
+      }
+    }
+  }
+  const url = `${ctx.baseUrl}${ctx.endpointPath}`
+  const json = JSON.stringify(body, null, 2)
+  if (lang === 'curl') {
+    return [
+      `curl '${url}' \\`,
+      `  -H "Authorization: Bearer $${ctx.apiKeyEnv}" \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  -d '${json}'`,
+    ].join('\n')
+  }
+  if (lang === 'python') {
+    return `import json\nimport os\nimport requests\n\nbody = json.loads(${JSON.stringify(json)})\nresponse = requests.post(\n    "${url}",\n    headers={"Authorization": "Bearer " + os.environ["${ctx.apiKeyEnv}"]},\n    json=body,\n)\nresponse.raise_for_status()\nprint(response.json())`
+  }
+  return `const response = await fetch('${url}', {\n  method: 'POST',\n  headers: {\n    Authorization: \`Bearer \${process.env.${ctx.apiKeyEnv}}\`,\n    'Content-Type': 'application/json',\n  },\n  body: JSON.stringify(${json}),\n})\nif (!response.ok) throw new Error(await response.text())\nconsole.log(await response.json())`
+}
+
 function buildSample(
   lang: Lang,
   endpointType: string,
   ctx: SampleContext
 ): string {
+  if (
+    ['minimax-video', 'openai-video', 'tokenhub-audio', 'tokenhub-3d'].includes(
+      endpointType
+    )
+  ) {
+    return buildMediaSample(lang, ctx)
+  }
   if (endpointType === 'anthropic') return buildAnthropicSample(lang, ctx)
   if (endpointType === 'gemini') return buildGeminiSample(lang, ctx)
-  if (endpointType === 'embeddings' || endpointType === 'jina-rerank')
+  if (endpointType === 'embeddings' || endpointType === 'jina-rerank') {
     return buildEmbeddingSample(lang, ctx)
+  }
   if (endpointType === 'image-generation') return buildImageSample(lang, ctx)
   return buildChatSample(lang, ctx)
 }
@@ -537,6 +610,23 @@ function CodeSamplesSection(props: {
         </CodeBlock>
       </div>
 
+      {activeEndpoint.type === 'tokenhub-3d' && (
+        <div className='mt-4'>
+          <p className='text-muted-foreground mb-2 text-sm'>
+            {t('Query task')}
+          </p>
+          <CodeBlock
+            code={[
+              `curl '${baseUrl}/tokenhub-media/v1/tasks/<TASK_ID>' \\`,
+              '  -H "Authorization: Bearer $NEW_API_KEY"',
+            ].join('\n')}
+            language='bash'
+          >
+            <CodeBlockCopyButton />
+          </CodeBlock>
+        </div>
+      )}
+
       <p className='text-muted-foreground mt-2 text-xs'>
         {t('Replace')}{' '}
         <code className='bg-muted rounded px-1 py-0.5 font-mono text-[11px]'>
@@ -554,10 +644,73 @@ function CodeSamplesSection(props: {
 
 function SupportedParametersSection(props: { model: PricingModel }) {
   const { t } = useTranslation()
-  const params = useMemo(
-    () => buildSupportedParameters(props.model),
-    [props.model]
-  )
+  const params = useMemo<SupportedParameter[]>(() => {
+    if (props.model.supported_endpoint_types?.includes('tokenhub-3d')) {
+      return [
+        {
+          name: 'prompt',
+          type: 'string',
+          range: '1–1024',
+          descriptionKey:
+            '3D text input; choose text, image URL or image Base64',
+        },
+        {
+          name: 'image_url',
+          type: 'string',
+          descriptionKey: '3D input image URL',
+        },
+        {
+          name: 'image_base64',
+          type: 'string',
+          descriptionKey: '3D input image Base64, at most 6 MiB decoded',
+        },
+        {
+          name: 'generate_type',
+          type: 'enum',
+          defaultValue: 'Normal',
+          enumValues: ['Normal', 'Geometry'],
+          descriptionKey:
+            'Normal produces textures; Geometry produces a white model',
+        },
+        {
+          name: 'enable_pbr',
+          type: 'boolean',
+          defaultValue: false,
+          descriptionKey:
+            'PBR materials; ignored and not charged in Geometry mode',
+        },
+        {
+          name: 'face_count',
+          type: 'integer',
+          defaultValue: 500000,
+          range: '3000–1500000',
+          descriptionKey: 'Custom face count; the default has no surcharge',
+        },
+        {
+          name: 'multi_view_images',
+          type: 'array',
+          range: '0–7',
+          descriptionKey:
+            'Supplementary views; image input required, each view type once',
+        },
+        {
+          name: 'result_format',
+          type: 'enum',
+          enumValues: ['stl', 'usdz', 'fbx'],
+          descriptionKey:
+            'Additional output format; defaults to OBJ and GLB, or GLB for Geometry',
+        },
+      ]
+    }
+    if (
+      props.model.supported_endpoint_types?.some((type) =>
+        ['minimax-video', 'tokenhub-audio'].includes(type)
+      )
+    ) {
+      return []
+    }
+    return buildSupportedParameters(props.model)
+  }, [props.model])
 
   if (params.length === 0) return null
 
@@ -767,7 +920,9 @@ export function ModelDetailsApi(props: {
       <CodeSamplesSection model={props.model} endpointMap={props.endpointMap} />
       <AuthSection />
       <SupportedParametersSection model={props.model} />
-      <RateLimitsSection model={props.model} />
+      {!props.model.supported_endpoint_types?.some((type) =>
+        ['minimax-video', 'tokenhub-audio', 'tokenhub-3d'].includes(type)
+      ) && <RateLimitsSection model={props.model} />}
     </div>
   )
 }
